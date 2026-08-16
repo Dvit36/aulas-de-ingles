@@ -1,0 +1,36 @@
+.DS_Store
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Dados persistentes e temporários
+data/
+uploads/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+tmp/
+backups/
+import-reports/
+
+# Segredos Streamlit; o exemplo permanece versionável
+.streamlit/secrets.toml
+
+# Credenciais externas nunca entram no repositório
+secrets/
+*service-account*.json
+*service_account*.json
+
+# Materiais fornecidos podem conter dados pessoais e não entram na imagem/repo
+inputs/
+.codex-audit-*/

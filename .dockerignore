@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.venv
+__pycache__
+.pytest_cache
+.coverage
+data
+uploads
+backups
+import-reports
+inputs
+.streamlit/secrets.toml
+secrets
+*service-account*.json
+*service_account*.json

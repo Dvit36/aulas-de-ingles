@@ -1,0 +1,10 @@
+services:
+  app:
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google_sheets_credentials
+    secrets:
+      - google_sheets_credentials
+
+secrets:
+  google_sheets_credentials:
+    file: ${GOOGLE_SERVICE_ACCOUNT_FILE:-./secrets/google-service-account.json}
