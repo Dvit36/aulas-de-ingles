@@ -148,9 +148,9 @@ english-leaderboard analyze-image \
 
 Ao criar a aplicação no Community Cloud, selecione **Python 3.12** em
 **Advanced settings**. O arquivo `packages.txt` instala as bibliotecas nativas
-de OpenCV/ONNX (`libgl1`, `libglib2.0-0` e `libgomp1`) exigidas pelo RapidOCR no
-ambiente Linux. Para uma demo descartável, use `APP_ENV=development` e
-`DEMO_AUTH_ENABLED=true` nos Secrets da aplicação.
+de OpenCV/ONNX (`libgl1`, `libglib2.0-0t64` e `libgomp1`) exigidas pelo
+RapidOCR no ambiente Linux. Para uma demo descartável, use
+`APP_ENV=development` e `DEMO_AUTH_ENABLED=true` nos Secrets da aplicação.
 
 O SQLite e os uploads locais não têm persistência garantida no Community Cloud;
 para uso contínuo, prefira o Docker Compose com o volume `/data` descrito abaixo.
