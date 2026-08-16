@@ -81,7 +81,7 @@ def test_public_and_authenticated_navigation_expose_account_routes(
 
 
 def test_navigation_uses_hidden_router_and_visible_page_links(monkeypatch) -> None:
-    calls: dict[str, object] = {"links": []}
+    calls: dict[str, object] = {"links": [], "containers": [], "images": []}
 
     class FakeContainer:
         def __enter__(self):
@@ -107,7 +107,7 @@ def test_navigation_uses_hidden_router_and_visible_page_links(monkeypatch) -> No
     monkeypatch.setattr(
         streamlit_app.st,
         "container",
-        lambda **kwargs: calls.update({"container": kwargs}) or FakeContainer(),
+        lambda **kwargs: calls["containers"].append(kwargs) or FakeContainer(),
     )
     monkeypatch.setattr(
         streamlit_app.st,
@@ -116,9 +116,10 @@ def test_navigation_uses_hidden_router_and_visible_page_links(monkeypatch) -> No
     )
     monkeypatch.setattr(
         streamlit_app.st,
-        "title",
-        lambda value: calls.update({"title": value}),
+        "image",
+        lambda *args, **kwargs: calls["images"].append((args, kwargs)),
     )
+    monkeypatch.setattr(streamlit_app.st, "markdown", lambda *args, **kwargs: None)
 
     routes = [
         streamlit_app.PageRoute("Início", "home", ":material/home:", lambda: None),
@@ -127,13 +128,22 @@ def test_navigation_uses_hidden_router_and_visible_page_links(monkeypatch) -> No
     streamlit_app._run_navigation(routes)
 
     assert calls["position"] == "hidden"
-    assert calls["container"] == {
-        "key": "top_nav",
-        "horizontal": True,
-        "horizontal_alignment": "left",
-        "vertical_alignment": "center",
-        "gap": "small",
-    }
+    assert calls["containers"] == [
+        {
+            "key": "brand_header",
+            "horizontal": True,
+            "horizontal_alignment": "left",
+            "vertical_alignment": "center",
+            "gap": "small",
+        },
+        {
+            "key": "top_nav",
+            "horizontal": True,
+            "horizontal_alignment": "left",
+            "vertical_alignment": "center",
+            "gap": "small",
+        },
+    ]
     assert [link[1]["label"] for link in calls["links"]] == ["Início", "Entrar"]
-    assert calls["title"] == "English Activities & Leaderboard"
+    assert len(calls["images"]) == 1
     assert calls["ran"] is True

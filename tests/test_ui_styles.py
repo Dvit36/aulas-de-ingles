@@ -34,6 +34,19 @@ def test_responsive_css_contains_required_mobile_behaviour() -> None:
     assert '[data-testid="stFileUploaderDropzone"] button' in css
 
 
+def test_styles_apply_robonaticos_visual_identity() -> None:
+    css = responsive_css()
+
+    assert "--robo-yellow: #F7C11E" in css
+    assert "--robo-red: #C5210D" in css
+    assert "--robo-charcoal: #333333" in css
+    assert "--robo-shadow: 4px 4px 0" in css
+    assert 'font-family: "League Spartan"' in css
+    assert ".st-key-brand_header" in css
+    assert "background: var(--robo-charcoal)" in css
+    assert 'a[aria-current="page"]' in css
+
+
 def test_styles_avoid_generated_or_position_dependent_selectors() -> None:
     css = responsive_css()
 

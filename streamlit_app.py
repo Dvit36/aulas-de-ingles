@@ -4,6 +4,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 import logging
+from pathlib import Path
 from uuid import uuid4
 
 import streamlit as st
@@ -58,9 +59,16 @@ from english_leaderboard.services import (
 from english_leaderboard.ui_styles import render_global_styles
 
 
+APP_ROOT = Path(__file__).resolve().parent
+BRAND_ASSETS = APP_ROOT / "assets" / "brand"
+BRAND_MARK = BRAND_ASSETS / "logo-mark.png"
+BRAND_WORDMARK = BRAND_ASSETS / "logo-wordmark.png"
+BRAND_FULL = BRAND_ASSETS / "logo-full.png"
+
+
 st.set_page_config(
     page_title="English Activities",
-    page_icon="🏆",
+    page_icon=str(BRAND_MARK),
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -252,11 +260,18 @@ def authenticate(session, settings: Settings) -> AuthenticationState:
 
 
 def public_home_view() -> None:
-    st.header("Atividades de inglês e leaderboard")
+    st.header("English Activities")
     with st.container(border=True, key="public_hero"):
-        st.write(
-            "Envie comprovações de atividades, acompanhe seu progresso e consulte "
-            "a classificação da equipe em um único lugar."
+        visual, content = st.columns([1, 2], vertical_alignment="center")
+        visual.image(str(BRAND_FULL), width="stretch")
+        content.markdown(
+            '<span class="hero-kicker">Temporada 2026</span>',
+            unsafe_allow_html=True,
+        )
+        content.subheader("Aprender, comprovar e evoluir")
+        content.write(
+            "Envie atividades de inglês, acompanhe seu progresso e veja a "
+            "classificação da equipe Robonáticos #7565 em um único lugar."
         )
         st.info("Use a opção **Entrar** no menu superior para acessar sua conta.")
 
@@ -271,6 +286,12 @@ def login_view(
 ) -> None:
     st.header("Entrar")
     with st.container(border=True, key="login_card"):
+        st.image(str(BRAND_WORDMARK), width=280)
+        st.markdown(
+            '<span class="login-kicker">English Activities</span>',
+            unsafe_allow_html=True,
+        )
+        st.write("Acesse sua área para registrar atividades e acompanhar pontos.")
         if auth_error:
             st.error(auth_error)
 
@@ -358,6 +379,23 @@ def _run_navigation(routes: Sequence[PageRoute]) -> None:
     ]
     selected_page = st.navigation(pages, position="hidden")
     with st.container(
+        key="brand_header",
+        horizontal=True,
+        horizontal_alignment="left",
+        vertical_alignment="center",
+        gap="small",
+    ):
+        st.image(str(BRAND_WORDMARK), width=210)
+        st.markdown(
+            """
+            <div class="brand-copy">
+              <p class="brand-title">English Activities</p>
+              <p class="brand-subtitle">Robonáticos #7565 · Temporada 2026</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with st.container(
         key="top_nav",
         horizontal=True,
         horizontal_alignment="left",
@@ -371,7 +409,6 @@ def _run_navigation(routes: Sequence[PageRoute]) -> None:
                 icon=route.icon,
                 width="content",
             )
-    st.title("English Activities & Leaderboard")
     selected_page.run()
 
 
@@ -499,6 +536,8 @@ def leaderboard_view(session, *, key_prefix: str = "leaderboard") -> None:
 
 
 def student_dashboard(session, actor: User) -> None:
+    first_name = actor.display_name.strip().split()[0]
+    st.header(f"Olá, {first_name}")
     board = leaderboard_rows(session)
     own = next((row for row in board if row["student_id"] == actor.id), None)
     progress, threshold = lesson_progress(session, actor.id)
@@ -979,6 +1018,7 @@ def ledger_view(session, actor: User, settings: Settings | None = None) -> None:
 
 
 def admin_dashboard(session) -> None:
+    st.header("Visão geral")
     pending = session.scalar(select(func.count(Submission.id)).where(Submission.status == SubmissionStatus.NEEDS_REVIEW)) or 0
     students = session.scalar(select(func.count(User.id)).where(User.role == Role.STUDENT, User.active.is_(True))) or 0
     transactions = session.scalar(select(func.count(LedgerTransaction.id))) or 0

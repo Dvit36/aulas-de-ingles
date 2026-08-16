@@ -70,6 +70,9 @@ Alunos importados recebem inicialmente e-mails locais `@local.invalid`. Antes do
 
 ## Navegação e telas móveis
 
+- A interface segue a identidade visual Robonáticos #7565: cabeçalho carvão,
+  amarelo e vermelho da equipe, títulos condensados, contornos fortes e sombras
+  sólidas. Os logos versionados ficam em `assets/brand/`.
 - Sem autenticação, a barra superior mostra somente **Início** e **Entrar**.
 - Depois da autenticação, ela mostra as páginas autorizadas para `student` ou `admin` e acrescenta **Minha conta**.
 - **Minha conta** exibe nome, e-mail e papel e concentra a saída da sessão demo ou OIDC.
