@@ -25,6 +25,39 @@ def test_demo_authentication_requires_explicit_session_state(
     assert logged_in.actor is users[Role.STUDENT]
 
 
+def test_missing_oidc_configuration_does_not_crash(
+    session,
+    settings,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(streamlit_app.st, "user", {})
+
+    state = streamlit_app.authenticate(session, settings)
+
+    assert state.actor is None
+    assert state.oidc_available is False
+    assert state.oidc_logged_in is False
+    assert "não configurada" in (state.error or "")
+
+
+def test_logged_out_oidc_configuration_remains_available(
+    session,
+    settings,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        streamlit_app.st,
+        "user",
+        SimpleNamespace(is_logged_in=False),
+    )
+
+    state = streamlit_app.authenticate(session, settings)
+
+    assert state.actor is None
+    assert state.oidc_available is True
+    assert state.error is None
+
+
 def test_public_and_authenticated_navigation_expose_account_routes(
     session,
     settings,

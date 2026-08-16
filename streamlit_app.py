@@ -91,6 +91,7 @@ class AuthenticationState:
     actor: User | None
     error: str | None = None
     oidc_logged_in: bool = False
+    oidc_available: bool = True
 
 
 def show_operation_error(context: str, error: Exception) -> None:
@@ -177,6 +178,23 @@ def _oidc_value(name: str) -> str | None:
     return str(value) if value else None
 
 
+def _oidc_login_state() -> bool | None:
+    """Return the Streamlit login state, or ``None`` when OIDC is absent."""
+
+    try:
+        value = getattr(st.user, "is_logged_in")
+    except (AttributeError, KeyError):
+        try:
+            value = st.user.get("is_logged_in")
+        except Exception:
+            return None
+    except Exception:
+        return None
+    if value is None:
+        return None
+    return bool(value)
+
+
 def authenticate(session, settings: Settings) -> AuthenticationState:
     """Resolve an existing session without implicitly logging anyone in."""
 
@@ -193,7 +211,14 @@ def authenticate(session, settings: Settings) -> AuthenticationState:
             )
         return AuthenticationState(actor=actor)
 
-    if not st.user.is_logged_in:
+    oidc_login_state = _oidc_login_state()
+    if oidc_login_state is None:
+        return AuthenticationState(
+            actor=None,
+            error="Login indisponível: autenticação Google não configurada.",
+            oidc_available=False,
+        )
+    if not oidc_login_state:
         return AuthenticationState(actor=None)
 
     email = _oidc_value("email")
@@ -242,6 +267,7 @@ def login_view(
     *,
     auth_error: str | None = None,
     oidc_logged_in: bool = False,
+    oidc_available: bool = True,
 ) -> None:
     st.header("Entrar")
     with st.container(border=True, key="login_card"):
@@ -275,6 +301,13 @@ def login_view(
             if submitted:
                 st.session_state["demo_user_id"] = selected_id
                 st.rerun()
+            return
+
+        if not oidc_available:
+            st.info(
+                "O administrador deve configurar o provedor Google ou ativar "
+                "explicitamente o modo demo em um ambiente não produtivo."
+            )
             return
 
         if oidc_logged_in:
@@ -361,6 +394,7 @@ def _public_routes(
                 settings,
                 auth_error=auth_state.error,
                 oidc_logged_in=auth_state.oidc_logged_in,
+                oidc_available=auth_state.oidc_available,
             ),
         ),
     ]
