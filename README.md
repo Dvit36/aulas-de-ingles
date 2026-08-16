@@ -144,6 +144,16 @@ english-leaderboard analyze-image \
   "inputs/WhatsApp Image 2026-08-13 at 23.21.52.jpeg"
 ```
 
+## Streamlit Community Cloud
+
+Ao criar a aplicação no Community Cloud, selecione **Python 3.12** em
+**Advanced settings**. O arquivo `packages.txt` instala `libgl1`, exigido pelo
+OpenCV trazido pelo RapidOCR no ambiente Linux. Para uma demo descartável, use
+`APP_ENV=development` e `DEMO_AUTH_ENABLED=true` nos Secrets da aplicação.
+
+O SQLite e os uploads locais não têm persistência garantida no Community Cloud;
+para uso contínuo, prefira o Docker Compose com o volume `/data` descrito abaixo.
+
 ## Docker Compose
 
 ```bash
