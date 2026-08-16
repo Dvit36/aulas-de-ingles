@@ -35,7 +35,7 @@
 - [x] Criar fila, detalhe da análise, decisões e telas administrativas.
 - [x] Criar leaderboard, ledger e downloads CSV/XLSX.
 - [x] Substituir a sidebar por navegação nativa na barra superior.
-- [x] Expor **Início/Entrar** antes do login e rotas do papel + **Minha conta** depois do login.
+- [x] Expor somente **Entrar** antes do login e rotas do papel + **Minha conta** depois do login.
 - [x] Concluir responsividade até `768px`, com colunas empilhadas, barra superior sem gaveta lateral e controles de toque de no mínimo `44px`.
 - [x] Criar espelho idempotente e opcional no Google Sheets após commit.
 

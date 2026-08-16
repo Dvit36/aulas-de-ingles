@@ -63,7 +63,6 @@ APP_ROOT = Path(__file__).resolve().parent
 BRAND_ASSETS = APP_ROOT / "assets" / "brand"
 BRAND_MARK = BRAND_ASSETS / "logo-mark.png"
 BRAND_WORDMARK = BRAND_ASSETS / "logo-wordmark.png"
-BRAND_FULL = BRAND_ASSETS / "logo-full.png"
 
 
 st.set_page_config(
@@ -259,23 +258,6 @@ def authenticate(session, settings: Settings) -> AuthenticationState:
     return AuthenticationState(actor=user, oidc_logged_in=True)
 
 
-def public_home_view() -> None:
-    st.header("English Activities")
-    with st.container(border=True, key="public_hero"):
-        visual, content = st.columns([1, 2], vertical_alignment="center")
-        visual.image(str(BRAND_FULL), width="stretch")
-        content.markdown(
-            '<span class="hero-kicker">Temporada 2026</span>',
-            unsafe_allow_html=True,
-        )
-        content.subheader("Aprender, comprovar e evoluir")
-        content.write(
-            "Envie atividades de inglês, acompanhe seu progresso e veja a "
-            "classificação da equipe Robonáticos #7565 em um único lugar."
-        )
-        st.info("Use a opção **Entrar** no menu superior para acessar sua conta.")
-
-
 def login_view(
     session,
     settings: Settings,
@@ -416,12 +398,6 @@ def _public_routes(
     session, settings: Settings, auth_state: AuthenticationState
 ) -> list[PageRoute]:
     return [
-        PageRoute(
-            "Início",
-            "home",
-            ":material/home:",
-            public_home_view,
-        ),
         PageRoute(
             "Entrar",
             "login",

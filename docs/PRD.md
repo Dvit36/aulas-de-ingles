@@ -11,7 +11,7 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 
 ## Fluxos principais
 
-1. Sem autenticação, a pessoa acessa somente as páginas públicas **Início** e **Entrar** pela navegação superior.
+1. Sem autenticação, a pessoa acessa diretamente a página pública **Entrar** pela navegação superior.
 2. Na página **Entrar**, produção inicia Google OIDC por ação explícita; no modo demo, escolher uma identidade não basta — é necessário clicar em **Entrar**.
 3. Depois da autenticação, a navegação mostra as rotas permitidas pelo papel e **Minha conta**, que concentra identidade e logout.
 4. O aluno autenticado escolhe uma atividade, informa campos exigidos e envia uma ou mais imagens.
@@ -55,7 +55,7 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 
 ## Escopo do MVP
 
-- Área pública com **Início** e **Entrar**, Google OIDC explícito e modo demo local com confirmação explícita.
+- Área pública com **Entrar**, Google OIDC explícito e modo demo local com confirmação explícita.
 - Papéis `student` e `admin`, allowlist e autorização também na camada de serviço.
 - Cadastro/edição de usuários e catálogo.
 - Submissão multi-imagem, OCR local, validações, duplicidade e fila de revisão.
@@ -98,6 +98,6 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 13. Testes automatizados obrigatórios passam sem internet ou API externa.
 14. O README contém o caminho completo da execução local e por Docker/VPS.
 15. Com a integração habilitada, um commit atualiza o snapshot do Sheets; uma falha da API preserva o dado local e pode ser reconciliada sem duplicação.
-16. Usuário deslogado vê apenas **Início** e **Entrar** na navegação superior; após login, vê as rotas do seu papel e **Minha conta**.
+16. Usuário deslogado vê apenas **Entrar** na navegação superior; após login, vê as rotas do seu papel e **Minha conta**.
 17. Selecionar uma identidade demo sem clicar em **Entrar** não autentica; o logout em **Minha conta** encerra a sessão demo ou OIDC.
 18. Em viewport de até `768px`, colunas são empilhadas, conteúdo não exige zoom e controles de toque têm pelo menos `44px` de altura.

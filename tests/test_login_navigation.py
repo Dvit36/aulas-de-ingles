@@ -71,13 +71,13 @@ def test_public_and_authenticated_navigation_expose_account_routes(
     admin = streamlit_app._admin_routes(session, users[Role.ADMIN], settings)
     student = streamlit_app._student_routes(session, users[Role.STUDENT], settings)
 
-    assert [route.label for route in public] == ["Início", "Entrar"]
+    assert [route.label for route in public] == ["Entrar"]
     assert streamlit_app._account_route(users[Role.ADMIN], settings).label == "Minha conta"
     assert {route.label for route in admin} >= {"Visão geral", "Revisões", "Relatórios"}
     assert {route.label for route in student} >= {"Início", "Enviar", "Ranking"}
     assert "Entrar" not in {route.label for route in admin}
     assert "Entrar" not in {route.label for route in student}
-    assert {route.url_path for route in public} == {"home", "login"}
+    assert {route.url_path for route in public} == {"login"}
 
 
 def test_navigation_uses_hidden_router_and_visible_page_links(monkeypatch) -> None:
@@ -122,7 +122,6 @@ def test_navigation_uses_hidden_router_and_visible_page_links(monkeypatch) -> No
     monkeypatch.setattr(streamlit_app.st, "markdown", lambda *args, **kwargs: None)
 
     routes = [
-        streamlit_app.PageRoute("Início", "home", ":material/home:", lambda: None),
         streamlit_app.PageRoute("Entrar", "login", ":material/login:", lambda: None),
     ]
     streamlit_app._run_navigation(routes)
@@ -144,6 +143,6 @@ def test_navigation_uses_hidden_router_and_visible_page_links(monkeypatch) -> No
             "gap": "small",
         },
     ]
-    assert [link[1]["label"] for link in calls["links"]] == ["Início", "Entrar"]
+    assert [link[1]["label"] for link in calls["links"]] == ["Entrar"]
     assert len(calls["images"]) == 1
     assert calls["ran"] is True

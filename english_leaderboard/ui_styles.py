@@ -209,7 +209,6 @@ main img,
   box-shadow: var(--robo-shadow);
 }
 
-.st-key-public_hero,
 .st-key-login_card,
 .st-key-account_card {
   padding: clamp(1rem, 2.5vw, 2rem) !important;
@@ -219,7 +218,6 @@ main img,
   box-shadow: var(--robo-shadow) !important;
 }
 
-.st-key-public_hero [data-testid="stVerticalBlockBorderWrapper"],
 .st-key-login_card [data-testid="stVerticalBlockBorderWrapper"] {
   padding: clamp(0.35rem, 1vw, 0.9rem);
 }
@@ -231,7 +229,6 @@ main img,
   margin-inline: auto;
 }
 
-.st-key-public_hero .hero-kicker,
 .st-key-login_card .login-kicker {
   display: inline-block;
   margin-bottom: 0.25rem;

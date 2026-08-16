@@ -14,7 +14,7 @@ Streamlit UI -> Auth/Services -> Rules + OCR + Scoring
 
 `DATABASE_URL` seleciona SQLite hoje e permite um dialeto Postgres no futuro sem alterar regras de domínio. Para SQLite são habilitados foreign keys, busy timeout e WAL.
 
-A navegação usa `st.Page` com `st.navigation(position="hidden")` como roteador e uma barra própria de `st.page_link` sempre visível; o projeto requer Streamlit `>=1.50`. Assim, o celular não converte o menu em uma gaveta lateral. Sem autenticação, o roteador expõe apenas **Início** e **Entrar**. Depois da autenticação, monta as rotas do papel (`student` ou `admin`) e acrescenta **Minha conta**, sem controles na sidebar.
+A navegação usa `st.Page` com `st.navigation(position="hidden")` como roteador e uma barra própria de `st.page_link` sempre visível; o projeto requer Streamlit `>=1.50`. Assim, o celular não converte o menu em uma gaveta lateral. Sem autenticação, o roteador abre apenas **Entrar**. Depois da autenticação, monta as rotas do papel (`student` ou `admin`) e acrescenta **Minha conta**, sem controles na sidebar.
 
 ## Interface e responsividade
 

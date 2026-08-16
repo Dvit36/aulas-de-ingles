@@ -6,7 +6,7 @@ O MVP foi desenhado para cerca de 15 alunos em uma única máquina. Não usa API
 
 ## O que está incluído
 
-- páginas públicas **Início** e **Entrar** em uma barra de navegação superior, sem menu lateral;
+- página pública **Entrar** em uma barra de navegação superior, sem menu lateral;
 - login OIDC explícito com Google e allowlist de e-mails, iniciado somente pela página **Entrar**;
 - modo demo local com escolha de identidade e clique explícito em **Entrar**, bloqueado em produção;
 - depois do login, rotas permitidas pelo papel e a página **Minha conta** com identidade e logout;
@@ -73,7 +73,7 @@ Alunos importados recebem inicialmente e-mails locais `@local.invalid`. Antes do
 - A interface segue a identidade visual Robonáticos #7565: cabeçalho carvão,
   amarelo e vermelho da equipe, títulos condensados, contornos fortes e sombras
   sólidas. Os logos versionados ficam em `assets/brand/`.
-- Sem autenticação, a barra superior mostra somente **Início** e **Entrar**.
+- Sem autenticação, o aplicativo abre diretamente em **Entrar**.
 - Depois da autenticação, ela mostra as páginas autorizadas para `student` ou `admin` e acrescenta **Minha conta**.
 - **Minha conta** exibe nome, e-mail e papel e concentra a saída da sessão demo ou OIDC.
 - Em viewport móvel de até `768px`, os layouts com várias colunas devem ser empilhados verticalmente.
