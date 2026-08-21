@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from conftest import FakeDuolingoOCR, make_png
 from sqlalchemy import func, select
 
 from english_leaderboard.authz import AuthorizationError
@@ -20,8 +21,6 @@ from english_leaderboard.services import (
     review_submission,
     submit_evidence,
 )
-
-from conftest import FakeDuolingoOCR, make_png
 
 
 def _activity(session, code):
@@ -87,16 +86,20 @@ def test_phash_only_match_goes_to_review(session, users, settings):
     )
     session.commit()
     assert result.status == SubmissionStatus.NEEDS_REVIEW
-    assert session.scalar(
-        select(func.count(DuplicateMatch.id)).where(DuplicateMatch.kind == DuplicateKind.SIMILAR)
-    ) >= 1
+    assert (
+        session.scalar(
+            select(func.count(DuplicateMatch.id)).where(
+                DuplicateMatch.kind == DuplicateKind.SIMILAR
+            )
+        )
+        >= 1
+    )
     with pytest.raises(ValueError, match="no máximo uma unidade"):
         review_submission(
             session,
             actor=users[Role.ADMIN],
             submission_id=result.submission_id,
             approve=True,
-            reason="Tentativa de correção excessiva",
             recognized_units=2,
         )
 
@@ -128,12 +131,16 @@ def test_exact_duplicate_is_compared_across_students(session, users, settings):
     session.commit()
     assert result.status == SubmissionStatus.REJECTED
     match = session.scalar(
-        select(DuplicateMatch).where(DuplicateMatch.kind == DuplicateKind.EXACT).order_by(DuplicateMatch.created_at.desc())
+        select(DuplicateMatch)
+        .where(DuplicateMatch.kind == DuplicateKind.EXACT)
+        .order_by(DuplicateMatch.created_at.desc())
     )
     assert match.same_student is False
 
 
-def test_manual_approval_updates_leaderboard_and_rejection_does_not(session, users, settings):
+def test_manual_approval_updates_leaderboard_and_rejection_does_not(
+    session, users, settings
+):
     student = users[Role.STUDENT]
     admin = users[Role.ADMIN]
     activity = _activity(session, "impact_summary")
@@ -153,7 +160,6 @@ def test_manual_approval_updates_leaderboard_and_rejection_does_not(session, use
         actor=admin,
         submission_id=pending.submission_id,
         approve=True,
-        reason="Resumo e comprovante conferidos",
     )
     session.commit()
     assert approved.points_created == 10
@@ -174,7 +180,6 @@ def test_manual_approval_updates_leaderboard_and_rejection_does_not(session, use
         actor=admin,
         submission_id=second.submission_id,
         approve=False,
-        reason="Comprovante não corresponde à atividade",
     )
     session.commit()
     assert student_total(session, student.id) == 10

@@ -136,12 +136,40 @@ def test_public_and_authenticated_navigation_expose_account_routes(
         streamlit_app._account_route(session, users[Role.ADMIN], settings).label
         == "Minha conta"
     )
-    assert {route.label for route in admin} >= {"Visão geral", "Envios", "Relatórios"}
+    assert {route.label for route in admin} == {
+        "Visão geral",
+        "Envios",
+        "Alunos",
+        "Catálogo",
+    }
+    assert "Relatórios" not in {route.label for route in admin}
+    assert "Lembretes" not in {route.label for route in admin}
     assert "Reuniões" not in {route.label for route in admin}
     assert {route.label for route in student} >= {"Início", "Enviar", "Ranking"}
     assert "Entrar" not in {route.label for route in admin}
     assert "Entrar" not in {route.label for route in student}
     assert {route.url_path for route in public} == {"root"}
+
+
+def test_review_dropdown_groups_submission_statuses() -> None:
+    statuses = streamlit_app.SubmissionStatus
+    assert streamlit_app._review_statuses("needs_review") == {statuses.NEEDS_REVIEW}
+    assert streamlit_app._review_statuses("approved") == {
+        statuses.APPROVED_AUTO,
+        statuses.APPROVED_MANUAL,
+    }
+    assert streamlit_app._review_statuses("rejected") == {statuses.REJECTED}
+    assert streamlit_app._review_statuses("all") == set(statuses)
+
+
+def test_student_metrics_exclude_administrator_accounts() -> None:
+    accounts = [
+        SimpleNamespace(role=Role.ADMIN, active=True, archived_at=None),
+        SimpleNamespace(role=Role.STUDENT, active=True, archived_at=None),
+        SimpleNamespace(role=Role.STUDENT, active=False, archived_at=None),
+        SimpleNamespace(role=Role.STUDENT, active=False, archived_at=object()),
+    ]
+    assert streamlit_app._student_account_counts(accounts) == (1, 1, 1)
 
 
 def test_registered_navigation_is_stable_across_authentication_states(
@@ -170,8 +198,6 @@ def test_registered_navigation_is_stable_across_authentication_states(
         "submissions",
         "users",
         "catalog",
-        "ledger",
-        "reminders",
         "submit",
         "history",
         "leaderboard",
@@ -206,8 +232,6 @@ def test_visible_navigation_changes_without_changing_registered_pages(
         "Envios",
         "Alunos",
         "Catálogo",
-        "Relatórios",
-        "Lembretes",
         "Minha conta",
     ]
     assert [
@@ -411,8 +435,7 @@ def test_command_handoff_registers_router_before_rerun_without_rendering(
     monkeypatch.setattr(
         streamlit_app.st,
         "navigation",
-        lambda _pages, *, position: events.append(f"navigation:{position}")
-        or selected,
+        lambda _pages, *, position: events.append(f"navigation:{position}") or selected,
     )
 
     class RerunRequested(RuntimeError):

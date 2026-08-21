@@ -152,8 +152,10 @@ internos e nomes físicos não são mostrados.
 
 ## Lembretes por e-mail
 
-Lembretes começam desativados e `REMINDER_DRY_RUN=true`. O administrador configura
-frequência, dia, hora, fuso, inatividade, assunto, modelo e opt-out individual.
+Lembretes começam desativados e `REMINDER_DRY_RUN=true`. A infraestrutura e os
+registros existentes permanecem preservados, mas a página **Lembretes** não é
+exposta na navegação administrativa. Configurações já existentes continuam sendo
+respeitadas pelo processo independente.
 Defina `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`,
 `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME` e `SMTP_USE_TLS`. Para um ciclo manual:
 

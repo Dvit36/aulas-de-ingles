@@ -41,7 +41,7 @@ A navegação usa um registro estável de `st.Page` com `st.navigation(position=
 
 - `users`: e-mail único, nome, papel, ativo.
 - `activities`: código único, nome, pontos atuais, limiar de unidades, requisitos e configuração JSON, ativo.
-- `submissions`: aluno, atividade, recebimento no servidor, campos textuais, OCR consolidado, plataforma, confiança, unidades, estado, justificativa e snapshot da regra.
+- `submissions`: aluno, atividade, recebimento no servidor, campos textuais, OCR consolidado, plataforma, confiança, unidades, estado, observação administrativa histórica opcional e snapshot da regra. Novas decisões não exigem observação textual.
 - `submission_images`: chave aleatória, MIME real, dimensões, tamanho, SHA-256 e pHash.
 - `rule_checks`: resultado individual, obrigatoriedade, score e detalhes.
 - `duplicate_matches`: imagem comparada, tipo (`exact`/`similar`) e distância perceptual.
@@ -54,7 +54,7 @@ A navegação usa um registro estável de `st.Page` com `st.navigation(position=
 - `submission_files`: metadados e texto extraído de imagens/PDF/DOCX/TXT.
 - `auth_sessions`: sessões opacas, expiração e revogação.
 - `reminder_configuration` e `email_attempts`: configuração, deduplicação e auditoria de e-mail.
-- `audit_logs`: ator, ação, entidade, antes/depois e motivo.
+- `audit_logs`: ator, ação, entidade, antes/depois e motivo histórico opcional; novas operações administrativas podem registrar `NULL` nesse campo.
 - `import_runs` e `import_records`: relatório e chaves externas idempotentes.
 
 Totais não são persistidos como fonte de verdade. `submissions.points_awarded` é apenas o efeito daquela decisão; leaderboard e saldo vêm de `SUM(ledger_transactions.points)`.

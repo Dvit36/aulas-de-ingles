@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from inspect import signature
+
 import pytest
 from sqlalchemy import select
 
@@ -8,10 +10,29 @@ from english_leaderboard.services import (
     archive_or_delete_activity,
     archive_or_delete_user,
     create_activity,
+    create_points_adjustment,
     create_user_account,
+    reset_user_password,
+    review_submission,
     save_activity_changes,
     save_user,
+    set_activity_active,
 )
+
+
+def test_administrative_operations_do_not_accept_reason_parameters() -> None:
+    for operation in (
+        review_submission,
+        save_activity_changes,
+        save_user,
+        reset_user_password,
+        archive_or_delete_user,
+        archive_or_delete_activity,
+        create_activity,
+        create_points_adjustment,
+        create_user_account,
+    ):
+        assert "reason" not in signature(operation).parameters
 
 
 def test_user_create_disable_reactivate_and_delete(session, users) -> None:
@@ -21,7 +42,6 @@ def test_user_create_disable_reactivate_and_delete(session, users) -> None:
         actor=admin,
         email="new@example.org",
         display_name="New Student",
-        reason="Novo integrante",
     )
     session.commit()
     assert account.must_change_password is True
@@ -35,7 +55,6 @@ def test_user_create_disable_reactivate_and_delete(session, users) -> None:
         role=Role.STUDENT,
         active=False,
         user_id=account.id,
-        reason="Pausa temporária",
     )
     assert account.active is False
     save_user(
@@ -46,7 +65,6 @@ def test_user_create_disable_reactivate_and_delete(session, users) -> None:
         role=Role.STUDENT,
         active=True,
         user_id=account.id,
-        reason="Retorno à equipe",
     )
     assert account.active is True
     assert (
@@ -54,7 +72,6 @@ def test_user_create_disable_reactivate_and_delete(session, users) -> None:
             session,
             actor=admin,
             user_id=account.id,
-            reason="Cadastro criado para teste",
         )
         == "deleted"
     )
@@ -83,7 +100,6 @@ def test_activity_delete_is_logical_when_history_exists(session, users) -> None:
         session,
         actor=admin,
         activity_id=activity.id,
-        reason="Atividade encerrada",
     )
     session.commit()
     assert result == "archived"
@@ -104,24 +120,18 @@ def test_unused_activity_can_be_deleted_and_inactive_can_be_reactivated(
         name="Atividade temporária",
         points=8,
     )
-    save_activity_changes(
+    set_activity_active(
         session,
         actor=admin,
         activity_id=activity.id,
-        name=activity.name,
-        points=activity.points,
         active=False,
-        reason="Pausa",
     )
     assert activity.active is False
-    save_activity_changes(
+    set_activity_active(
         session,
         actor=admin,
         activity_id=activity.id,
-        name=activity.name,
-        points=activity.points,
         active=True,
-        reason="Retomada",
     )
     assert activity.active is True
     assert (
@@ -129,7 +139,6 @@ def test_unused_activity_can_be_deleted_and_inactive_can_be_reactivated(
             session,
             actor=admin,
             activity_id=activity.id,
-            reason="Não será utilizada",
         )
         == "deleted"
     )
@@ -150,5 +159,16 @@ def test_core_lesson_points_and_threshold_are_not_editable(session, users) -> No
             points=99,
             unit_threshold=1,
             active=True,
-            reason="Tentativa inválida",
+        )
+
+
+def test_core_lesson_activity_cannot_be_deleted(session, users) -> None:
+    activity = session.scalar(
+        select(Activity).where(Activity.code == "duolingo_beconfident")
+    )
+    with pytest.raises(ValueError, match="não pode ser excluída"):
+        archive_or_delete_activity(
+            session,
+            actor=users[Role.ADMIN],
+            activity_id=activity.id,
         )

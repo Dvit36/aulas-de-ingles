@@ -22,16 +22,19 @@ def test_responsive_css_contains_required_mobile_behaviour() -> None:
     assert "overflow-x: auto" in css
     assert "max-width: 100%" in css
     assert ".stButton > button" in css
-    assert "[data-testid=\"stLinkButton\"]" in css
-    assert "[data-testid=\"stFileUploaderDropzone\"]" in css
-    assert "[data-testid=\"stDataFrame\"]" in css
-    assert "[data-testid=\"stImage\"] img" in css
+    assert '[data-testid="stLinkButton"]' in css
+    assert '[data-testid="stFileUploaderDropzone"]' in css
+    assert '[data-testid="stDataFrame"]' in css
+    assert '[data-testid="stImage"] img' in css
     assert "padding-top" not in css
     assert ".st-key-top_nav" in css
-    assert 'flex-flow: row wrap' in css
-    assert 'min-height: var(--app-touch-target)' in css
-    assert 'width: 100% !important' in css
+    assert "flex-flow: row wrap" in css
+    assert "min-height: var(--app-touch-target)" in css
+    assert "width: 100% !important" in css
     assert '[data-testid="stFileUploaderDropzone"] button' in css
+    assert "st-key-review_evidence_" in css
+    assert "st-key-duplicate_comparison_" in css
+    assert "max-height: min(32rem, 62vh)" in css
 
 
 def test_styles_apply_robonaticos_visual_identity() -> None:

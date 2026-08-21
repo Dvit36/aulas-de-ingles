@@ -7,7 +7,7 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 ## Usuários
 
 - **Aluno:** consulta catálogo, pontuação, posição e progresso; envia comprovantes; acompanha análise e decisões.
-- **Administrador:** revisa envios, corrige unidades, gerencia contas e catálogo, configura lembretes e consulta/exporta ledger e leaderboard.
+- **Administrador:** revisa envios, corrige unidades e gerencia contas e catálogo. O ledger continua sendo a fonte interna da pontuação.
 
 ## Fluxos principais
 
@@ -18,7 +18,7 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 5. O servidor valida o arquivo, armazena-o com nome aleatório, executa OCR local e aplica regras configuráveis.
 6. Evidência inequívoca e de alta confiança é aprovada; conteúdo subjetivo ou evidência ambígua vai para revisão; arquivo inválido ou duplicata exata comprovada é rejeitado.
 7. A aprovação cria unidades ou uma transação imutável no ledger. O leaderboard é sempre recalculado a partir do ledger.
-8. O administrador decide pendências com justificativa e auditoria; Reunião em inglês é uma atividade comum.
+8. O administrador decide pendências sem preencher justificativa; a decisão e o ator continuam registrados na auditoria. Reunião em inglês é uma atividade comum.
 9. Depois do commit local, a aplicação pode espelhar leaderboard e ledger em uma planilha Google administrativa; falhas externas não revertem o lançamento.
 
 ## Regras de negócio
@@ -61,8 +61,8 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 - Submissão de imagens/documentos, extração seletiva, validações, duplicidade e fila de revisão.
 - Ledger, grupos de cinco, atividades comuns, leaderboard geral/por período e progresso individual.
 - Histórico visual/auditoria, exportação XLSX, sincronização opcional com Google Sheets e importação idempotente da planilha legada.
-- Gestão ativa/inativa/arquivada e lembretes SMTP idempotentes em processo separado.
-- Navegação superior: rotas públicas antes do login; rotas dinâmicas pelo papel e **Minha conta** depois do login.
+- Gestão ativa/inativa/arquivada e infraestrutura de lembretes SMTP preservada em processo separado, sem página administrativa na navegação.
+- Navegação superior: rotas públicas antes do login; para administradores, **Visão geral**, **Envios**, **Alunos**, **Catálogo** e **Minha conta**. **Relatórios** e **Lembretes** não possuem rota visível.
 - Interface web responsiva: em até `768px`, colunas empilhadas e controles interativos com altura mínima de `44px`.
 - SQLite WAL, uploads persistentes, Docker Compose, health check, backup documentado e testes offline.
 

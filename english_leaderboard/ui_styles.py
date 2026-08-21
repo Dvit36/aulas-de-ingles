@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 _RESPONSIVE_CSS = r"""
 @import url('https://fonts.googleapis.com/css2?family=Arimo:wght@400;500;600;700&family=League+Spartan:wght@600;700;800&display=swap');
 
@@ -93,6 +92,13 @@ main img,
   max-width: 100%;
   height: auto;
   object-fit: contain;
+}
+
+[class*="st-key-review_evidence_"] [data-testid="stImage"] img,
+[class*="st-key-duplicate_comparison_"] [data-testid="stImage"] img {
+  width: 100%;
+  max-height: min(32rem, 62vh);
+  object-position: center;
 }
 
 /* Cabeçalho de marca e navegação superior */

@@ -105,9 +105,9 @@ def test_login_persistent_session_password_change_logout_and_expiry(
         settings=settings,
     )
     auth_session = session.scalar(
-        select(AuthSession).where(AuthSession.token_hash.is_not(None)).order_by(
-            AuthSession.created_at.desc()
-        )
+        select(AuthSession)
+        .where(AuthSession.token_hash.is_not(None))
+        .order_by(AuthSession.created_at.desc())
     )
     auth_session.expires_at = utcnow() - timedelta(seconds=1)
     session.commit()
@@ -133,8 +133,7 @@ def test_demo_and_local_sessions_cannot_cross_authentication_modes(
     assert resolve_auth_session(session, local_result.token, audience="demo") is None
     assert resolve_auth_session(session, demo_result.token) is None
     assert (
-        resolve_auth_session(session, demo_result.token, audience="demo").id
-        == user.id
+        resolve_auth_session(session, demo_result.token, audience="demo").id == user.id
     )
 
 
@@ -149,5 +148,4 @@ def test_last_active_admin_cannot_be_disabled(session, users) -> None:
             role=Role.ADMIN,
             active=False,
             user_id=admin.id,
-            reason="Teste de proteção",
         )

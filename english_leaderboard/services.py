@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -29,12 +30,17 @@ from .image_processing import (
     phash_distance,
     prepare_ocr_variants,
 )
+from .local_auth import (
+    generate_temporary_password,
+    revoke_all_user_sessions,
+    set_temporary_password,
+)
 from .models import (
     Activity,
     ApprovedEvidence,
     ApprovedFileEvidence,
-    AuthSession,
     AuditLog,
+    AuthSession,
     CheckOutcome,
     DuplicateKind,
     DuplicateMatch,
@@ -54,11 +60,6 @@ from .ocr import OCRExecutionError, OCRResult, create_ocr_engine, extract_text
 from .rules import AnalysisDecision, RuleResult, analyze_submission_rules
 from .scoring import AwardResult, award_approved_submission
 from .states import transition_submission
-from .local_auth import (
-    generate_temporary_password,
-    revoke_all_user_sessions,
-    set_temporary_password,
-)
 
 
 @dataclass(frozen=True)
@@ -326,7 +327,9 @@ def _record_duplicate_matches(
                     )
                 )
             else:
-                distance = phash_distance(current_analysis.phash, previous_analysis.phash)
+                distance = phash_distance(
+                    current_analysis.phash, previous_analysis.phash
+                )
                 if distance <= max_distance:
                     similar_flags[index] = True
                     session.add(
@@ -365,9 +368,7 @@ def submit_evidence(
         )
     total_upload_bytes = sum(len(upload.data) for upload in uploads)
     if total_upload_bytes > settings.max_upload_total_bytes:
-        raise ValueError(
-            "O conjunto de arquivos excede o limite total configurado"
-        )
+        raise ValueError("O conjunto de arquivos excede o limite total configurado")
 
     submission = Submission(
         student_id=actor.id,
@@ -728,13 +729,9 @@ def review_submission(
     actor: User,
     submission_id: str,
     approve: bool,
-    reason: str,
     recognized_units: int | None = None,
 ) -> ReviewResult:
     require_admin(actor)
-    justification = reason.strip()
-    if len(justification) < 3:
-        raise ValueError("Informe uma justificativa administrativa")
     submission = session.get(Submission, submission_id)
     if submission is None:
         raise LookupError("Submissão não encontrada")
@@ -751,7 +748,11 @@ def review_submission(
     award = AwardResult()
     if approve:
         if activity.code == "duolingo_beconfident":
-            units = submission.recognized_units if recognized_units is None else recognized_units
+            units = (
+                submission.recognized_units
+                if recognized_units is None
+                else recognized_units
+            )
             if units < 1:
                 raise ValueError("Aprovação de lições exige ao menos uma unidade")
             image_count = int(
@@ -763,7 +764,9 @@ def review_submission(
                 or 0
             )
             if units > image_count:
-                raise ValueError("Cada imagem única pode representar no máximo uma unidade")
+                raise ValueError(
+                    "Cada imagem única pode representar no máximo uma unidade"
+                )
             submission.recognized_units = units
         else:
             submission.recognized_units = 1
@@ -771,7 +774,7 @@ def review_submission(
             submission,
             SubmissionStatus.APPROVED_MANUAL,
             decided_by_id=actor.id,
-            reason=justification,
+            reason=None,
         )
         _claim_approved_evidence(session, submission)
         award = award_approved_submission(session, submission, actor_id=actor.id)
@@ -782,7 +785,7 @@ def review_submission(
             submission,
             SubmissionStatus.REJECTED,
             decided_by_id=actor.id,
-            reason=justification,
+            reason=None,
         )
         action = "submission_rejected_manual"
     add_audit(
@@ -791,7 +794,7 @@ def review_submission(
         action=action,
         entity_type="submission",
         entity_id=submission.id,
-        reason=justification,
+        reason=None,
         before=before,
         after={
             "status": submission.status.value,
@@ -809,7 +812,11 @@ def review_submission(
 
 
 def cancel_submission(
-    session: Session, *, actor: User, submission_id: str, reason: str = "Cancelada pelo aluno"
+    session: Session,
+    *,
+    actor: User,
+    submission_id: str,
+    reason: str = "Cancelada pelo aluno",
 ) -> Submission:
     submission = session.get(Submission, submission_id)
     if submission is None:
@@ -847,20 +854,15 @@ def save_activity_changes(
     requires_title_or_url: bool | None = None,
     content_review_required: bool | None = None,
     auto_approvable: bool | None = None,
-    reason: str | None = None,
 ) -> Activity:
     require_admin(actor)
-    justification = (reason or "").strip()
-    if len(justification) < 3:
-        raise ValueError("Informe o motivo da alteração")
     activity = session.get(Activity, activity_id)
     if activity is None:
         raise LookupError("Atividade não encontrada")
     if points <= 0:
         raise ValueError("Pontos devem ser positivos")
     if activity.code == "duolingo_beconfident" and (
-        int(points) != 5
-        or (unit_threshold is not None and int(unit_threshold) != 5)
+        int(points) != 5 or (unit_threshold is not None and int(unit_threshold) != 5)
     ):
         raise ValueError(
             "Duolingo/BeConfident possui política fixa de 5 pontos a cada 5 lições"
@@ -903,7 +905,7 @@ def save_activity_changes(
         action="activity_updated",
         entity_type="activity",
         entity_id=activity.id,
-        reason=justification,
+        reason=None,
         before=before,
         after={
             "name": activity.name,
@@ -917,6 +919,35 @@ def save_activity_changes(
             "content_review_required": activity.content_review_required,
             "auto_approvable": activity.auto_approvable,
         },
+    )
+    return activity
+
+
+def set_activity_active(
+    session: Session,
+    *,
+    actor: User,
+    activity_id: str,
+    active: bool,
+) -> Activity:
+    """Toggle an activity from the catalog's single source-of-truth checkbox."""
+
+    require_admin(actor)
+    activity = session.get(Activity, activity_id)
+    if activity is None:
+        raise LookupError("Atividade não encontrada")
+    if activity.archived_at is not None:
+        raise ValueError("Atividade arquivada não pode ser reativada")
+    before = {"active": activity.active}
+    activity.active = bool(active)
+    add_audit(
+        session,
+        actor_id=actor.id,
+        action="activity_activation_changed",
+        entity_type="activity",
+        entity_id=activity.id,
+        before=before,
+        after={"active": activity.active},
     )
     return activity
 
@@ -935,7 +966,6 @@ def create_activity(
     summary_min_chars: int = 0,
     content_review_required: bool = True,
     auto_approvable: bool = False,
-    reason: str = "Criação administrativa",
 ) -> Activity:
     require_admin(actor)
     normalized_code = "_".join(code.strip().lower().split())
@@ -968,7 +998,7 @@ def create_activity(
         action="activity_created",
         entity_type="activity",
         entity_id=activity.id,
-        reason=reason,
+        reason=None,
         after={"code": activity.code, "name": activity.name, "points": activity.points},
     )
     return activity
@@ -983,19 +1013,17 @@ def save_user(
     role: Role | str = Role.STUDENT,
     active: bool = True,
     user_id: str | None = None,
-    reason: str | None = None,
     reminders_enabled: bool | None = None,
 ) -> User:
     require_admin(actor)
-    justification = (reason or "").strip()
-    if len(justification) < 3:
-        raise ValueError("Informe o motivo da alteração")
     normalized = email.strip().lower()
     if "@" not in normalized:
         raise ValueError("E-mail inválido")
     requested_role = Role(role)
-    user = session.get(User, user_id) if user_id else session.scalar(
-        select(User).where(User.email == normalized)
+    user = (
+        session.get(User, user_id)
+        if user_id
+        else session.scalar(select(User).where(User.email == normalized))
     )
     before = None
     if user is None:
@@ -1019,8 +1047,10 @@ def save_user(
             "role": user.role.value,
             "active": user.active,
         }
-        if user.role == Role.ADMIN and user.active and (
-            requested_role != Role.ADMIN or not active
+        if (
+            user.role == Role.ADMIN
+            and user.active
+            and (requested_role != Role.ADMIN or not active)
         ):
             other_admins = int(
                 session.scalar(
@@ -1034,7 +1064,9 @@ def save_user(
                 or 0
             )
             if other_admins == 0:
-                raise ValueError("Não é permitido desativar o último administrador ativo")
+                raise ValueError(
+                    "Não é permitido desativar o último administrador ativo"
+                )
         user.email = normalized
         user.display_name = display_name.strip() or user.display_name
         user.role = requested_role
@@ -1051,7 +1083,7 @@ def save_user(
         action=action,
         entity_type="user",
         entity_id=user.id,
-        reason=justification,
+        reason=None,
         before=before,
         after={
             "display_name": user.display_name,
@@ -1070,7 +1102,6 @@ def create_user_account(
     email: str,
     display_name: str,
     role: Role | str = Role.STUDENT,
-    reason: str = "Cadastro administrativo",
 ) -> tuple[User, str]:
     require_admin(actor)
     normalized = email.strip().lower()
@@ -1084,7 +1115,6 @@ def create_user_account(
         display_name=display_name,
         role=role,
         active=True,
-        reason=reason,
     )
     set_temporary_password(session, user, temporary_password)
     return user, temporary_password
@@ -1095,11 +1125,8 @@ def reset_user_password(
     *,
     actor: User,
     user_id: str,
-    reason: str,
 ) -> str:
     require_admin(actor)
-    if len(reason.strip()) < 3:
-        raise ValueError("Informe o motivo da redefinição")
     user = session.get(User, user_id)
     if user is None or user.archived_at is not None:
         raise LookupError("Usuário não encontrado")
@@ -1111,7 +1138,7 @@ def reset_user_password(
         action="user_password_reset",
         entity_type="user",
         entity_id=user.id,
-        reason=reason.strip(),
+        reason=None,
     )
     return temporary_password
 
@@ -1121,12 +1148,8 @@ def archive_or_delete_user(
     *,
     actor: User,
     user_id: str,
-    reason: str,
 ) -> str:
     require_admin(actor)
-    justification = reason.strip()
-    if len(justification) < 3:
-        raise ValueError("Informe o motivo da exclusão ou arquivamento")
     user = session.get(User, user_id)
     if user is None:
         raise LookupError("Usuário não encontrado")
@@ -1150,7 +1173,9 @@ def archive_or_delete_user(
         int(value or 0)
         for value in (
             session.scalar(
-                select(func.count(Submission.id)).where(Submission.student_id == user.id)
+                select(func.count(Submission.id)).where(
+                    Submission.student_id == user.id
+                )
             ),
             session.scalar(
                 select(func.count(LedgerTransaction.id)).where(
@@ -1171,7 +1196,7 @@ def archive_or_delete_user(
         action="user_archived" if references else "user_deleted",
         entity_type="user",
         entity_id=user.id,
-        reason=justification,
+        reason=None,
         before={"active": user.active, "archived": user.archived_at is not None},
     )
     if references:
@@ -1188,15 +1213,15 @@ def archive_or_delete_activity(
     *,
     actor: User,
     activity_id: str,
-    reason: str,
 ) -> str:
     require_admin(actor)
-    justification = reason.strip()
-    if len(justification) < 3:
-        raise ValueError("Informe o motivo da exclusão ou arquivamento")
     activity = session.get(Activity, activity_id)
     if activity is None:
         raise LookupError("Atividade não encontrada")
+    if activity.code == "duolingo_beconfident":
+        raise ValueError(
+            "A atividade principal Duolingo/BeConfident não pode ser excluída"
+        )
     references = sum(
         int(value or 0)
         for value in (
@@ -1218,8 +1243,11 @@ def archive_or_delete_activity(
         action="activity_archived" if references else "activity_deleted",
         entity_type="activity",
         entity_id=activity.id,
-        reason=justification,
-        before={"active": activity.active, "archived": activity.archived_at is not None},
+        reason=None,
+        before={
+            "active": activity.active,
+            "archived": activity.archived_at is not None,
+        },
     )
     if references:
         activity.active = False
@@ -1235,14 +1263,10 @@ def create_points_adjustment(
     actor: User,
     student_id: str,
     points: int,
-    reason: str,
 ) -> LedgerTransaction:
     require_admin(actor)
-    justification = reason.strip()
     if not points:
         raise ValueError("O ajuste não pode ser zero")
-    if len(justification) < 3:
-        raise ValueError("Informe o motivo do ajuste")
     student = session.get(User, student_id)
     if student is None or student.role != Role.STUDENT:
         raise LookupError("Aluno não encontrado")
@@ -1254,7 +1278,7 @@ def create_points_adjustment(
         source_type="adjustment",
         source_id=adjustment_id,
         source_key=f"adjustment:{adjustment_id}",
-        description=justification,
+        description="Ajuste administrativo de pontos",
         created_by_id=actor.id,
     )
     session.add(transaction)
@@ -1265,7 +1289,7 @@ def create_points_adjustment(
         action="points_adjusted",
         entity_type="ledger_transaction",
         entity_id=transaction.id,
-        reason=justification,
+        reason=None,
         after={"student_id": student.id, "points": int(points)},
     )
     return transaction
@@ -1300,9 +1324,7 @@ def admin_ledger_rows(
     require_admin(actor)
     from .scoring import ledger_rows
 
-    return ledger_rows(
-        session, student_id=student_id, start=start, end=end
-    )
+    return ledger_rows(session, student_id=student_id, start=start, end=end)
 
 
 def admin_student_submissions(
@@ -1334,12 +1356,13 @@ __all__ = [
     "create_user_account",
     "get_submission_file_for_user",
     "get_submission_for_user",
-    "list_submissions",
     "list_review_queue",
+    "list_submissions",
+    "reset_user_password",
     "resolve_oidc_user",
     "review_submission",
-    "reset_user_password",
     "save_activity_changes",
     "save_user",
+    "set_activity_active",
     "submit_evidence",
 ]
