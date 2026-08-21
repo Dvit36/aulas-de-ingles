@@ -313,6 +313,28 @@ def weekly_lesson_count(
     )
 
 
+def weekly_submission_count(
+    session: Session, *, moment: datetime | None = None
+) -> int:
+    """Atividades recebidas na semana corrente, em qualquer estado.
+
+    Conta pelo relógio do servidor (`received_at`), não por datas que apareçam
+    nas imagens, e inclui rejeitadas e canceladas: a métrica é de volume de
+    envios chegando, não de pontuação.
+    """
+
+    start, end = week_bounds(moment)
+    return int(
+        session.scalar(
+            select(func.count(Submission.id)).where(
+                Submission.received_at >= start,
+                Submission.received_at < end,
+            )
+        )
+        or 0
+    )
+
+
 def students_meeting_weekly_goal(
     session: Session, goal: int, *, moment: datetime | None = None
 ) -> tuple[int, int]:

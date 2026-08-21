@@ -357,3 +357,32 @@ def test_gap_suggestions_scale_with_a_larger_distance(session, users):
     # 45 pontos: duas reuniões (30 cada) ou nove grupos de 5 lições.
     assert by_code["english_meeting"]["needed"] == 2
     assert by_code["duolingo_beconfident"]["needed"] == 45
+
+
+def test_weekly_submission_count_uses_server_clock_and_all_states(session, users):
+    from datetime import timedelta
+
+    from english_leaderboard.scoring import week_bounds, weekly_submission_count
+
+    student = users[Role.STUDENT]
+    activity = _activity(session, "english_meeting")
+    start, _ = week_bounds()
+    momentos = [
+        (start + timedelta(days=1), SubmissionStatus.APPROVED_MANUAL),
+        (start + timedelta(days=2), SubmissionStatus.REJECTED),
+        (start + timedelta(days=3), SubmissionStatus.NEEDS_REVIEW),
+        (start - timedelta(days=1), SubmissionStatus.APPROVED_MANUAL),  # semana passada
+    ]
+    for received_at, status in momentos:
+        session.add(
+            Submission(
+                student_id=student.id,
+                activity_id=activity.id,
+                status=status,
+                received_at=received_at,
+            )
+        )
+    session.commit()
+
+    # Rejeitadas e pendentes contam: a métrica é de volume recebido.
+    assert weekly_submission_count(session) == 3

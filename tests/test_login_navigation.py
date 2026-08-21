@@ -579,3 +579,21 @@ def test_runtime_cache_is_keyed_by_the_expected_schema() -> None:
     assert "runtime(_schema_fingerprint())" in inspect_module.getsource(
         streamlit_app.main
     )
+
+
+def test_admin_dashboard_shows_only_queue_and_weekly_submissions() -> None:
+    import inspect as inspect_module
+
+    source = inspect_module.getsource(streamlit_app.admin_dashboard)
+
+    assert 'st.columns(2)' in source
+    assert '"Fila de revisão"' in source
+    assert '"Atividades recebidas na semana"' in source
+    # Métricas retiradas do painel.
+    assert "Alunos ativos" not in source
+    assert "Transações no ledger" not in source
+    assert "Na meta desta semana" not in source
+    # A contagem de alunos na meta seguiu para dentro do editor de metas.
+    assert "students_meeting_weekly_goal" in inspect_module.getsource(
+        streamlit_app._weekly_goal_form
+    )

@@ -64,6 +64,7 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 - Submissão de imagens/documentos, extração seletiva, validações, duplicidade e fila de revisão.
 - Ledger, grupos de cinco, atividades comuns, leaderboard geral/por período e progresso individual.
 - Meta semanal de lições configurável e indicadores de distância para o próximo colocado com sugestões de atividades.
+- Painel administrativo enxuto: fila de revisão e atividades recebidas na semana. A adesão à meta fica no próprio editor de metas.
 - Aba **Recursos** com links de estudo publicados pela administração, visível para os dois papéis e editável apenas por administrador.
 - Histórico visual/auditoria, exportação XLSX, sincronização opcional com Google Sheets e importação idempotente da planilha legada.
 - Gestão ativa/inativa/arquivada e infraestrutura de lembretes SMTP preservada em processo separado, sem página administrativa na navegação.

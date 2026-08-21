@@ -49,7 +49,6 @@ from english_leaderboard.models import (
     AuditLog,
     DuplicateMatch,
     EmailAttempt,
-    LedgerTransaction,
     Resource,
     Role,
     Submission,
@@ -75,6 +74,7 @@ from english_leaderboard.scoring import (
     student_total,
     students_meeting_weekly_goal,
     weekly_lesson_count,
+    weekly_submission_count,
 )
 from english_leaderboard.services import (
     UploadPayload,
@@ -2389,30 +2389,19 @@ def admin_dashboard(session, actor: User | None = None) -> None:
         )
         or 0
     )
-    students = (
-        session.scalar(
-            select(func.count(User.id)).where(
-                User.role == Role.STUDENT, User.active.is_(True)
-            )
-        )
-        or 0
-    )
-    transactions = session.scalar(select(func.count(LedgerTransaction.id))) or 0
     configuration = get_goal_configuration(session)
-    goal = configuration.weekly_lesson_goal
-    reached, total_students = students_meeting_weekly_goal(session, goal)
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2 = st.columns(2)
     col1.metric("Fila de revisão", pending)
-    col2.metric("Alunos ativos", students)
-    col3.metric("Transações no ledger", transactions)
-    col4.metric("Na meta desta semana", f"{reached} de {total_students}")
+    col2.metric("Atividades recebidas na semana", weekly_submission_count(session))
     if actor is not None:
         _weekly_goal_form(session, actor, configuration)
     leaderboard_view(session, key_prefix="admin_dashboard")
 
 
 def _weekly_goal_form(session, actor: User, configuration) -> None:
-    with st.expander(f"Meta semanal: {configuration.weekly_lesson_goal} lições"):
+    goal = configuration.weekly_lesson_goal
+    reached, total_students = students_meeting_weekly_goal(session, goal)
+    with st.expander(f"Meta semanal: {goal} lições · {reached} de {total_students} na meta"):
         st.caption(
             "A meta orienta os alunos e aparece no painel deles. Ela não altera "
             "a pontuação: o ledger continua vindo apenas das aprovações."
