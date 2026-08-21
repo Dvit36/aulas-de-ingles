@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 import logging
 from pathlib import Path
-from urllib.parse import urlparse
 from uuid import uuid4
 
 import streamlit as st
@@ -100,22 +99,6 @@ render_global_styles(st)
 
 
 LOGGER = logging.getLogger("english_leaderboard.ui")
-KNOWN_ROUTE_PATHS = frozenset(
-    {
-        "overview",
-        "submissions",
-        "users",
-        "catalog",
-        "ledger",
-        "reminders",
-        "home",
-        "submit",
-        "history",
-        "leaderboard",
-        "account",
-        "change-password",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -236,18 +219,6 @@ def _oidc_login_state() -> bool | None:
     return bool(value)
 
 
-def _remember_requested_route() -> None:
-    """Keep a safe internal destination while an expired user signs in again."""
-
-    try:
-        raw_url = str(st.context.url)
-    except Exception:
-        return
-    path = urlparse(raw_url).path.rstrip("/").split("/")[-1]
-    if path in KNOWN_ROUTE_PATHS and path != "change-password":
-        st.session_state["post_login_route"] = path
-
-
 def authenticate(session, settings: Settings) -> AuthenticationState:
     """Resolve an existing session without implicitly logging anyone in."""
 
@@ -270,7 +241,6 @@ def authenticate(session, settings: Settings) -> AuthenticationState:
         token = request_cookie(st)
         actor = resolve_auth_session(session, token)
         if actor is None:
-            _remember_requested_route()
             if token:
                 forget_token(st)
             return AuthenticationState(actor=None)
@@ -315,6 +285,29 @@ def authenticate(session, settings: Settings) -> AuthenticationState:
             oidc_logged_in=True,
         )
     return AuthenticationState(actor=user, oidc_logged_in=True)
+
+
+def _flush_browser_session_bridge(
+    bridge_slot,
+    settings: Settings,
+    auth_state: AuthenticationState,
+) -> None:
+    """Apply a pending cookie change without shifting the page's delta tree."""
+
+    if st.session_state.get("clear_local_auth_cookie"):
+        render_cookie_bridge(bridge_slot, clear=True, secure=settings.is_production)
+        st.session_state.pop("clear_local_auth_cookie", None)
+        st.session_state.pop("local_auth_expires_at", None)
+        return
+    expires_value = st.session_state.get("local_auth_expires_at")
+    if auth_state.local_token and expires_value:
+        render_cookie_bridge(
+            bridge_slot,
+            token=auth_state.local_token,
+            expires_at=datetime.fromisoformat(str(expires_value)),
+            secure=settings.is_production,
+        )
+        st.session_state.pop("local_auth_expires_at", None)
 
 
 def login_view(
@@ -401,7 +394,6 @@ def login_view(
                     st.error(str(error))
                 else:
                     remember_token(st, result.token)
-                    st.session_state["post_login_ready"] = True
                     st.session_state["local_auth_expires_at"] = (
                         result.expires_at.isoformat()
                     )
@@ -520,11 +512,12 @@ def forced_password_change_view(session, actor: User, settings: Settings) -> Non
                 show_operation_error("change_password", error)
                 return
             forget_token(st)
-            render_cookie_bridge(st, clear=True, secure=settings.is_production)
             st.success("Senha alterada. Entre novamente com a nova senha.")
 
 
-def _password_change_route(session, actor: User, settings: Settings) -> PageRoute:
+def _password_change_route(
+    session, actor: User | None, settings: Settings
+) -> PageRoute:
     return PageRoute(
         "Trocar senha",
         "change-password",
@@ -533,7 +526,11 @@ def _password_change_route(session, actor: User, settings: Settings) -> PageRout
     )
 
 
-def _run_navigation(routes: Sequence[PageRoute]) -> None:
+def _run_navigation(
+    routes: Sequence[PageRoute],
+    *,
+    visible_routes: Sequence[PageRoute] | None = None,
+) -> None:
     """Render a role-specific, always-visible navigation bar above the page."""
 
     if not routes:
@@ -549,18 +546,9 @@ def _run_navigation(routes: Sequence[PageRoute]) -> None:
         for index, route in enumerate(routes)
     ]
     selected_page = st.navigation(pages, position="hidden")
-    if st.session_state.pop("post_login_ready", False):
-        destination = st.session_state.pop("post_login_route", None)
-        destination_page = next(
-            (
-                page
-                for page, route in zip(pages, routes, strict=True)
-                if route.url_path == destination
-            ),
-            None,
-        )
-        if destination_page is not None:
-            st.switch_page(destination_page)
+    pages_by_path = {
+        route.url_path: page for page, route in zip(pages, routes, strict=True)
+    }
     with st.container(
         key="brand_header",
         horizontal=True,
@@ -585,7 +573,8 @@ def _run_navigation(routes: Sequence[PageRoute]) -> None:
         vertical_alignment="center",
         gap="small",
     ):
-        for page, route in zip(pages, routes, strict=True):
+        for route in visible_routes or routes:
+            page = pages_by_path[route.url_path]
             st.page_link(
                 page,
                 label=route.label,
@@ -601,7 +590,7 @@ def _public_routes(
     return [
         PageRoute(
             "Entrar",
-            "login",
+            "root",
             ":material/login:",
             lambda: login_view(
                 session,
@@ -614,7 +603,7 @@ def _public_routes(
     ]
 
 
-def _account_route(session, actor: User, settings: Settings) -> PageRoute:
+def _account_route(session, actor: User | None, settings: Settings) -> PageRoute:
     return PageRoute(
         "Minha conta",
         "account",
@@ -623,11 +612,11 @@ def _account_route(session, actor: User, settings: Settings) -> PageRoute:
     )
 
 
-def _admin_routes(session, actor: User, settings: Settings) -> list[PageRoute]:
+def _admin_routes(session, actor: User | None, settings: Settings) -> list[PageRoute]:
     return [
         PageRoute(
             "Visão geral",
-            "overview",
+            "root",
             ":material/dashboard:",
             lambda: admin_dashboard(session),
         ),
@@ -664,11 +653,11 @@ def _admin_routes(session, actor: User, settings: Settings) -> list[PageRoute]:
     ]
 
 
-def _student_routes(session, actor: User, settings: Settings) -> list[PageRoute]:
+def _student_routes(session, actor: User | None, settings: Settings) -> list[PageRoute]:
     return [
         PageRoute(
             "Início",
-            "home",
+            "root",
             ":material/home:",
             lambda: student_dashboard(session, actor),
         ),
@@ -691,6 +680,156 @@ def _student_routes(session, actor: User, settings: Settings) -> list[PageRoute]
             lambda: leaderboard_view(session, key_prefix="student_page"),
         ),
     ]
+
+
+def _render_login_state(
+    session,
+    settings: Settings,
+    auth_state: AuthenticationState,
+) -> None:
+    login_view(
+        session,
+        settings,
+        auth_error=auth_state.error,
+        oidc_logged_in=auth_state.oidc_logged_in,
+        oidc_available=auth_state.oidc_available,
+    )
+
+
+def _root_view(
+    session,
+    settings: Settings,
+    auth_state: AuthenticationState,
+) -> None:
+    actor = auth_state.actor
+    if actor is None:
+        _render_login_state(session, settings, auth_state)
+    elif settings.local_auth_enabled and actor.must_change_password:
+        forced_password_change_view(session, actor, settings)
+    elif actor.role == Role.ADMIN:
+        admin_dashboard(session)
+    else:
+        student_dashboard(session, actor)
+
+
+def _guarded_route(
+    route: PageRoute,
+    *,
+    session,
+    settings: Settings,
+    auth_state: AuthenticationState,
+    allowed_roles: frozenset[Role],
+) -> PageRoute:
+    def render() -> None:
+        actor = auth_state.actor
+        if actor is None:
+            _render_login_state(session, settings, auth_state)
+            return
+        if settings.local_auth_enabled and actor.must_change_password:
+            forced_password_change_view(session, actor, settings)
+            return
+        if actor.role not in allowed_roles:
+            st.error("Você não tem acesso a esta página.")
+            _root_view(session, settings, auth_state)
+            return
+        route.render()
+
+    return PageRoute(route.label, route.url_path, route.icon, render)
+
+
+def _registered_routes(
+    session,
+    settings: Settings,
+    auth_state: AuthenticationState,
+) -> list[PageRoute]:
+    """Return the same page registry for anonymous, admin and student runs."""
+
+    actor = auth_state.actor
+    admin_routes = _admin_routes(session, actor, settings)
+    student_routes = _student_routes(session, actor, settings)
+    account_route = _account_route(session, actor, settings)
+    password_route = _password_change_route(session, actor, settings)
+    root_route = PageRoute(
+        "English Activities",
+        "root",
+        ":material/home:",
+        lambda: _root_view(session, settings, auth_state),
+    )
+    registered = [root_route]
+    registered.extend(
+        _guarded_route(
+            route,
+            session=session,
+            settings=settings,
+            auth_state=auth_state,
+            allowed_roles=frozenset({Role.ADMIN}),
+        )
+        for route in admin_routes[1:]
+    )
+    registered.extend(
+        _guarded_route(
+            route,
+            session=session,
+            settings=settings,
+            auth_state=auth_state,
+            allowed_roles=frozenset({Role.STUDENT}),
+        )
+        for route in student_routes[1:]
+    )
+    registered.append(
+        _guarded_route(
+            account_route,
+            session=session,
+            settings=settings,
+            auth_state=auth_state,
+            allowed_roles=frozenset({Role.ADMIN, Role.STUDENT}),
+        )
+    )
+
+    def render_password_page() -> None:
+        current_actor = auth_state.actor
+        if current_actor is None:
+            _render_login_state(session, settings, auth_state)
+        elif settings.local_auth_enabled and current_actor.must_change_password:
+            forced_password_change_view(session, current_actor, settings)
+        else:
+            account_view(session, current_actor, settings)
+
+    registered.append(
+        PageRoute(
+            password_route.label,
+            password_route.url_path,
+            password_route.icon,
+            render_password_page,
+        )
+    )
+    return registered
+
+
+def _visible_routes(
+    session,
+    settings: Settings,
+    auth_state: AuthenticationState,
+) -> list[PageRoute]:
+    actor = auth_state.actor
+    if actor is None:
+        return _public_routes(session, settings, auth_state)
+    if settings.local_auth_enabled and actor.must_change_password:
+        return [
+            PageRoute(
+                "Trocar senha",
+                "root",
+                ":material/password:",
+                lambda: forced_password_change_view(session, actor, settings),
+            )
+        ]
+    routes = (
+        _admin_routes(session, actor, settings)
+        if actor.role == Role.ADMIN
+        else _student_routes(session, actor, settings)
+    )
+    routes.append(_account_route(session, actor, settings))
+    return routes
 
 
 def leaderboard_view(session, *, key_prefix: str = "leaderboard") -> None:
@@ -1750,32 +1889,17 @@ def main() -> None:
         st.error(f"Configuração inválida: {error}")
         st.stop()
     with session_scope(factory) as session:
-        clear_cookie = bool(st.session_state.get("clear_local_auth_cookie"))
+        # This placeholder must exist at the same root delta path on every run.
+        # Filling an occasional iframe before the navigation shifts Streamlit's
+        # element tree and can leave old login forms attached after authentication.
+        browser_session_bridge = st.empty()
         auth_state = authenticate(session, settings)
-        if clear_cookie:
-            render_cookie_bridge(st, clear=True, secure=settings.is_production)
-            st.session_state.pop("clear_local_auth_cookie", None)
-        expires_value = st.session_state.pop("local_auth_expires_at", None)
-        if auth_state.local_token and expires_value:
-            render_cookie_bridge(
-                st,
-                token=auth_state.local_token,
-                expires_at=datetime.fromisoformat(str(expires_value)),
-                secure=settings.is_production,
-            )
-        actor = auth_state.actor
-        if actor is None:
-            _run_navigation(_public_routes(session, settings, auth_state))
-            return
-        if settings.local_auth_enabled and actor.must_change_password:
-            _run_navigation([_password_change_route(session, actor, settings)])
-            return
-        if actor.role == Role.ADMIN:
-            routes = _admin_routes(session, actor, settings)
-        else:
-            routes = _student_routes(session, actor, settings)
-        routes.append(_account_route(session, actor, settings))
-        _run_navigation(routes)
+        st.session_state.pop("post_login_ready", None)
+        st.session_state.pop("post_login_route", None)
+        registered_routes = _registered_routes(session, settings, auth_state)
+        visible_routes = _visible_routes(session, settings, auth_state)
+        _run_navigation(registered_routes, visible_routes=visible_routes)
+        _flush_browser_session_bridge(browser_session_bridge, settings, auth_state)
 
 
 if __name__ == "__main__":

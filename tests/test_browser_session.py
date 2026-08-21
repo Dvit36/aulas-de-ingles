@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from streamlit.testing.v1 import AppTest
 
+import streamlit_app
 from english_leaderboard.browser_session import (
     COOKIE_NAME,
     forget_token,
@@ -58,3 +60,60 @@ st.write("ponte renderizada")
     app.run(timeout=10)
     assert not app.exception
     assert app.markdown[0].value == "ponte renderizada"
+
+
+def test_pending_cookie_is_written_into_stable_slot_and_consumed(monkeypatch) -> None:
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    state = {"local_auth_expires_at": expires_at.isoformat()}
+    monkeypatch.setattr(streamlit_app.st, "session_state", state)
+    calls: list[tuple[object, dict[str, object]]] = []
+    monkeypatch.setattr(
+        streamlit_app,
+        "render_cookie_bridge",
+        lambda slot, **kwargs: calls.append((slot, kwargs)),
+    )
+    slot = object()
+    auth_state = streamlit_app.AuthenticationState(
+        actor=None,
+        local_token="opaque-token",
+    )
+
+    streamlit_app._flush_browser_session_bridge(
+        slot, SimpleNamespace(is_production=True), auth_state
+    )
+
+    assert calls == [
+        (
+            slot,
+            {
+                "token": "opaque-token",
+                "expires_at": expires_at,
+                "secure": True,
+            },
+        )
+    ]
+    assert "local_auth_expires_at" not in state
+
+
+def test_cookie_clear_takes_precedence_and_consumes_pending_state(monkeypatch) -> None:
+    state = {
+        "clear_local_auth_cookie": True,
+        "local_auth_expires_at": "must-not-be-used",
+    }
+    monkeypatch.setattr(streamlit_app.st, "session_state", state)
+    calls: list[tuple[object, dict[str, object]]] = []
+    monkeypatch.setattr(
+        streamlit_app,
+        "render_cookie_bridge",
+        lambda slot, **kwargs: calls.append((slot, kwargs)),
+    )
+    slot = object()
+
+    streamlit_app._flush_browser_session_bridge(
+        slot,
+        SimpleNamespace(is_production=True),
+        streamlit_app.AuthenticationState(actor=None, local_token="ignored"),
+    )
+
+    assert calls == [(slot, {"clear": True, "secure": True})]
+    assert state == {}
