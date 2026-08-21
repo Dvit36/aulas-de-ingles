@@ -58,7 +58,7 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 
 ## Escopo do MVP
 
-- Área pública com **Entrar**, autenticação local fechada, troca obrigatória de senha temporária e modo demo local opcional.
+- Área pública com **Entrar**, autenticação local fechada, troca obrigatória de senha temporária e modo demo local opcional. O aluno escolhe livremente a própria senha; o sistema recusa apenas senha vazia.
 - Papéis `student` e `admin`, allowlist e autorização também na camada de serviço.
 - Cadastro/edição de usuários por nome de usuário e catálogo, com confirmação explícita antes de excluir ou arquivar uma atividade.
 - Submissão de imagens/documentos, extração seletiva, validações, duplicidade e fila de revisão.

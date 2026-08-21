@@ -42,12 +42,15 @@ def _aware(value: datetime | None) -> datetime | None:
 
 
 def validate_password(password: str) -> None:
-    if len(password) < 10:
-        raise ValueError("A senha deve ter ao menos 10 caracteres")
-    if not any(character.isalpha() for character in password):
-        raise ValueError("A senha deve conter letras")
-    if not any(character.isdigit() for character in password):
-        raise ValueError("A senha deve conter números")
+    """Aceita qualquer senha escolhida pela pessoa, desde que exista uma.
+
+    Não há exigência de tamanho, letras ou números: a equipe decidiu que o
+    aluno escolhe a senha que quiser. A única recusa é a senha vazia, que não
+    é uma escolha e deixaria a conta sem credencial nenhuma.
+    """
+
+    if not password:
+        raise ValueError("Informe uma senha")
 
 
 def hash_password(password: str) -> str:
@@ -65,16 +68,16 @@ def verify_password(password_hash: str | None, password: str) -> bool:
 
 
 def generate_temporary_password(length: int = 16) -> str:
+    """Senha temporária gerada pelo sistema, entregue uma única vez.
+
+    Continua longa e aleatória mesmo sem exigência para a senha escolhida
+    depois: esta aqui trafega até a pessoa e vale até a primeira troca.
+    """
+
     if length < 12:
         raise ValueError("Senha temporária deve ter ao menos 12 caracteres")
     alphabet = string.ascii_letters + string.digits + "!@#$%"
-    while True:
-        candidate = "".join(secrets.choice(alphabet) for _ in range(length))
-        try:
-            validate_password(candidate)
-        except ValueError:
-            continue
-        return candidate
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 USERNAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._@-]{2,149}")

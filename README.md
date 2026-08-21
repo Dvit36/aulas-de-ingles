@@ -110,7 +110,10 @@ sendo aceitos para não derrubar ambientes já implantados na atualização:
 Quando as duas estão definidas, a atual vence. Prefira migrar os segredos para
 os nomes atuais; o suporte aos antigos existe para a janela de transição.
 
-As senhas usam Argon2. A sessão usa token aleatório opaco: no servidor fica apenas
+As senhas usam Argon2 e a pessoa escolhe a que quiser: não há exigência de
+tamanho, letras ou números, apenas a recusa de senha vazia. A proteção contra
+tentativa e erro fica no bloqueio por tentativas descrito abaixo, e a aplicação
+precisa estar atrás de HTTPS. A sessão usa token aleatório opaco: no servidor fica apenas
 seu SHA-256 e, no navegador, o token é mantido em `localStorage` por um componente
 oficial bidirecional do Streamlit. Nenhum nome, usuário, papel ou senha é salvo no
 navegador. A sessão expira após `SESSION_HOURS` e é revogada em logout, alteração,

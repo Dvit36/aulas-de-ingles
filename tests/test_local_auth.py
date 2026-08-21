@@ -149,3 +149,34 @@ def test_last_active_admin_cannot_be_disabled(session, users) -> None:
             active=False,
             user_id=admin.id,
         )
+
+
+def test_any_password_is_accepted_except_an_empty_one(session, settings) -> None:
+    """A equipe optou por deixar o aluno escolher a senha que quiser."""
+
+    from english_leaderboard.local_auth import (
+        hash_password,
+        validate_password,
+        verify_password,
+    )
+
+    for escolhida in ("a", "1234", "senha", "o rato roeu a roupa", "7565"):
+        validate_password(escolhida)
+        assert verify_password(hash_password(escolhida), escolhida)
+
+    # Senha vazia não é escolha: deixaria a conta sem credencial.
+    with pytest.raises(ValueError):
+        validate_password("")
+    with pytest.raises(ValueError):
+        hash_password("")
+
+
+def test_generated_temporary_password_stays_long_and_random() -> None:
+    from english_leaderboard.local_auth import generate_temporary_password
+
+    amostras = {generate_temporary_password() for _ in range(20)}
+
+    assert len(amostras) == 20
+    assert all(len(item) == 16 for item in amostras)
+    with pytest.raises(ValueError):
+        generate_temporary_password(8)

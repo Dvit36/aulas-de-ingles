@@ -20,7 +20,7 @@ A navegação usa um registro estável de `st.Page` com `st.navigation(position=
 
 ## Interface e responsividade
 
-- A página pública **Entrar** valida senha Argon2 no servidor. O primeiro administrador é criado idempotentemente por variáveis `BOOTSTRAP_ADMIN_*`; não há cadastro público.
+- A página pública **Entrar** valida senha Argon2 no servidor. Não há política de complexidade: a senha escolhida só não pode ser vazia. A senha temporária gerada pelo sistema continua com 16 caracteres aleatórios. O primeiro administrador é criado idempotentemente por variáveis `BOOTSTRAP_ADMIN_*`; não há cadastro público.
 - Sessões usam token opaco aleatório, hash SHA-256 no banco, expiração e versão revogável. Um componente v2 bidirecional mantém somente o token e sua validade em `localStorage`, com handshake e confirmação antes de liberar a área privada; papel, usuário e senha nunca ficam no navegador. O banco continua sendo a autoridade para validade e revogação.
 - **Minha conta** mostra identidade, troca de senha e logout. Senha temporária bloqueia todas as outras rotas até a troca.
 - O breakpoint móvel de referência é `max-width: 768px`.
