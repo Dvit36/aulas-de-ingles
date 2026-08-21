@@ -548,3 +548,34 @@ def test_dashboard_shows_the_weekly_goal_and_no_lesson_progress_metric() -> None
     assert "Meta da semana" in source
     assert "Progresso de lições" not in source
     assert "lesson_progress" not in source
+
+
+def test_runtime_cache_is_keyed_by_the_expected_schema() -> None:
+    """O Cloud troca o código sem reiniciar o processo.
+
+    Sem a impressão do schema na chave do cache, o engine inicializado pela
+    versão anterior sobreviveria e uma tabela recém-adicionada nunca seria
+    criada — foi assim que `resources` sumiu em produção.
+    """
+
+    import inspect as inspect_module
+    from hashlib import sha256
+
+    from english_leaderboard.database import Base
+
+    esperado = sha256(
+        ",".join(sorted(Base.metadata.tables)).encode("utf-8")
+    ).hexdigest()[:16]
+    assert streamlit_app._schema_fingerprint() == esperado
+
+    # A impressão precisa cobrir toda tabela mapeada, não uma lista fixa.
+    assert "resources" in Base.metadata.tables
+    assert "goal_configuration" in Base.metadata.tables
+
+    # E o runtime precisa mesmo receber a impressão, senão o cache não muda.
+    assert "schema_fingerprint" in inspect_module.signature(
+        streamlit_app.runtime.__wrapped__
+    ).parameters
+    assert "runtime(_schema_fingerprint())" in inspect_module.getsource(
+        streamlit_app.main
+    )

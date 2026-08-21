@@ -4,6 +4,7 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from hashlib import sha256
 from html import escape
 from pathlib import Path
 from uuid import uuid4
@@ -24,6 +25,7 @@ from english_leaderboard.browser_session import (
 from english_leaderboard.catalog import seed_database
 from english_leaderboard.config import Settings
 from english_leaderboard.database import (
+    Base,
     create_database_engine,
     create_session_factory,
     initialize_database,
@@ -189,8 +191,24 @@ def sync_google_sheets_snapshot(
     return True
 
 
+def _schema_fingerprint() -> str:
+    """Identidade do conjunto de tabelas que este código espera encontrar.
+
+    O Streamlit Community Cloud troca o código sem reiniciar o processo, e o
+    valor de `st.cache_resource` sobrevive a essa troca. Sem a impressão no
+    cache, uma versão que adiciona tabela seguiria usando o engine inicializado
+    pela versão anterior — `create_all` nunca rodaria de novo e a tabela nova
+    não existiria.
+    """
+
+    from english_leaderboard import models  # noqa: F401 - registra as tabelas
+
+    names = ",".join(sorted(Base.metadata.tables))
+    return sha256(names.encode("utf-8")).hexdigest()[:16]
+
+
 @st.cache_resource
-def runtime():
+def runtime(schema_fingerprint: str):
     settings = Settings.from_env()
     settings.ensure_directories()
     engine = create_database_engine(settings.database_url)
@@ -2471,7 +2489,7 @@ def _mount_persistent_browser_session(settings: Settings) -> BrowserSessionSnaps
 
 def main() -> None:
     try:
-        settings, factory = runtime()
+        settings, factory = runtime(_schema_fingerprint())
     except Exception as error:
         st.error(f"Configuração inválida: {error}")
         st.stop()

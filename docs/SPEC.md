@@ -14,6 +14,8 @@ Streamlit UI -> Auth/Services -> Rules + OCR + Scoring
 
 `DATABASE_URL` seleciona SQLite hoje e permite um dialeto Postgres no futuro sem alterar regras de domínio. Para SQLite são habilitados foreign keys, busy timeout e WAL.
 
+O engine e a criação do schema ficam em um `st.cache_resource` cuja chave inclui a impressão das tabelas registradas em `Base.metadata`. O Streamlit Community Cloud troca o código sem reiniciar o processo, e sem essa chave o recurso cacheado pela versão anterior sobreviveria: `create_all` não rodaria de novo e uma tabela recém-adicionada nunca seria criada.
+
 A navegação usa um registro estável de `st.Page` com `st.navigation(position="hidden")` como roteador e uma barra própria de `st.page_link`; o projeto requer Streamlit `>=1.61.1` com o extra `auth`. O registro fixo preserva o hash e a URL no login, logout e refresh, enquanto guards impedem o acesso a rotas não autorizadas. A barra mostra as rotas do papel mais **Recursos** e **Minha conta**, sem controles na sidebar ou gaveta móvel. **Recursos** é registrada uma única vez e liberada para os dois papéis, como **Minha conta**: o registro concatena as listas de administrador e de aluno, e uma mesma URL nas duas viraria entrada duplicada.
 
 ## Interface e responsividade
