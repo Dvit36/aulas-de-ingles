@@ -48,6 +48,7 @@ from .models import (
     GoalConfiguration,
     LedgerKind,
     LedgerTransaction,
+    Resource,
     Role,
     RuleCheck,
     Submission,
@@ -927,6 +928,83 @@ def save_activity_changes(
     return activity
 
 
+def list_resources(session: Session, *, include_inactive: bool = False) -> list[Resource]:
+    """Recursos na ordem definida pela administração."""
+
+    statement = select(Resource).order_by(Resource.position, Resource.title)
+    if not include_inactive:
+        statement = statement.where(Resource.active.is_(True))
+    return list(session.scalars(statement).all())
+
+
+def normalize_resource_url(url: str) -> str:
+    """Aceita apenas http/https.
+
+    A lista é renderizada como HTML, então um esquema como ``javascript:``
+    viraria execução de script na página do aluno.
+    """
+
+    candidate = (url or "").strip()
+    if not candidate:
+        raise ValueError("Informe o link do recurso")
+    lowered = candidate.lower()
+    if not lowered.startswith(("http://", "https://")):
+        raise ValueError(f"Link deve começar com http:// ou https://: {candidate}")
+    if len(candidate) > 500:
+        raise ValueError("Link excede 500 caracteres")
+    return candidate
+
+
+def replace_resources(
+    session: Session,
+    *,
+    actor: User,
+    entries: Sequence[dict[str, Any]],
+) -> list[Resource]:
+    """Reescreve a lista inteira na ordem recebida.
+
+    Recursos são conteúdo puro — nada em submissões ou ledger aponta para eles —
+    então recriar a lista é seguro e mantém a edição em uma única tela.
+    """
+
+    require_admin(actor)
+    normalized: list[dict[str, Any]] = []
+    for entry in entries:
+        title = str(entry.get("title") or "").strip()
+        if not title:
+            raise ValueError("Todo recurso precisa de um título")
+        if len(title) > 180:
+            raise ValueError(f"Título excede 180 caracteres: {title[:40]}…")
+        normalized.append(
+            {
+                "title": title,
+                "url": normalize_resource_url(str(entry.get("url") or "")),
+                "description": str(entry.get("description") or "").strip(),
+                "active": bool(entry.get("active", True)),
+            }
+        )
+    before = int(session.scalar(select(func.count(Resource.id))) or 0)
+    for resource in session.scalars(select(Resource)).all():
+        session.delete(resource)
+    session.flush()
+    created: list[Resource] = []
+    for position, entry in enumerate(normalized, start=1):
+        resource = Resource(position=position, **entry)
+        session.add(resource)
+        created.append(resource)
+    session.flush()
+    add_audit(
+        session,
+        actor_id=actor.id,
+        action="resources_replaced",
+        entity_type="resource",
+        entity_id="*",
+        before={"count": before},
+        after={"count": len(created), "titles": [item["title"] for item in normalized]},
+    )
+    return created
+
+
 def get_goal_configuration(session: Session) -> GoalConfiguration:
     """Configuração única de metas, criada com o padrão na primeira leitura."""
 
@@ -1414,8 +1492,11 @@ __all__ = [
     "get_goal_configuration",
     "get_submission_file_for_user",
     "get_submission_for_user",
+    "list_resources",
     "list_review_queue",
     "list_submissions",
+    "normalize_resource_url",
+    "replace_resources",
     "reset_user_password",
     "resolve_oidc_user",
     "review_submission",

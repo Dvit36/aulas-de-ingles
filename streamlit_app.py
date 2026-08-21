@@ -48,6 +48,7 @@ from english_leaderboard.models import (
     DuplicateMatch,
     EmailAttempt,
     LedgerTransaction,
+    Resource,
     Role,
     Submission,
     SubmissionImage,
@@ -67,7 +68,6 @@ from english_leaderboard.scoring import (
     activities_closing_gap,
     leaderboard_rows,
     ledger_rows,
-    lesson_progress,
     next_rival,
     pending_group_progress,
     student_total,
@@ -86,7 +86,9 @@ from english_leaderboard.services import (
     create_user_account,
     get_goal_configuration,
     get_submission_file_for_user,
+    list_resources,
     list_submissions,
+    replace_resources,
     reset_user_password,
     resolve_oidc_user,
     review_submission,
@@ -687,6 +689,21 @@ def _public_routes(
     ]
 
 
+def _resources_route(session, actor: User | None, settings: Settings) -> PageRoute:
+    """Recursos é uma rota só, compartilhada pelos dois papéis.
+
+    O registro de páginas concatena as rotas de administrador e de aluno, então
+    uma mesma URL declarada nas duas listas viraria entrada duplicada.
+    """
+
+    return PageRoute(
+        "Recursos",
+        "resources",
+        ":material/library_books:",
+        lambda: resources_view(session, actor, settings),
+    )
+
+
 def _account_route(session, actor: User | None, settings: Settings) -> PageRoute:
     return PageRoute(
         "Minha conta",
@@ -854,15 +871,19 @@ def _registered_routes(
         )
         for route in student_routes[1:]
     )
-    registered.append(
-        _guarded_route(
-            account_route,
-            session=session,
-            settings=settings,
-            auth_state=auth_state,
-            allowed_roles=frozenset({Role.ADMIN, Role.STUDENT}),
+    for shared_route in (
+        _resources_route(session, actor, settings),
+        account_route,
+    ):
+        registered.append(
+            _guarded_route(
+                shared_route,
+                session=session,
+                settings=settings,
+                auth_state=auth_state,
+                allowed_roles=frozenset({Role.ADMIN, Role.STUDENT}),
+            )
         )
-    )
 
     def render_password_page() -> None:
         current_actor = auth_state.actor
@@ -908,6 +929,7 @@ def _visible_routes(
         if actor.role == Role.ADMIN
         else _student_routes(session, actor, settings)
     )
+    routes.append(_resources_route(session, actor, settings))
     routes.append(_account_route(session, actor, settings))
     return routes
 
@@ -1039,12 +1061,114 @@ def _next_rival_panel(session, actor: User) -> None:
             st.markdown(f"- **{item['activity']}**: {detail}")
 
 
+def _resource_host(url: str) -> str:
+    """Domínio do link, para o aluno ver o destino antes de tocar."""
+
+    without_scheme = url.split("://", 1)[-1]
+    host = without_scheme.split("/", 1)[0]
+    return host[4:] if host.startswith("www.") else host
+
+
+def _resources_html(resources: Sequence[Resource]) -> str:
+    cards = []
+    for resource in resources:
+        url = escape(resource.url, quote=True)
+        description = (
+            f'<p class="robo-resource-description">{escape(resource.description)}</p>'
+            if resource.description
+            else ""
+        )
+        cards.append(
+            f'<div class="robo-resource">'
+            f'<span class="robo-resource-title">{escape(resource.title)}</span>'
+            f"{description}"
+            f'<span class="robo-resource-host">{escape(_resource_host(resource.url))}</span>'
+            f'<a class="robo-resource-link" href="{url}" target="_blank" '
+            f'rel="noopener noreferrer">Abrir recurso</a>'
+            f"</div>"
+        )
+    return f'<div class="robo-resources">{"".join(cards)}</div>'
+
+
+def resources_view(session, actor: User, settings: Settings | None = None) -> None:
+    is_admin = actor.role == Role.ADMIN
+    st.header("Recursos")
+    st.caption(
+        "Materiais escolhidos pela equipe para estudar inglês. Os links abrem "
+        "em uma nova aba."
+    )
+    resources = list_resources(session, include_inactive=is_admin)
+    visible = [item for item in resources if item.active]
+    if visible:
+        st.markdown(_resources_html(visible), unsafe_allow_html=True)
+    else:
+        st.info("Nenhum recurso publicado ainda.")
+    if is_admin:
+        _resources_editor(session, actor, resources)
+
+
+def _resources_editor(session, actor: User, resources: Sequence[Resource]) -> None:
+    hidden = [item for item in resources if not item.active]
+    if hidden:
+        st.caption(f"{len(hidden)} recurso(s) desativado(s), visíveis só para você.")
+    with st.expander("Editar recursos"):
+        st.caption(
+            "Edite as células, arraste para reordenar pela coluna Ordem e use a "
+            "última linha para adicionar. Links precisam começar com https://."
+        )
+        rows = [
+            {
+                "Ordem": item.position,
+                "Título": item.title,
+                "Link": item.url,
+                "Descrição": item.description,
+                "Ativo": item.active,
+            }
+            for item in resources
+        ]
+        edited = st.data_editor(
+            rows,
+            key="resources_editor",
+            num_rows="dynamic",
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Ordem": st.column_config.NumberColumn(min_value=1, step=1, width="small"),
+                "Título": st.column_config.TextColumn(required=True),
+                "Link": st.column_config.LinkColumn(required=True),
+                "Descrição": st.column_config.TextColumn(width="large"),
+                "Ativo": st.column_config.CheckboxColumn(default=True, width="small"),
+            },
+        )
+        if st.button("Salvar recursos", type="primary", key="save_resources"):
+            entries = [
+                {
+                    "title": row.get("Título"),
+                    "url": row.get("Link"),
+                    "description": row.get("Descrição"),
+                    "active": row.get("Ativo", True),
+                }
+                for row in sorted(
+                    edited, key=lambda item: (item.get("Ordem") or 9999)
+                )
+                if (row.get("Título") or row.get("Link"))
+            ]
+            try:
+                replace_resources(session, actor=actor, entries=entries)
+                session.commit()
+            except Exception as error:
+                session.rollback()
+                show_operation_error("replace_resources", error)
+            else:
+                st.success("Recursos atualizados.")
+                st.rerun()
+
+
 def student_dashboard(session, actor: User) -> None:
     first_name = actor.display_name.strip().split()[0]
     st.header(f"Olá, {first_name}")
     board = leaderboard_rows(session)
     own = next((row for row in board if row["student_id"] == actor.id), None)
-    progress, threshold = lesson_progress(session, actor.id)
     pending = int(
         session.scalar(
             select(func.count(Submission.id)).where(
@@ -1058,12 +1182,11 @@ def student_dashboard(session, actor: User) -> None:
     )
     goal = get_goal_configuration(session).weekly_lesson_goal
     done_this_week = weekly_lesson_count(session, actor.id)
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Pontuação", student_total(session, actor.id))
     col2.metric("Posição", f"#{own['position']}" if own else "—")
     col3.metric("Meta da semana", f"{done_this_week} de {goal}")
-    col4.metric("Progresso de lições", f"{progress} de {threshold}")
-    col5.metric("Pendências", pending)
+    col4.metric("Pendências", pending)
     st.progress(
         min(1.0, done_this_week / goal) if goal else 0.0,
         text=(

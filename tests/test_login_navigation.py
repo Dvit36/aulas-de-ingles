@@ -146,6 +146,11 @@ def test_public_and_authenticated_navigation_expose_account_routes(
     assert "Lembretes" not in {route.label for route in admin}
     assert "Reuniões" not in {route.label for route in admin}
     assert {route.label for route in student} >= {"Início", "Enviar", "Ranking"}
+    # Recursos é compartilhada pelos dois papéis, como Minha conta.
+    assert (
+        streamlit_app._resources_route(session, users[Role.ADMIN], settings).url_path
+        == "resources"
+    )
     assert "Entrar" not in {route.label for route in admin}
     assert "Entrar" not in {route.label for route in student}
     assert {route.url_path for route in public} == {"root"}
@@ -201,6 +206,7 @@ def test_registered_navigation_is_stable_across_authentication_states(
         "submit",
         "history",
         "leaderboard",
+        "resources",
         "account",
         "change-password",
     ]
@@ -232,12 +238,20 @@ def test_visible_navigation_changes_without_changing_registered_pages(
         "Envios",
         "Alunos",
         "Catálogo",
+        "Recursos",
         "Minha conta",
     ]
     assert [
         route.label
         for route in streamlit_app._visible_routes(session, settings, student)
-    ] == ["Início", "Enviar", "Histórico", "Ranking", "Minha conta"]
+    ] == [
+        "Início",
+        "Enviar",
+        "Histórico",
+        "Ranking",
+        "Recursos",
+        "Minha conta",
+    ]
 
 
 def test_private_route_does_not_run_for_anonymous_user(
@@ -497,3 +511,40 @@ def test_leaderboard_initials_ignore_demo_markers_and_escape_names() -> None:
     markup = streamlit_app._board_html(rows, None)
     assert "<script>" not in markup
     assert "&lt;script&gt;" in markup
+
+
+def test_resource_cards_escape_content_and_open_links_safely() -> None:
+    from english_leaderboard.models import Resource
+
+    resources = [
+        Resource(
+            title="<script>alert(1)</script>",
+            url="https://exemplo.org/caminho?a=1&b=2",
+            description="Descrição com <b>tag</b> & e-comercial",
+            position=1,
+        ),
+        Resource(title="Sem descrição", url="https://www.outro.org/", position=2),
+    ]
+
+    markup = streamlit_app._resources_html(resources)
+
+    assert "<script>" not in markup
+    assert "&lt;script&gt;" in markup
+    assert "&lt;b&gt;tag&lt;/b&gt;" in markup
+    # Aspas do href escapadas para o atributo não poder ser fechado.
+    assert 'href="https://exemplo.org/caminho?a=1&amp;b=2"' in markup
+    assert markup.count('rel="noopener noreferrer"') == 2
+    assert markup.count('target="_blank"') == 2
+    # O domínio aparece para o aluno saber o destino antes de tocar.
+    assert ">exemplo.org<" in markup
+    assert ">outro.org<" in markup  # o www. é removido
+
+
+def test_dashboard_shows_the_weekly_goal_and_no_lesson_progress_metric() -> None:
+    import inspect
+
+    source = inspect.getsource(streamlit_app.student_dashboard)
+
+    assert "Meta da semana" in source
+    assert "Progresso de lições" not in source
+    assert "lesson_progress" not in source

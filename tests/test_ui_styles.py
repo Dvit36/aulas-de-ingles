@@ -92,3 +92,22 @@ def test_header_and_nav_join_without_a_seam() -> None:
     assert "border-radius: 0 0 1.25rem 1.25rem" in css
     # O vão de 1rem que o Streamlit insere entre blocos é anulado.
     assert "margin-top: -1rem" in css
+
+
+def test_resource_cards_collapse_to_one_column_on_mobile() -> None:
+    css = responsive_css()
+
+    assert ".robo-resources {" in css
+    assert "grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr))" in css
+    assert "grid-template-columns: 1fr" in css
+    # O botão do link é alvo de toque em qualquer largura.
+    assert ".robo-resource-link {" in css
+
+
+def test_header_piece_has_no_partial_shadow() -> None:
+    css = responsive_css()
+
+    nav_block = css.split(".st-key-top_nav {", 1)[1].split("}", 1)[0]
+    # A barra da marca não tem sombra; a navegação também não pode ter, senão
+    # a sombra sólida começa no meio do cabeçalho.
+    assert "box-shadow" not in nav_block

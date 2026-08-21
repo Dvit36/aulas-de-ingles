@@ -244,3 +244,86 @@ def test_weekly_goal_is_admin_only_validated_and_audited(session, users) -> None
     assert entry is not None
     assert entry.before_json == {"weekly_lesson_goal": 5}
     assert entry.after_json == {"weekly_lesson_goal": 12}
+
+
+def test_resources_reject_dangerous_links_and_keep_admin_order(session, users) -> None:
+    from english_leaderboard.authz import AuthorizationError
+    from english_leaderboard.services import (
+        list_resources,
+        normalize_resource_url,
+        replace_resources,
+    )
+
+    admin = users[Role.ADMIN]
+    student = users[Role.STUDENT]
+
+    # A lista é renderizada como HTML: só http/https podem passar.
+    for hostile in ("javascript:alert(1)", "data:text/html,<script>", "  ", "ftp://x"):
+        with pytest.raises(ValueError):
+            normalize_resource_url(hostile)
+
+    with pytest.raises(AuthorizationError):
+        replace_resources(session, actor=student, entries=[])
+    session.rollback()
+
+    with pytest.raises(ValueError):
+        replace_resources(
+            session,
+            actor=admin,
+            entries=[{"title": "Sem link", "url": ""}],
+        )
+    session.rollback()
+
+    with pytest.raises(ValueError):
+        replace_resources(
+            session,
+            actor=admin,
+            entries=[{"title": "", "url": "https://exemplo.org"}],
+        )
+    session.rollback()
+
+    replace_resources(
+        session,
+        actor=admin,
+        entries=[
+            {"title": "Segundo", "url": "https://b.example", "description": "b"},
+            {"title": "Primeiro", "url": "https://a.example", "description": "a"},
+            {"title": "Oculto", "url": "https://c.example", "active": False},
+        ],
+    )
+    session.commit()
+
+    # A ordem recebida vira a posição; nada é reordenado por título.
+    ativos = list_resources(session)
+    assert [item.title for item in ativos] == ["Segundo", "Primeiro"]
+    assert [item.position for item in ativos] == [1, 2]
+    todos = list_resources(session, include_inactive=True)
+    assert [item.title for item in todos] == ["Segundo", "Primeiro", "Oculto"]
+
+
+def test_replacing_resources_is_a_full_rewrite(session, users) -> None:
+    from english_leaderboard.models import AuditLog
+    from english_leaderboard.services import list_resources, replace_resources
+
+    admin = users[Role.ADMIN]
+    replace_resources(
+        session,
+        actor=admin,
+        entries=[{"title": "Antigo", "url": "https://antigo.example"}],
+    )
+    session.commit()
+    replace_resources(
+        session,
+        actor=admin,
+        entries=[{"title": "Novo", "url": "https://novo.example"}],
+    )
+    session.commit()
+
+    assert [item.title for item in list_resources(session)] == ["Novo"]
+    entry = session.scalar(
+        select(AuditLog)
+        .where(AuditLog.action == "resources_replaced")
+        .order_by(AuditLog.created_at.desc())
+    )
+    assert entry is not None
+    assert entry.after_json["titles"] == ["Novo"]

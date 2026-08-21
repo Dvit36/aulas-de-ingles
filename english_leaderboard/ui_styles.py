@@ -161,7 +161,9 @@ main img,
   border: var(--robo-border);
   border-radius: 0 0 1.25rem 1.25rem;
   background: var(--robo-charcoal);
-  box-shadow: var(--robo-shadow);
+  /* Sem sombra: a barra da marca acima não tem, e a peça é uma só. A sombra
+     sólida começava no meio do cabeçalho e sobrava para fora do canto
+     arredondado, parecendo um degrau. */
 }
 
 .st-key-top_nav[data-testid="stHorizontalBlock"] {
@@ -720,6 +722,93 @@ hr {
 
   .robo-board-row {
     gap: 0.5rem;
+  }
+}
+
+/* Recursos: cartões de link que viram uma coluna no celular. */
+.robo-resources {
+  display: grid;
+  gap: 0.875rem;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  margin-bottom: 1rem;
+}
+
+.robo-resource {
+  background: var(--robo-white);
+  border: var(--robo-border);
+  border-radius: 1.25rem;
+  box-shadow: var(--robo-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem 1.1rem;
+}
+
+.robo-resource-title {
+  align-items: center;
+  color: var(--robo-ink);
+  display: flex;
+  font-family: "League Spartan", Impact, sans-serif;
+  font-size: 1.05rem;
+  font-weight: 800;
+  gap: 0.5rem;
+  letter-spacing: 0.02em;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.robo-resource-description {
+  color: var(--robo-grey);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.robo-resource-link {
+  align-items: center;
+  align-self: flex-start;
+  background: var(--robo-yellow);
+  border: var(--robo-border);
+  border-radius: 999px;
+  color: var(--robo-ink);
+  display: inline-flex;
+  font-weight: 700;
+  font-size: 0.85rem;
+  gap: 0.35rem;
+  justify-content: center;
+  margin-top: auto;
+  min-height: var(--app-touch-target);
+  padding: 0.4rem 1rem;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.robo-resource-link:hover,
+.robo-resource-link:focus-visible {
+  background: var(--robo-red);
+  color: var(--robo-white);
+}
+
+.robo-resource-host {
+  color: var(--robo-grey);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+@media (max-width: 768px) {
+  .robo-resources {
+    grid-template-columns: 1fr;
+  }
+
+  .robo-resource {
+    border-radius: 1rem;
+    padding: 0.875rem 0.9rem;
+  }
+
+  .robo-resource-link {
+    align-self: stretch;
   }
 }
 

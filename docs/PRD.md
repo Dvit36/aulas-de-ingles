@@ -6,8 +6,8 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 
 ## Usuários
 
-- **Aluno:** consulta catálogo, pontuação, posição, meta semanal e progresso; vê quanto falta para alcançar o colocado à frente e quais atividades fecham essa diferença; envia comprovantes; acompanha análise e decisões.
-- **Administrador:** revisa envios, corrige unidades, define a meta de lições por semana e gerencia contas e catálogo. O ledger continua sendo a fonte interna da pontuação.
+- **Aluno:** consulta catálogo, recursos de estudo, pontuação, posição, meta semanal e progresso; vê quanto falta para alcançar o colocado à frente e quais atividades fecham essa diferença; envia comprovantes; acompanha análise e decisões.
+- **Administrador:** revisa envios, corrige unidades, define a meta de lições por semana, publica a lista de recursos de estudo e gerencia contas e catálogo. O ledger continua sendo a fonte interna da pontuação.
 
 ## Fluxos principais
 
@@ -64,9 +64,10 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 - Submissão de imagens/documentos, extração seletiva, validações, duplicidade e fila de revisão.
 - Ledger, grupos de cinco, atividades comuns, leaderboard geral/por período e progresso individual.
 - Meta semanal de lições configurável e indicadores de distância para o próximo colocado com sugestões de atividades.
+- Aba **Recursos** com links de estudo publicados pela administração, visível para os dois papéis e editável apenas por administrador.
 - Histórico visual/auditoria, exportação XLSX, sincronização opcional com Google Sheets e importação idempotente da planilha legada.
 - Gestão ativa/inativa/arquivada e infraestrutura de lembretes SMTP preservada em processo separado, sem página administrativa na navegação.
-- Navegação superior: rotas públicas antes do login; para administradores, **Visão geral**, **Envios**, **Alunos**, **Catálogo** e **Minha conta**. **Relatórios** e **Lembretes** não possuem rota visível.
+- Navegação superior: rotas públicas antes do login; para administradores, **Visão geral**, **Envios**, **Alunos**, **Catálogo**, **Recursos** e **Minha conta**. **Relatórios** e **Lembretes** não possuem rota visível.
 - Interface web responsiva: em até `768px`, colunas empilhadas e controles interativos com altura mínima de `44px`.
 - SQLite WAL, uploads persistentes, Docker Compose, health check, backup documentado e testes offline.
 

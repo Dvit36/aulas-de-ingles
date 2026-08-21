@@ -527,6 +527,23 @@ class ReminderConfiguration(TimestampMixin, Base):
     updated_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
 
 
+class Resource(TimestampMixin, Base):
+    """Link de estudo publicado pela administração para os alunos.
+
+    Conteúdo puro: nada aqui referencia submissões ou ledger, então a lista
+    pode ser reescrita inteira sem risco para a pontuação.
+    """
+
+    __tablename__ = "resources"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    title: Mapped[str] = mapped_column(String(180))
+    url: Mapped[str] = mapped_column(String(500))
+    description: Mapped[str] = mapped_column(Text, default="")
+    position: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
 class GoalConfiguration(TimestampMixin, Base):
     """Meta de lições por semana definida pela administração.
 

@@ -27,6 +27,8 @@ O MVP foi desenhado para cerca de 15 alunos em uma única máquina. Não usa API
   será arquivar (há histórico) ou remover em definitivo;
 - Reunião em inglês tratada como atividade comum configurável, sem fluxo especial;
 - ledger, leaderboard geral/por período, XLSX e espelho opcional no Google Sheets;
+- aba **Recursos** com links de estudo publicados pela administração, em cartões
+  que viram uma coluna no celular e abrem em nova aba;
 - meta de lições por semana definida pela administração, com progresso no painel
   do aluno e contagem de quantos alunos a cumpriram;
 - indicador de quantos pontos faltam para alcançar o colocado à frente, com as

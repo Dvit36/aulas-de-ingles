@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import Settings
-from .models import Activity, ReminderConfiguration, Role, User
+from .models import Activity, ReminderConfiguration, Resource, Role, User
 
 CATALOG_SEED: tuple[dict[str, object], ...] = (
     {
@@ -95,6 +95,84 @@ CATALOG_SEED: tuple[dict[str, object], ...] = (
 )
 
 
+RESOURCE_SEED: tuple[dict[str, object], ...] = (
+    {
+        "title": "Cambridge Write & Improve",
+        "url": "https://writeandimprove.com/",
+        "description": (
+            "Ajuda a escrever textos: a plataforma dá tópicos e ideias de redação "
+            "e devolve correção, do nível básico ao intermediário."
+        ),
+    },
+    {
+        "title": "Cambridge English",
+        "url": "https://www.cambridgeenglish.org/",
+        "description": (
+            "Várias atividades de listening, gramática, speaking e mais, "
+            "disponíveis para os três níveis."
+        ),
+    },
+    {
+        "title": "British Council — Learn English",
+        "url": "https://learnenglish.britishcouncil.org/",
+        "description": (
+            "Tem uma seção de recursos gratuitos, na mesma pegada do "
+            "Cambridge English."
+        ),
+    },
+    {
+        "title": "Simulado Duolingo English Test",
+        "url": "https://englishtest.duolingo.com/practice",
+        "description": "Simulado oficial para praticar o formato da prova.",
+    },
+    {
+        "title": "Exercícios de listening — ESL Lab",
+        "url": "https://www.esl-lab.com/easy/",
+        "description": (
+            "Learn English Through Listening to Daily English Conversations: "
+            "diálogos curtos do dia a dia com exercícios."
+        ),
+    },
+    {
+        "title": "Aulas no YouTube — Speak English With Vanessa",
+        "url": "https://www.youtube.com/@SpeakEnglishWithVanessa/playlists",
+        "description": "Playlists de aulas em vídeo organizadas por tema.",
+    },
+    {
+        "title": "Redações do Impact — FIRST Impact Award",
+        "url": "https://www.firstinspires.org/resources/library/frc/fia-resources",
+        "description": (
+            "Na página há as opções 20xx winners. Em cada uma estão as redações "
+            "vencedoras de cada regional naquele ano."
+        ),
+    },
+    {
+        "title": "FUN — FIRST Updates Now",
+        "url": "https://youtube.com/@funroboticsnetwork",
+        "description": "Canal no YouTube onde eles falam dos robôs.",
+    },
+)
+
+
+def seed_resources(session: Session) -> list[Resource]:
+    """Cria a lista inicial de recursos sem sobrescrever edições da equipe."""
+
+    existing = {
+        resource.url
+        for resource in session.scalars(select(Resource)).all()
+    }
+    created: list[Resource] = []
+    for position, definition in enumerate(RESOURCE_SEED, start=1):
+        url = str(definition["url"])
+        if url in existing:
+            continue
+        resource = Resource(position=position, **definition)
+        session.add(resource)
+        created.append(resource)
+    session.flush()
+    return created
+
+
 def seed_catalog(session: Session) -> list[Activity]:
     existing = {
         activity.code: activity
@@ -134,6 +212,7 @@ def seed_demo_users(session: Session, settings: Settings) -> list[User]:
 
 def seed_database(session: Session, settings: Settings) -> None:
     seed_catalog(session)
+    seed_resources(session)
     seed_demo_users(session, settings)
     from .local_auth import bootstrap_initial_admin
 

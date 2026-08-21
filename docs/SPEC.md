@@ -14,7 +14,7 @@ Streamlit UI -> Auth/Services -> Rules + OCR + Scoring
 
 `DATABASE_URL` seleciona SQLite hoje e permite um dialeto Postgres no futuro sem alterar regras de domínio. Para SQLite são habilitados foreign keys, busy timeout e WAL.
 
-A navegação usa um registro estável de `st.Page` com `st.navigation(position="hidden")` como roteador e uma barra própria de `st.page_link`; o projeto requer Streamlit `>=1.61.1` com o extra `auth`. O registro fixo preserva o hash e a URL no login, logout e refresh, enquanto guards impedem o acesso a rotas não autorizadas. A barra mostra apenas as rotas do papel e **Minha conta**, sem controles na sidebar ou gaveta móvel.
+A navegação usa um registro estável de `st.Page` com `st.navigation(position="hidden")` como roteador e uma barra própria de `st.page_link`; o projeto requer Streamlit `>=1.61.1` com o extra `auth`. O registro fixo preserva o hash e a URL no login, logout e refresh, enquanto guards impedem o acesso a rotas não autorizadas. A barra mostra as rotas do papel mais **Recursos** e **Minha conta**, sem controles na sidebar ou gaveta móvel. **Recursos** é registrada uma única vez e liberada para os dois papéis, como **Minha conta**: o registro concatena as listas de administrador e de aluno, e uma mesma URL nas duas viraria entrada duplicada.
 
 ## Interface e responsividade
 
@@ -53,6 +53,7 @@ A navegação usa um registro estável de `st.Page` com `st.navigation(position=
 - `meetings`: preservada somente para registros históricos anteriores à remoção do fluxo especial.
 - `submission_files`: metadados e texto extraído de imagens/PDF/DOCX/TXT.
 - `auth_sessions`: sessões opacas, expiração e revogação.
+- `resources`: título, link, descrição, posição e ativo. Conteúdo puro, sem referência de submissões ou ledger, então a lista é reescrita inteira a cada salvamento. Apenas `http`/`https` são aceitos, porque a lista é renderizada como HTML.
 - `goal_configuration`: linha única com a meta de lições por semana e o autor da última alteração. Só orienta a interface; nenhuma pontuação depende dela.
 - `reminder_configuration` e `email_attempts`: configuração, deduplicação e auditoria de e-mail.
 - `audit_logs`: ator, ação, entidade, antes/depois e motivo histórico opcional; novas operações administrativas podem registrar `NULL` nesse campo.
