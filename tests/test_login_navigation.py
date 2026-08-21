@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
 import streamlit_app
 from english_leaderboard.models import Role
 
@@ -13,7 +15,7 @@ def test_demo_authentication_requires_explicit_session_state(
     users,
     monkeypatch,
 ) -> None:
-    state: dict[str, str] = {}
+    state: dict[str, object] = {}
     monkeypatch.setattr(streamlit_app.st, "session_state", state)
     demo_settings = replace(settings, demo_auth_enabled=True)
 
@@ -23,6 +25,62 @@ def test_demo_authentication_requires_explicit_session_state(
     state["demo_user_id"] = users[Role.STUDENT].id
     logged_in = streamlit_app.authenticate(session, demo_settings)
     assert logged_in.actor is users[Role.STUDENT]
+    assert logged_in.local_token is not None
+    assert state["browser_session_command"]["op"] == "write"
+
+
+def test_pending_browser_write_holds_private_ui_until_ack(
+    session,
+    settings,
+    users,
+    monkeypatch,
+) -> None:
+    token = "A" * 64
+    state: dict[str, object] = {
+        "local_auth_token": token,
+        "browser_session_command": {
+            "id": "command-1",
+            "op": "write",
+            "token": token,
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        },
+    }
+    monkeypatch.setattr(streamlit_app.st, "session_state", state)
+
+    auth_state = streamlit_app.authenticate(session, settings)
+
+    assert auth_state.actor is None
+    assert auth_state.restoring_session is True
+
+
+def test_stale_component_snapshot_cannot_replace_pending_login_token(
+    settings,
+    monkeypatch,
+) -> None:
+    new_token = "B" * 64
+    state: dict[str, object] = {
+        "local_auth_token": new_token,
+        "browser_session_command": {
+            "id": "new-login",
+            "op": "write",
+            "token": new_token,
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        },
+    }
+    monkeypatch.setattr(streamlit_app.st, "session_state", state)
+    monkeypatch.setattr(
+        streamlit_app,
+        "mount_browser_session",
+        lambda _st: streamlit_app.BrowserSessionSnapshot(
+            ready=True,
+            token="A" * 64,
+        ),
+    )
+
+    streamlit_app._mount_persistent_browser_session(settings)
+
+    assert state["local_auth_token"] == new_token
+    assert state["browser_session_command"]["op"] == "write"
 
 
 def test_missing_oidc_configuration_does_not_crash(
@@ -93,6 +151,7 @@ def test_registered_navigation_is_stable_across_authentication_states(
 ) -> None:
     states = [
         streamlit_app.AuthenticationState(actor=None),
+        streamlit_app.AuthenticationState(actor=None, restoring_session=True),
         streamlit_app.AuthenticationState(actor=users[Role.ADMIN]),
         streamlit_app.AuthenticationState(actor=users[Role.STUDENT]),
     ]
@@ -105,7 +164,7 @@ def test_registered_navigation_is_stable_across_authentication_states(
         for state in states
     ]
 
-    assert snapshots[0] == snapshots[1] == snapshots[2]
+    assert snapshots[0] == snapshots[1] == snapshots[2] == snapshots[3]
     assert [url_path for _, url_path, _ in snapshots[0]] == [
         "root",
         "submissions",
@@ -128,6 +187,10 @@ def test_visible_navigation_changes_without_changing_registered_pages(
     users,
 ) -> None:
     anonymous = streamlit_app.AuthenticationState(actor=None)
+    restoring = streamlit_app.AuthenticationState(
+        actor=None,
+        restoring_session=True,
+    )
     admin = streamlit_app.AuthenticationState(actor=users[Role.ADMIN])
     student = streamlit_app.AuthenticationState(actor=users[Role.STUDENT])
 
@@ -135,6 +198,7 @@ def test_visible_navigation_changes_without_changing_registered_pages(
         route.label
         for route in streamlit_app._visible_routes(session, settings, anonymous)
     ] == ["Entrar"]
+    assert streamlit_app._visible_routes(session, settings, restoring) == []
     assert [
         route.label for route in streamlit_app._visible_routes(session, settings, admin)
     ] == [
@@ -332,3 +396,41 @@ def test_navigation_uses_hidden_router_and_visible_page_links(monkeypatch) -> No
     assert [page.url_path for page in calls["pages"]] == ["root", "catalog"]
     assert len(calls["images"]) == 1
     assert calls["ran"] is True
+
+
+def test_command_handoff_registers_router_before_rerun_without_rendering(
+    monkeypatch,
+) -> None:
+    events: list[str] = []
+    selected = SimpleNamespace(run=lambda: events.append("page"))
+    monkeypatch.setattr(
+        streamlit_app.st,
+        "Page",
+        lambda render, **kwargs: SimpleNamespace(render=render, **kwargs),
+    )
+    monkeypatch.setattr(
+        streamlit_app.st,
+        "navigation",
+        lambda _pages, *, position: events.append(f"navigation:{position}")
+        or selected,
+    )
+
+    class RerunRequested(RuntimeError):
+        pass
+
+    def request_rerun() -> None:
+        events.append("rerun")
+        raise RerunRequested
+
+    monkeypatch.setattr(streamlit_app.st, "rerun", request_rerun)
+    route = streamlit_app.PageRoute(
+        "English Activities",
+        "root",
+        ":material/home:",
+        lambda: None,
+    )
+
+    with pytest.raises(RerunRequested):
+        streamlit_app._run_navigation([route], rerun_before_render=True)
+
+    assert events == ["navigation:hidden", "rerun"]

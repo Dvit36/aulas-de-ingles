@@ -14,12 +14,12 @@ Streamlit UI -> Auth/Services -> Rules + OCR + Scoring
 
 `DATABASE_URL` seleciona SQLite hoje e permite um dialeto Postgres no futuro sem alterar regras de domínio. Para SQLite são habilitados foreign keys, busy timeout e WAL.
 
-A navegação usa `st.Page` com `st.navigation(position="hidden")` como roteador e uma barra própria de `st.page_link` sempre visível; o projeto requer Streamlit `>=1.56` com o extra `auth`. Assim, o celular não converte o menu em uma gaveta lateral. Sem autenticação, o roteador abre apenas **Entrar**. Depois da autenticação, monta as rotas do papel (`student` ou `admin`) e acrescenta **Minha conta**, sem controles na sidebar.
+A navegação usa um registro estável de `st.Page` com `st.navigation(position="hidden")` como roteador e uma barra própria de `st.page_link`; o projeto requer Streamlit `>=1.61.1` com o extra `auth`. O registro fixo preserva o hash e a URL no login, logout e refresh, enquanto guards impedem o acesso a rotas não autorizadas. A barra mostra apenas as rotas do papel e **Minha conta**, sem controles na sidebar ou gaveta móvel.
 
 ## Interface e responsividade
 
 - A página pública **Entrar** valida senha Argon2 no servidor. O primeiro administrador é criado idempotentemente por variáveis `BOOTSTRAP_ADMIN_*`; não há cadastro público.
-- Sessões usam token opaco aleatório, hash SHA-256 no banco, expiração e versão revogável. O cookie contém apenas o token e usa `SameSite=Lax`, `Secure` em produção; papel e senha nunca ficam no navegador.
+- Sessões usam token opaco aleatório, hash SHA-256 no banco, expiração e versão revogável. Um componente v2 bidirecional mantém somente o token e sua validade em `localStorage`, com handshake e confirmação antes de liberar a área privada; papel, e-mail e senha nunca ficam no navegador. O banco continua sendo a autoridade para validade e revogação.
 - **Minha conta** mostra identidade, troca de senha e logout. Senha temporária bloqueia todas as outras rotas até a troca.
 - O breakpoint móvel de referência é `max-width: 768px`.
 - Nesse breakpoint, grupos de colunas da interface são apresentados em uma única coluna, na ordem de leitura.
@@ -100,7 +100,7 @@ Toda transição é validada por máquina de estados e auditada. Operações de 
 - A camada de serviço repete a autorização; ocultar controles na UI não é considerado proteção suficiente.
 - Upload é limitado por arquivo, quantidade, bytes agregados, páginas e formatos reais JPEG/PNG/WEBP/PDF/DOCX/TXT. DOCX tem limites de membros/expansão/compressão e PDF tem orçamento de pixels antes da renderização; tudo é validado antes de persistir e gravado com UUID e modo `0600`.
 - CORS/XSRF permanecem habilitados. Logs não incluem bytes nem OCR/imagem completos.
-- A aplicação deve ficar atrás de HTTPS em proxy reverso ou acessível por VPN/Tailscale; isso protege o cookie opaco e as credenciais em trânsito.
+- A aplicação deve ficar atrás de HTTPS em proxy reverso ou acessível por VPN/Tailscale; isso protege o token opaco e as credenciais em trânsito.
 
 ## Persistência e backup
 
@@ -125,7 +125,7 @@ O importador nunca salva no arquivo fonte.
 
 ## Implantação
 
-- Imagem Python 3.12 slim, Streamlit `>=1.56` com Authlib, dependências locais e health check em `/_stcore/health`.
+- Imagem Python 3.12 slim, Streamlit `>=1.61.1` com Authlib, dependências locais e health check em `/_stcore/health`.
 - Compose com aplicação e scheduler independente, porta 8501 e volumes compartilhados de banco/uploads.
 - Configuração por `.env`; senhas do administrador inicial e SMTP ficam somente no ambiente/secret manager.
 - Máquina alvo: 2–4 CPUs, 8 GB RAM e SSD. Sem workers distribuídos.

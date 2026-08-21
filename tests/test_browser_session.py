@@ -1,119 +1,205 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from streamlit.testing.v1 import AppTest
 
-import streamlit_app
+from english_leaderboard import browser_session
 from english_leaderboard.browser_session import (
+    COMMAND_KEY,
     COOKIE_NAME,
     forget_token,
-    render_cookie_bridge,
-    request_cookie,
+    mount_browser_session,
+    queue_token_write,
+    request_token,
+    valid_session_token,
 )
 
+TOKEN = "A" * 64
 
-def test_refresh_recovers_only_opaque_token_from_cookie() -> None:
+
+def _future_expiry() -> datetime:
+    return datetime.now(UTC) + timedelta(hours=1)
+
+
+def _payload(
+    *,
+    token: str | None = TOKEN,
+    expires_at: datetime | None = None,
+    ack_id: str | None = None,
+    storage_available: bool = True,
+) -> dict[str, object]:
+    expiry = expires_at or _future_expiry()
+    return {
+        "ready": True,
+        "storage_available": storage_available,
+        "token": token,
+        "expires_at": expiry.isoformat() if token else None,
+        "ack_id": ack_id,
+    }
+
+
+def test_request_token_accepts_only_bounded_opaque_values() -> None:
     browser = SimpleNamespace(
         session_state={},
-        context=SimpleNamespace(cookies={COOKIE_NAME: "opaque-random-token"}),
+        context=SimpleNamespace(cookies={COOKIE_NAME: TOKEN}),
     )
-    assert request_cookie(browser) == "opaque-random-token"
-    browser.session_state["local_auth_token"] = "current-session-token"
-    assert request_cookie(browser) == "current-session-token"
-    forget_token(browser)
-    assert browser.session_state == {"clear_local_auth_cookie": True}
+    assert request_token(browser) == TOKEN
+    browser.session_state["local_auth_token"] = "short"
+    assert request_token(browser) == TOKEN
+    browser.context.cookies[COOKIE_NAME] = "x" * 10_000
+    assert request_token(browser) is None
+    assert valid_session_token("_" * 64) == "_" * 64
+    assert valid_session_token("!" * 64) is None
 
 
-def test_cookie_bridge_uses_supported_iframe_api() -> None:
-    calls: list[tuple[str, int, int]] = []
-    streamlit = SimpleNamespace(
-        iframe=lambda source, *, width, height: calls.append(
-            (source, width, height)
-        )
+def test_queue_write_keeps_command_pending_until_matching_ack() -> None:
+    state: dict[str, object] = {}
+    streamlit = SimpleNamespace(session_state=state)
+    expires_at = _future_expiry()
+    queue_token_write(streamlit, TOKEN, expires_at)
+    command = dict(state[COMMAND_KEY])
+    calls: list[dict[str, object]] = []
+
+    def renderer(**kwargs):
+        calls.append(kwargs)
+        return {"payload": _payload(ack_id="wrong-command")}
+
+    snapshot = mount_browser_session(streamlit, renderer=renderer)
+
+    assert snapshot.token == TOKEN
+    assert state[COMMAND_KEY] == command
+    assert calls[0]["data"]["command"] == command
+
+
+def test_matching_write_ack_consumes_command_idempotently() -> None:
+    state: dict[str, object] = {}
+    streamlit = SimpleNamespace(session_state=state)
+    queue_token_write(streamlit, TOKEN, _future_expiry())
+    command_id = state[COMMAND_KEY]["id"]
+
+    snapshot = mount_browser_session(
+        streamlit,
+        renderer=lambda **_kwargs: {
+            "payload": _payload(ack_id=str(command_id)),
+        },
     )
-    render_cookie_bridge(streamlit, clear=True, secure=True)
-    assert len(calls) == 1
-    source, width, height = calls[0]
-    assert "english_activity_session=" in source
-    assert "SameSite=Lax" in source
-    assert "; Secure" in source
-    assert (width, height) == (1, 1)
+
+    assert snapshot.ready is True
+    assert snapshot.token == TOKEN
+    assert COMMAND_KEY not in state
 
 
-def test_cookie_bridge_renders_with_real_streamlit() -> None:
+def test_matching_ack_cannot_confirm_a_different_token() -> None:
+    state: dict[str, object] = {}
+    streamlit = SimpleNamespace(session_state=state)
+    queue_token_write(streamlit, TOKEN, _future_expiry())
+    command_id = state[COMMAND_KEY]["id"]
+
+    mount_browser_session(
+        streamlit,
+        renderer=lambda **_kwargs: {
+            "payload": _payload(token="B" * 64, ack_id=str(command_id)),
+        },
+    )
+
+    assert COMMAND_KEY in state
+
+
+def test_clear_command_waits_for_ack_and_removes_local_token() -> None:
+    state: dict[str, object] = {"local_auth_token": TOKEN}
+    streamlit = SimpleNamespace(session_state=state)
+    forget_token(streamlit)
+    command_id = state[COMMAND_KEY]["id"]
+    assert "local_auth_token" not in state
+
+    mount_browser_session(
+        streamlit,
+        renderer=lambda **_kwargs: {
+            "payload": _payload(token=None, ack_id=str(command_id)),
+        },
+    )
+
+    assert COMMAND_KEY not in state
+
+
+def test_untrusted_payload_is_rejected_and_expiry_uses_server_authority() -> None:
+    streamlit = SimpleNamespace(session_state={})
+    expired = datetime.now(UTC) - timedelta(seconds=1)
+
+    invalid = mount_browser_session(
+        streamlit,
+        renderer=lambda **_kwargs: {
+            "payload": _payload(token="x" * 10_000),
+        },
+    )
+    expired_snapshot = mount_browser_session(
+        streamlit,
+        renderer=lambda **_kwargs: {
+            "payload": _payload(expires_at=expired),
+        },
+    )
+
+    assert invalid.token is None
+    assert expired_snapshot.token == TOKEN
+
+
+def test_overflowing_expiry_is_rejected_without_crashing() -> None:
+    streamlit = SimpleNamespace(session_state={})
+
+    snapshot = mount_browser_session(
+        streamlit,
+        renderer=lambda **_kwargs: {
+            "payload": {
+                "ready": True,
+                "storage_available": True,
+                "token": TOKEN,
+                "expires_at": "9999-12-31T23:59:59-23:59",
+                "ack_id": None,
+            },
+        },
+    )
+
+    assert snapshot.token is None
+
+
+def test_storage_failure_is_reported_without_restoring_token() -> None:
+    streamlit = SimpleNamespace(session_state={})
+    queue_token_write(streamlit, TOKEN, _future_expiry())
+
+    snapshot = mount_browser_session(
+        streamlit,
+        renderer=lambda **_kwargs: {
+            "payload": _payload(storage_available=False),
+        },
+    )
+
+    assert snapshot.ready is True
+    assert snapshot.storage_available is False
+    assert snapshot.token is None
+    assert COMMAND_KEY not in streamlit.session_state
+
+
+def test_component_uses_local_storage_without_exposing_token_in_markup() -> None:
+    source = browser_session._BROWSER_SESSION_JS
+    assert "window.localStorage.getItem" in source
+    assert "window.localStorage.setItem" in source
+    assert "setStateValue" in source
+    assert "Date.now" not in source
+    assert "innerHTML" not in source
+
+
+def test_browser_session_component_mounts_with_real_streamlit() -> None:
     app = AppTest.from_string(
         """
-from datetime import datetime, timedelta, timezone
 import streamlit as st
-from english_leaderboard.browser_session import render_cookie_bridge
+from english_leaderboard.browser_session import mount_browser_session
 
-render_cookie_bridge(
-    st,
-    token="opaque-test-token",
-    expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-)
-st.write("ponte renderizada")
+snapshot = mount_browser_session(st)
+st.write(f"ready={snapshot.ready}")
 """
     )
     app.run(timeout=10)
     assert not app.exception
-    assert app.markdown[0].value == "ponte renderizada"
-
-
-def test_pending_cookie_is_written_into_stable_slot_and_consumed(monkeypatch) -> None:
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
-    state = {"local_auth_expires_at": expires_at.isoformat()}
-    monkeypatch.setattr(streamlit_app.st, "session_state", state)
-    calls: list[tuple[object, dict[str, object]]] = []
-    monkeypatch.setattr(
-        streamlit_app,
-        "render_cookie_bridge",
-        lambda slot, **kwargs: calls.append((slot, kwargs)),
-    )
-    slot = object()
-    auth_state = streamlit_app.AuthenticationState(
-        actor=None,
-        local_token="opaque-token",
-    )
-
-    streamlit_app._flush_browser_session_bridge(
-        slot, SimpleNamespace(is_production=True), auth_state
-    )
-
-    assert calls == [
-        (
-            slot,
-            {
-                "token": "opaque-token",
-                "expires_at": expires_at,
-                "secure": True,
-            },
-        )
-    ]
-    assert "local_auth_expires_at" not in state
-
-
-def test_cookie_clear_takes_precedence_and_consumes_pending_state(monkeypatch) -> None:
-    state = {
-        "clear_local_auth_cookie": True,
-        "local_auth_expires_at": "must-not-be-used",
-    }
-    monkeypatch.setattr(streamlit_app.st, "session_state", state)
-    calls: list[tuple[object, dict[str, object]]] = []
-    monkeypatch.setattr(
-        streamlit_app,
-        "render_cookie_bridge",
-        lambda slot, **kwargs: calls.append((slot, kwargs)),
-    )
-    slot = object()
-
-    streamlit_app._flush_browser_session_bridge(
-        slot,
-        SimpleNamespace(is_production=True),
-        streamlit_app.AuthenticationState(actor=None, local_token="ignored"),
-    )
-
-    assert calls == [(slot, {"clear": True, "secure": True})]
-    assert state == {}
+    assert app.markdown[0].value == "ready=False"

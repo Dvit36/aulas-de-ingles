@@ -39,7 +39,7 @@ locais. Veja [docs/PRD.md](docs/PRD.md) e [docs/SPEC.md](docs/SPEC.md).
 ## Requisitos
 
 - Python 3.11 ou 3.12 (RapidOCR legado não suporta Python 3.13+);
-- Streamlit 1.56 ou superior, com o extra de autenticação;
+- Streamlit 1.61.1 ou superior, com o extra de autenticação;
 - aproximadamente 2–4 CPUs, 8 GB de RAM e SSD;
 - Docker + Docker Compose, se optar por containers.
 
@@ -80,8 +80,10 @@ existe administrador local e nunca é sobrescrita em reinicializações. No prim
 login, a troca da senha é obrigatória. Depois disso, o administrador cria as demais
 contas pela página **Alunos**; a senha temporária é mostrada uma única vez.
 
-As senhas usam Argon2. A sessão usa token aleatório opaco, armazenado apenas como
-SHA-256 no banco, expira após `SESSION_HOURS` e é revogada em logout, alteração,
+As senhas usam Argon2. A sessão usa token aleatório opaco: no servidor fica apenas
+seu SHA-256 e, no navegador, o token é mantido em `localStorage` por um componente
+oficial bidirecional do Streamlit. Nenhum nome, e-mail, papel ou senha é salvo no
+navegador. A sessão expira após `SESSION_HOURS` e é revogada em logout, alteração,
 redefinição, desativação ou mudança de papel. Após `LOGIN_MAX_ATTEMPTS` falhas, a
 conta fica bloqueada por `LOGIN_LOCK_MINUTES`. A aplicação deve ser publicada atrás
 de HTTPS. O modo Google OIDC legado continua disponível somente quando
@@ -360,6 +362,6 @@ tests/                          suite offline
 - Regras simples não avaliam qualidade/veracidade de resumos; essas entregas vão para revisão.
 - OCR pode falhar em imagens comprimidas ou textos pequenos; baixa confiança vai para revisão.
 - Estados aprovados são terminais no MVP. Correções de pontos usam uma nova transação compensatória auditada na página de relatórios; a submissão original não é reescrita.
-- O cookie persistente contém somente um token opaco e recebe `SameSite=Lax` e `Secure` em produção. Como o Streamlit expõe cookies de requisição apenas para leitura, a ponte de gravação executada no navegador não consegue marcar o cookie como `HttpOnly`; a expiração, o hash no banco e a revogação reduzem esse risco residual.
+- A persistência do login local usa `localStorage`, pois o Community Cloud filtra cookies personalizados no refresh. O valor é um token opaco revogável, nunca identidade ou papel; por ser legível por JavaScript, exige HTTPS e código de interface confiável. O hash no banco, a expiração e a revogação limitam o risco residual.
 - SQLite é adequado ao volume atual; uma futura migração pode reutilizar `DATABASE_URL`, mas exige migrações formais e testes no novo dialeto.
 - Google Sheets é um espelho eventualmente consistente e administrativo; indisponibilidade externa não altera o ledger local, e o comando de reconciliação refaz o snapshot completo.

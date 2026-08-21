@@ -16,6 +16,7 @@ from english_leaderboard.local_auth import (
     AuthenticationError,
     bootstrap_initial_admin,
     change_password,
+    create_auth_session,
     hash_password,
     login_with_password,
     resolve_auth_session,
@@ -111,6 +112,30 @@ def test_login_persistent_session_password_change_logout_and_expiry(
     auth_session.expires_at = utcnow() - timedelta(seconds=1)
     session.commit()
     assert resolve_auth_session(session, expired.token) is None
+
+
+def test_unbounded_or_malformed_session_tokens_are_rejected(session) -> None:
+    assert resolve_auth_session(session, "short") is None
+    assert resolve_auth_session(session, "x" * 10_000) is None
+    revoke_session(session, "x" * 10_000)
+
+
+def test_demo_and_local_sessions_cannot_cross_authentication_modes(
+    session,
+    settings,
+    users,
+) -> None:
+    user = users[Role.ADMIN]
+    local_result = create_auth_session(session, user, settings)
+    demo_result = create_auth_session(session, user, settings, audience="demo")
+
+    assert resolve_auth_session(session, local_result.token).id == user.id
+    assert resolve_auth_session(session, local_result.token, audience="demo") is None
+    assert resolve_auth_session(session, demo_result.token) is None
+    assert (
+        resolve_auth_session(session, demo_result.token, audience="demo").id
+        == user.id
+    )
 
 
 def test_last_active_admin_cannot_be_disabled(session, users) -> None:

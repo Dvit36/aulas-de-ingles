@@ -2,23 +2,25 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from hashlib import sha256
 import secrets
 import string
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+from typing import Literal
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from .browser_session import valid_session_token
 from .config import Settings
 from .models import AuthSession, Role, User, utcnow
 
-
 PASSWORD_HASHER = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2)
 GENERIC_LOGIN_ERROR = "E-mail ou senha inválidos. Tente novamente."
+SessionAudience = Literal["local", "demo"]
 
 
 class AuthenticationError(ValueError):
@@ -35,7 +37,7 @@ class LoginResult:
 def _aware(value: datetime | None) -> datetime | None:
     if value is None:
         return None
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def validate_password(password: str) -> None:
@@ -115,13 +117,17 @@ def bootstrap_initial_admin(session: Session, settings: Settings) -> User | None
 
 
 def create_auth_session(
-    session: Session, user: User, settings: Settings
+    session: Session,
+    user: User,
+    settings: Settings,
+    *,
+    audience: SessionAudience = "local",
 ) -> LoginResult:
     token = secrets.token_urlsafe(48)
     expires_at = utcnow() + timedelta(hours=settings.session_hours)
     auth_session = AuthSession(
         user_id=user.id,
-        token_hash=sha256(token.encode("utf-8")).hexdigest(),
+        token_hash=_session_token_hash(token, audience),
         session_version=user.session_version,
         expires_at=expires_at,
     )
@@ -163,10 +169,23 @@ def login_with_password(
     return create_auth_session(session, user, settings)
 
 
-def resolve_auth_session(session: Session, token: str | None) -> User | None:
-    if not token:
+def _session_token_hash(token: str, audience: SessionAudience) -> str:
+    if audience not in {"local", "demo"}:
+        raise ValueError("Audiência de sessão inválida")
+    material = token if audience == "local" else f"demo:{token}"
+    return sha256(material.encode("utf-8")).hexdigest()
+
+
+def resolve_auth_session(
+    session: Session,
+    token: str | None,
+    *,
+    audience: SessionAudience = "local",
+) -> User | None:
+    normalized_token = valid_session_token(token)
+    if normalized_token is None:
         return None
-    token_hash = sha256(token.encode("utf-8")).hexdigest()
+    token_hash = _session_token_hash(normalized_token, audience)
     auth_session = session.scalar(
         select(AuthSession).where(AuthSession.token_hash == token_hash)
     )
@@ -189,10 +208,16 @@ def resolve_auth_session(session: Session, token: str | None) -> User | None:
     return user
 
 
-def revoke_session(session: Session, token: str | None) -> None:
-    if not token:
+def revoke_session(
+    session: Session,
+    token: str | None,
+    *,
+    audience: SessionAudience = "local",
+) -> None:
+    normalized_token = valid_session_token(token)
+    if normalized_token is None:
         return
-    token_hash = sha256(token.encode("utf-8")).hexdigest()
+    token_hash = _session_token_hash(normalized_token, audience)
     session.execute(
         update(AuthSession)
         .where(AuthSession.token_hash == token_hash, AuthSession.revoked_at.is_(None))
@@ -234,8 +259,8 @@ def set_temporary_password(session: Session, user: User, password: str) -> None:
 
 
 __all__ = [
-    "AuthenticationError",
     "GENERIC_LOGIN_ERROR",
+    "AuthenticationError",
     "LoginResult",
     "bootstrap_initial_admin",
     "change_password",

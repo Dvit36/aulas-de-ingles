@@ -62,14 +62,18 @@ from english_leaderboard.services import (
     submit_evidence,
 )
 from english_leaderboard.browser_session import (
+    BrowserSessionSnapshot,
+    COMMAND_KEY,
     forget_token,
+    mount_browser_session,
+    queue_token_write,
     remember_token,
-    render_cookie_bridge,
-    request_cookie,
+    request_token,
 )
 from english_leaderboard.local_auth import (
     AuthenticationError,
     change_password,
+    create_auth_session,
     login_with_password,
     resolve_auth_session,
     revoke_session,
@@ -116,6 +120,8 @@ class AuthenticationState:
     oidc_logged_in: bool = False
     oidc_available: bool = True
     local_token: str | None = None
+    restoring_session: bool = False
+    browser_storage_available: bool = True
 
 
 def show_operation_error(context: str, error: Exception) -> None:
@@ -219,33 +225,92 @@ def _oidc_login_state() -> bool | None:
     return bool(value)
 
 
-def authenticate(session, settings: Settings) -> AuthenticationState:
+def authenticate(
+    session,
+    settings: Settings,
+    *,
+    browser_session_ready: bool = True,
+    browser_storage_available: bool = True,
+) -> AuthenticationState:
     """Resolve an existing session without implicitly logging anyone in."""
 
+    command = st.session_state.get(COMMAND_KEY)
+    clearing_browser_session = (
+        isinstance(command, dict) and command.get("op") == "clear"
+    )
+    saving_browser_session = (
+        isinstance(command, dict) and command.get("op") == "write"
+    )
+    token = None if clearing_browser_session else request_token(st)
+    uses_browser_session = settings.demo_auth_enabled or settings.local_auth_enabled
+    if uses_browser_session and saving_browser_session and browser_storage_available:
+        return AuthenticationState(
+            actor=None,
+            restoring_session=True,
+            browser_storage_available=True,
+        )
+    if uses_browser_session and token is None and not browser_session_ready:
+        return AuthenticationState(
+            actor=None,
+            restoring_session=True,
+            browser_storage_available=browser_storage_available,
+        )
+
     if settings.demo_auth_enabled:
+        if token:
+            actor = resolve_auth_session(session, token, audience="demo")
+            if actor is not None and actor.active:
+                st.session_state["demo_user_id"] = actor.id
+                remember_token(st, token)
+                return AuthenticationState(
+                    actor=actor,
+                    local_token=token,
+                    browser_storage_available=browser_storage_available,
+                )
+            forget_token(st)
         demo_user_id = st.session_state.get("demo_user_id")
         if not demo_user_id:
-            return AuthenticationState(actor=None)
+            return AuthenticationState(
+                actor=None,
+                browser_storage_available=browser_storage_available,
+            )
         actor = session.get(User, str(demo_user_id))
         if actor is None or not actor.active:
             st.session_state.pop("demo_user_id", None)
             return AuthenticationState(
                 actor=None,
                 error="A identidade demo selecionada não está mais disponível.",
+                browser_storage_available=browser_storage_available,
             )
-        return AuthenticationState(actor=actor)
+        result = create_auth_session(session, actor, settings, audience="demo")
+        session.commit()
+        queue_token_write(st, result.token, result.expires_at)
+        return AuthenticationState(
+            actor=actor,
+            local_token=result.token,
+            browser_storage_available=browser_storage_available,
+        )
 
     if settings.local_auth_enabled:
-        if st.session_state.get("clear_local_auth_cookie"):
-            return AuthenticationState(actor=None)
-        token = request_cookie(st)
+        if clearing_browser_session:
+            return AuthenticationState(
+                actor=None,
+                browser_storage_available=browser_storage_available,
+            )
         actor = resolve_auth_session(session, token)
         if actor is None:
             if token:
                 forget_token(st)
-            return AuthenticationState(actor=None)
+            return AuthenticationState(
+                actor=None,
+                browser_storage_available=browser_storage_available,
+            )
         remember_token(st, token or "")
-        return AuthenticationState(actor=actor, local_token=token)
+        return AuthenticationState(
+            actor=actor,
+            local_token=token,
+            browser_storage_available=browser_storage_available,
+        )
 
     oidc_login_state = _oidc_login_state()
     if oidc_login_state is None:
@@ -287,29 +352,6 @@ def authenticate(session, settings: Settings) -> AuthenticationState:
     return AuthenticationState(actor=user, oidc_logged_in=True)
 
 
-def _flush_browser_session_bridge(
-    bridge_slot,
-    settings: Settings,
-    auth_state: AuthenticationState,
-) -> None:
-    """Apply a pending cookie change without shifting the page's delta tree."""
-
-    if st.session_state.get("clear_local_auth_cookie"):
-        render_cookie_bridge(bridge_slot, clear=True, secure=settings.is_production)
-        st.session_state.pop("clear_local_auth_cookie", None)
-        st.session_state.pop("local_auth_expires_at", None)
-        return
-    expires_value = st.session_state.get("local_auth_expires_at")
-    if auth_state.local_token and expires_value:
-        render_cookie_bridge(
-            bridge_slot,
-            token=auth_state.local_token,
-            expires_at=datetime.fromisoformat(str(expires_value)),
-            secure=settings.is_production,
-        )
-        st.session_state.pop("local_auth_expires_at", None)
-
-
 def login_view(
     session,
     settings: Settings,
@@ -317,6 +359,7 @@ def login_view(
     auth_error: str | None = None,
     oidc_logged_in: bool = False,
     oidc_available: bool = True,
+    browser_storage_available: bool = True,
 ) -> None:
     st.header("Entrar")
     with st.container(border=True, key="login_card"):
@@ -328,6 +371,14 @@ def login_view(
         st.write("Acesse sua área para registrar atividades e acompanhar pontos.")
         if auth_error:
             st.error(auth_error)
+        login_notice = st.session_state.pop("login_notice", None)
+        if login_notice:
+            st.success(str(login_notice))
+        if not browser_storage_available:
+            st.warning(
+                "O navegador bloqueou o armazenamento da sessão. Abra o app "
+                "diretamente, fora de uma incorporação, e permita os dados do site."
+            )
 
         if settings.demo_auth_enabled:
             st.warning("Modo demo local ativo")
@@ -354,8 +405,20 @@ def login_view(
                 )
                 submitted = st.form_submit_button("Entrar", type="primary")
             if submitted:
-                st.session_state["demo_user_id"] = selected_id
-                st.rerun()
+                selected_actor = session.get(User, selected_id)
+                if selected_actor is None or not selected_actor.active:
+                    st.error("A identidade demo selecionada não está disponível.")
+                else:
+                    result = create_auth_session(
+                        session,
+                        selected_actor,
+                        settings,
+                        audience="demo",
+                    )
+                    session.commit()
+                    st.session_state["demo_user_id"] = selected_id
+                    queue_token_write(st, result.token, result.expires_at)
+                    st.rerun()
             return
 
         if settings.local_auth_enabled:
@@ -393,10 +456,7 @@ def login_view(
                     session.commit()
                     st.error(str(error))
                 else:
-                    remember_token(st, result.token)
-                    st.session_state["local_auth_expires_at"] = (
-                        result.expires_at.isoformat()
-                    )
+                    queue_token_write(st, result.token, result.expires_at)
                     st.rerun()
             return
 
@@ -431,8 +491,11 @@ def account_view(session, actor: User, settings: Settings) -> None:
         if settings.demo_auth_enabled:
             st.caption("Sessão local de demonstração")
             if st.button("Sair do modo demo", type="primary"):
+                revoke_session(session, request_token(st), audience="demo")
+                session.commit()
                 st.session_state.pop("demo_user_id", None)
                 st.session_state.pop("demo_login_user_selection", None)
+                forget_token(st)
                 st.rerun()
             return
 
@@ -468,9 +531,12 @@ def account_view(session, actor: User, settings: Settings) -> None:
                             show_operation_error("change_password", error)
                         else:
                             forget_token(st)
-                            st.success("Senha alterada. Entre novamente.")
+                            st.session_state["login_notice"] = (
+                                "Senha alterada. Entre novamente."
+                            )
+                            st.rerun()
             if st.button("Sair", type="primary"):
-                revoke_session(session, request_cookie(st))
+                revoke_session(session, request_token(st))
                 session.commit()
                 forget_token(st)
                 st.rerun()
@@ -512,7 +578,10 @@ def forced_password_change_view(session, actor: User, settings: Settings) -> Non
                 show_operation_error("change_password", error)
                 return
             forget_token(st)
-            st.success("Senha alterada. Entre novamente com a nova senha.")
+            st.session_state["login_notice"] = (
+                "Senha alterada. Entre novamente com a nova senha."
+            )
+            st.rerun()
 
 
 def _password_change_route(
@@ -530,6 +599,7 @@ def _run_navigation(
     routes: Sequence[PageRoute],
     *,
     visible_routes: Sequence[PageRoute] | None = None,
+    rerun_before_render: bool = False,
 ) -> None:
     """Render a role-specific, always-visible navigation bar above the page."""
 
@@ -546,6 +616,10 @@ def _run_navigation(
         for index, route in enumerate(routes)
     ]
     selected_page = st.navigation(pages, position="hidden")
+    if rerun_before_render:
+        # Register the stable router first so a deep link survives, but do not
+        # emit a page generation that will immediately become stale.
+        st.rerun()
     pages_by_path = {
         route.url_path: page for page, route in zip(pages, routes, strict=True)
     }
@@ -573,7 +647,8 @@ def _run_navigation(
         vertical_alignment="center",
         gap="small",
     ):
-        for route in visible_routes or routes:
+        navigation_routes = routes if visible_routes is None else visible_routes
+        for route in navigation_routes:
             page = pages_by_path[route.url_path]
             st.page_link(
                 page,
@@ -687,12 +762,18 @@ def _render_login_state(
     settings: Settings,
     auth_state: AuthenticationState,
 ) -> None:
+    if auth_state.restoring_session:
+        st.header("Restaurando sessão")
+        with st.container(border=True, key="session_restore_card"):
+            st.info("Recuperando seu acesso e a página atual…")
+        return
     login_view(
         session,
         settings,
         auth_error=auth_state.error,
         oidc_logged_in=auth_state.oidc_logged_in,
         oidc_available=auth_state.oidc_available,
+        browser_storage_available=auth_state.browser_storage_available,
     )
 
 
@@ -812,6 +893,8 @@ def _visible_routes(
     auth_state: AuthenticationState,
 ) -> list[PageRoute]:
     actor = auth_state.actor
+    if auth_state.restoring_session:
+        return []
     if actor is None:
         return _public_routes(session, settings, auth_state)
     if settings.local_auth_enabled and actor.must_change_password:
@@ -1882,6 +1965,51 @@ def admin_dashboard(session) -> None:
     leaderboard_view(session, key_prefix="admin_dashboard")
 
 
+def _browser_command_id() -> str | None:
+    command = st.session_state.get(COMMAND_KEY)
+    if not isinstance(command, dict):
+        return None
+    value = command.get("id")
+    return value if isinstance(value, str) else None
+
+
+def _mount_persistent_browser_session(settings: Settings) -> BrowserSessionSnapshot:
+    if not (settings.demo_auth_enabled or settings.local_auth_enabled):
+        return BrowserSessionSnapshot(ready=True)
+
+    # Migrate pending state from the previous cookie-based release.
+    if st.session_state.pop("clear_local_auth_cookie", False):
+        forget_token(st)
+    legacy_expiry = st.session_state.pop("local_auth_expires_at", None)
+    had_state_token = bool(st.session_state.get("local_auth_token"))
+    existing_token = request_token(st)
+    if (
+        existing_token
+        and _browser_command_id() is None
+        and (legacy_expiry is not None or not had_state_token)
+    ):
+        if legacy_expiry:
+            try:
+                expires_at = datetime.fromisoformat(str(legacy_expiry))
+            except ValueError:
+                expires_at = datetime.now(timezone.utc) + timedelta(
+                    hours=settings.session_hours
+                )
+        else:
+            expires_at = datetime.now(timezone.utc) + timedelta(
+                hours=settings.session_hours
+            )
+        queue_token_write(st, existing_token, expires_at)
+
+    snapshot = mount_browser_session(st)
+    # A component can return its previous payload for one run while a new
+    # write/clear command is still awaiting ACK. Never let that stale token
+    # overwrite the newly authenticated session.
+    if snapshot.token and _browser_command_id() is None:
+        remember_token(st, snapshot.token)
+    return snapshot
+
+
 def main() -> None:
     try:
         settings, factory = runtime()
@@ -1889,17 +2017,26 @@ def main() -> None:
         st.error(f"Configuração inválida: {error}")
         st.stop()
     with session_scope(factory) as session:
-        # This placeholder must exist at the same root delta path on every run.
-        # Filling an occasional iframe before the navigation shifts Streamlit's
-        # element tree and can leave old login forms attached after authentication.
-        browser_session_bridge = st.empty()
-        auth_state = authenticate(session, settings)
+        browser_session = _mount_persistent_browser_session(settings)
+        command_before_auth = _browser_command_id()
+        auth_state = authenticate(
+            session,
+            settings,
+            browser_session_ready=browser_session.ready,
+            browser_storage_available=browser_session.storage_available,
+        )
+        command_after_auth = _browser_command_id()
         st.session_state.pop("post_login_ready", None)
         st.session_state.pop("post_login_route", None)
         registered_routes = _registered_routes(session, settings, auth_state)
         visible_routes = _visible_routes(session, settings, auth_state)
-        _run_navigation(registered_routes, visible_routes=visible_routes)
-        _flush_browser_session_bridge(browser_session_bridge, settings, auth_state)
+        _run_navigation(
+            registered_routes,
+            visible_routes=visible_routes,
+            rerun_before_render=bool(
+                command_after_auth and command_after_auth != command_before_auth
+            ),
+        )
 
 
 if __name__ == "__main__":
