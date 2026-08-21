@@ -330,26 +330,30 @@ main img,
   box-shadow: 2px 2px 0 var(--robo-ink);
 }
 
-.stButton > button[kind="primary"],
-[data-testid="stFormSubmitButton"] > button[kind="primary"] {
-  background: var(--robo-red);
-  color: var(--robo-white);
+/* `st.button(type="primary")` marca kind="primary" e
+   `st.form_submit_button(type="primary")` marca kind="primaryFormSubmit".
+   O prefixo cobre os dois; casar só "primary" deixava o botão de formulário
+   de fora, que era o caso do Entrar. */
+.stButton > button[kind^="primary"],
+[data-testid="stFormSubmitButton"] > button[kind^="primary"] {
+  background: var(--robo-red) !important;
+  color: var(--robo-white) !important;
 }
 
 /* Fundo vermelho pede letra branca em todos os estados. A regra genérica de
    hover pinta o texto de carvão, o que sobre o vermelho fica ilegível. */
-.stButton > button[kind="primary"]:hover,
-.stButton > button[kind="primary"]:focus,
-.stButton > button[kind="primary"]:active,
-[data-testid="stFormSubmitButton"] > button[kind="primary"]:hover,
-[data-testid="stFormSubmitButton"] > button[kind="primary"]:focus,
-[data-testid="stFormSubmitButton"] > button[kind="primary"]:active {
-  background: var(--robo-red);
+.stButton > button[kind^="primary"]:hover,
+.stButton > button[kind^="primary"]:focus,
+.stButton > button[kind^="primary"]:active,
+[data-testid="stFormSubmitButton"] > button[kind^="primary"]:hover,
+[data-testid="stFormSubmitButton"] > button[kind^="primary"]:focus,
+[data-testid="stFormSubmitButton"] > button[kind^="primary"]:active {
+  background: var(--robo-red) !important;
   color: var(--robo-white) !important;
 }
 
-.stButton > button[kind="primary"]:hover *,
-[data-testid="stFormSubmitButton"] > button[kind="primary"]:hover * {
+.stButton > button[kind^="primary"] *,
+[data-testid="stFormSubmitButton"] > button[kind^="primary"] * {
   color: var(--robo-white) !important;
 }
 

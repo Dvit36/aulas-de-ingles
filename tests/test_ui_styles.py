@@ -127,7 +127,14 @@ def test_text_fields_get_a_visible_outline() -> None:
 def test_primary_button_keeps_white_text_on_hover() -> None:
     css = responsive_css()
 
-    bloco = css.split('button[kind="primary"]:hover,', 1)[1].split("}", 1)[0]
+    # `st.button` marca kind="primary" e `st.form_submit_button` marca
+    # kind="primaryFormSubmit". Casar o valor exato deixava o botão Entrar de
+    # fora, que foi exatamente o que aconteceu.
+    assert 'button[kind="primary"]' not in css
+    assert 'button[kind^="primary"]' in css
+
+    bloco = css.split('button[kind^="primary"]:hover,', 1)[1].split("}", 1)[0]
     # Fundo vermelho exige letra branca; a regra genérica de hover pinta de
     # carvão e deixaria o texto ilegível.
     assert "color: var(--robo-white) !important" in bloco
+    assert "background: var(--robo-red) !important" in bloco
