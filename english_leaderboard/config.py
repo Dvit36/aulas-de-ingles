@@ -23,6 +23,23 @@ def _as_bool(value: str | None, *, default: bool = False) -> bool:
     raise ValueError(f"Valor booleano inválido: {value!r}")
 
 
+def _env_with_legacy(name: str, legacy_name: str, default: str = "") -> str:
+    """Lê a variável atual e aceita o nome antigo enquanto ele existir.
+
+    O login deixou de usar e-mail, mas ambientes já implantados guardam os
+    segredos com os nomes antigos. Ler o nome antigo evita que uma atualização
+    da imagem derrube a aplicação por configuração ausente.
+    """
+
+    current = os.getenv(name)
+    if current is not None and current.strip():
+        return current
+    legacy = os.getenv(legacy_name)
+    if legacy is not None and legacy.strip():
+        return legacy
+    return default
+
+
 def _csv_set(value: str | None, *, lower: bool = False) -> frozenset[str]:
     items = {item.strip() for item in (value or "").split(",") if item.strip()}
     return frozenset(item.lower() for item in items) if lower else frozenset(items)
@@ -84,19 +101,19 @@ class Settings:
         settings = cls(
             app_env=os.getenv("APP_ENV", "development").strip().lower(),
             demo_auth_enabled=_as_bool(os.getenv("DEMO_AUTH_ENABLED")),
-            demo_student_username=os.getenv(
-                "DEMO_STUDENT_USERNAME", "aluno.demo"
+            demo_student_username=_env_with_legacy(
+                "DEMO_STUDENT_USERNAME", "DEMO_STUDENT_EMAIL", "aluno.demo"
             ).strip().lower(),
-            demo_admin_username=os.getenv(
-                "DEMO_ADMIN_USERNAME", "admin.demo"
+            demo_admin_username=_env_with_legacy(
+                "DEMO_ADMIN_USERNAME", "DEMO_ADMIN_EMAIL", "admin.demo"
             ).strip().lower(),
             seed_fake_data=_as_bool(os.getenv("SEED_FAKE_DATA"), default=True),
             local_auth_enabled=_as_bool(
                 os.getenv("LOCAL_AUTH_ENABLED"), default=True
             ),
             bootstrap_admin_name=os.getenv("BOOTSTRAP_ADMIN_NAME", "").strip(),
-            bootstrap_admin_username=os.getenv(
-                "BOOTSTRAP_ADMIN_USERNAME", ""
+            bootstrap_admin_username=_env_with_legacy(
+                "BOOTSTRAP_ADMIN_USERNAME", "BOOTSTRAP_ADMIN_EMAIL"
             ).strip().lower(),
             bootstrap_admin_password=os.getenv(
                 "BOOTSTRAP_ADMIN_PASSWORD", ""
@@ -106,8 +123,12 @@ class Settings:
             login_lock_minutes=int(os.getenv("LOGIN_LOCK_MINUTES", "15")),
             database_url=os.getenv("DATABASE_URL", "sqlite:///./data/app.db").strip(),
             upload_dir=Path(os.getenv("UPLOAD_DIR", "./data/uploads")),
-            allowed_usernames=_csv_set(os.getenv("ALLOWED_USERNAMES"), lower=True),
-            admin_usernames=_csv_set(os.getenv("ADMIN_USERNAMES"), lower=True),
+            allowed_usernames=_csv_set(
+                _env_with_legacy("ALLOWED_USERNAMES", "ALLOWED_EMAILS"), lower=True
+            ),
+            admin_usernames=_csv_set(
+                _env_with_legacy("ADMIN_USERNAMES", "ADMIN_EMAILS"), lower=True
+            ),
             max_upload_bytes=int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))),
             max_upload_files=int(os.getenv("MAX_UPLOAD_FILES", "10")),
             max_upload_total_bytes=int(
@@ -217,9 +238,21 @@ class Settings:
             self.bootstrap_admin_password,
         )
         if any(bootstrap_values) and not all(bootstrap_values):
+            missing = [
+                label
+                for label, value in (
+                    ("BOOTSTRAP_ADMIN_NAME", self.bootstrap_admin_name),
+                    ("BOOTSTRAP_ADMIN_USERNAME", self.bootstrap_admin_username),
+                    ("BOOTSTRAP_ADMIN_PASSWORD", self.bootstrap_admin_password),
+                )
+                if not value
+            ]
             raise ValueError(
                 "BOOTSTRAP_ADMIN_NAME, BOOTSTRAP_ADMIN_USERNAME e "
-                "BOOTSTRAP_ADMIN_PASSWORD devem ser definidos juntos"
+                "BOOTSTRAP_ADMIN_PASSWORD devem ser definidos juntos. "
+                f"Faltando: {', '.join(missing)}. "
+                "BOOTSTRAP_ADMIN_USERNAME substituiu BOOTSTRAP_ADMIN_EMAIL; "
+                "o nome antigo ainda é aceito."
             )
         if self.bootstrap_admin_password and len(self.bootstrap_admin_password) < 10:
             raise ValueError("BOOTSTRAP_ADMIN_PASSWORD deve ter ao menos 10 caracteres")

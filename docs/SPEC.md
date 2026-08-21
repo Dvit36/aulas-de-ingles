@@ -128,6 +128,6 @@ O importador nunca salva no arquivo fonte.
 
 - Imagem Python 3.12 slim, Streamlit `>=1.61.1` com Authlib, dependências locais e health check em `/_stcore/health`.
 - Compose com aplicação e scheduler independente, porta 8501 e volumes compartilhados de banco/uploads.
-- Configuração por `.env`; senhas do administrador inicial e SMTP ficam somente no ambiente/secret manager.
+- Configuração por `.env`; senhas do administrador inicial e SMTP ficam somente no ambiente/secret manager. As variáveis de identidade foram renomeadas de `*_EMAIL` para `*_USERNAME`; os nomes antigos continuam sendo lidos como reserva, com precedência para os atuais.
 - Máquina alvo: 2–4 CPUs, 8 GB RAM e SSD. Sem workers distribuídos.
 - Em VPS: firewall, proxy Caddy/Nginx com TLS ou Tailscale/VPN, backups externos e atualização controlada da imagem.

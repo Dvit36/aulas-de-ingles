@@ -227,3 +227,59 @@ def test_database_and_committed_upload_survive_runtime_restart(tmp_path: Path):
         assert image is not None
         assert (upload_dir / image.storage_key).is_file()
     second_engine.dispose()
+
+
+def test_legacy_email_variables_still_configure_the_new_username_settings(
+    monkeypatch,
+) -> None:
+    """Ambientes já implantados não podem quebrar por causa do rename."""
+
+    for name in (
+        "BOOTSTRAP_ADMIN_NAME",
+        "BOOTSTRAP_ADMIN_USERNAME",
+        "BOOTSTRAP_ADMIN_EMAIL",
+        "BOOTSTRAP_ADMIN_PASSWORD",
+        "ALLOWED_USERNAMES",
+        "ALLOWED_EMAILS",
+        "ADMIN_USERNAMES",
+        "ADMIN_EMAILS",
+        "DEMO_STUDENT_USERNAME",
+        "DEMO_STUDENT_EMAIL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DEMO_AUTH_ENABLED", "false")
+    monkeypatch.setenv("LOCAL_AUTH_ENABLED", "true")
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_NAME", "Administrador")
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_EMAIL", "admin@equipe.org")
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_PASSWORD", "senha-inicial-forte-2026")
+    monkeypatch.setenv("ALLOWED_EMAILS", "admin@equipe.org,aluno@equipe.org")
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@equipe.org")
+    monkeypatch.setenv("DEMO_STUDENT_EMAIL", "aluno.legado")
+
+    settings = Settings.from_env(env_file=None)
+
+    assert settings.bootstrap_admin_username == "admin@equipe.org"
+    assert settings.admin_usernames == frozenset({"admin@equipe.org"})
+    assert settings.demo_student_username == "aluno.legado"
+
+    # O nome novo tem precedência quando os dois estão definidos.
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_USERNAME", "admin")
+    assert Settings.from_env(env_file=None).bootstrap_admin_username == "admin"
+
+
+def test_missing_bootstrap_variable_is_named_in_the_error(monkeypatch) -> None:
+    for name in (
+        "BOOTSTRAP_ADMIN_USERNAME",
+        "BOOTSTRAP_ADMIN_EMAIL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_NAME", "Administrador")
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_PASSWORD", "senha-inicial-forte-2026")
+
+    with pytest.raises(ValueError) as error:
+        Settings.from_env(env_file=None)
+
+    message = str(error.value)
+    assert "Faltando: BOOTSTRAP_ADMIN_USERNAME" in message
+    assert "BOOTSTRAP_ADMIN_EMAIL" in message

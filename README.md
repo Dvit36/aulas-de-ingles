@@ -94,6 +94,20 @@ Bancos criados antes desta mudança guardavam o identificador na coluna `email`;
 migração 2 renomeia essa coluna para `username` sem alterar os valores, então as
 contas existentes continuam entrando com exatamente o que já usavam.
 
+As variáveis de ambiente também foram renomeadas, e os nomes antigos continuam
+sendo aceitos para não derrubar ambientes já implantados na atualização:
+
+| Nome atual | Nome antigo ainda aceito |
+|---|---|
+| `BOOTSTRAP_ADMIN_USERNAME` | `BOOTSTRAP_ADMIN_EMAIL` |
+| `ALLOWED_USERNAMES` | `ALLOWED_EMAILS` |
+| `ADMIN_USERNAMES` | `ADMIN_EMAILS` |
+| `DEMO_STUDENT_USERNAME` | `DEMO_STUDENT_EMAIL` |
+| `DEMO_ADMIN_USERNAME` | `DEMO_ADMIN_EMAIL` |
+
+Quando as duas estão definidas, a atual vence. Prefira migrar os segredos para
+os nomes atuais; o suporte aos antigos existe para a janela de transição.
+
 As senhas usam Argon2. A sessão usa token aleatório opaco: no servidor fica apenas
 seu SHA-256 e, no navegador, o token é mantido em `localStorage` por um componente
 oficial bidirecional do Streamlit. Nenhum nome, usuário, papel ou senha é salvo no
