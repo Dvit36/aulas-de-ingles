@@ -152,6 +152,10 @@ main img,
   top: 3.25rem;
   z-index: 990;
   width: 100%;
+  /* O Streamlit insere 1rem entre blocos verticais. O cabeçalho e a navegação
+     formam uma peça só — a barra de cima não tem borda inferior e arredonda
+     apenas o topo —, então esse vão abriria uma fresta na emenda. */
+  margin-top: -1rem;
   margin-bottom: 1.75rem;
   padding: 0.45rem 0.65rem;
   border: var(--robo-border);

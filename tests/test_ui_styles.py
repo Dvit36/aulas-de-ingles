@@ -81,3 +81,14 @@ def test_leaderboard_podium_and_board_styles_exist() -> None:
     # O pódio herda o cartão escuro e o contorno da identidade Robonáticos.
     assert "background: var(--robo-charcoal)" in css
     assert "border: var(--robo-border)" in css
+
+
+def test_header_and_nav_join_without_a_seam() -> None:
+    css = responsive_css()
+
+    # A barra da marca fecha sem borda inferior e arredonda só o topo...
+    assert "border-radius: 1.5rem 1.5rem 0 0" in css
+    # ...e a navegação arredonda só a base, completando a mesma peça.
+    assert "border-radius: 0 0 1.25rem 1.25rem" in css
+    # O vão de 1rem que o Streamlit insere entre blocos é anulado.
+    assert "margin-top: -1rem" in css
