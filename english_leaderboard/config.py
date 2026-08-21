@@ -34,6 +34,7 @@ class Settings:
     demo_auth_enabled: bool = False
     demo_student_email: str = "aluno.demo@example.local"
     demo_admin_email: str = "admin.demo@example.local"
+    seed_fake_data: bool = True
     local_auth_enabled: bool = True
     bootstrap_admin_name: str = ""
     bootstrap_admin_email: str = ""
@@ -77,7 +78,7 @@ class Settings:
         return self.app_env == "production"
 
     @classmethod
-    def from_env(cls, *, env_file: str | Path | None = ".env") -> "Settings":
+    def from_env(cls, *, env_file: str | Path | None = ".env") -> Settings:
         if load_dotenv is not None and env_file:
             load_dotenv(dotenv_path=env_file, override=False)
         settings = cls(
@@ -89,6 +90,7 @@ class Settings:
             demo_admin_email=os.getenv(
                 "DEMO_ADMIN_EMAIL", "admin.demo@example.local"
             ).strip().lower(),
+            seed_fake_data=_as_bool(os.getenv("SEED_FAKE_DATA"), default=True),
             local_auth_enabled=_as_bool(
                 os.getenv("LOCAL_AUTH_ENABLED"), default=True
             ),

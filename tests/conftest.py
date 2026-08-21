@@ -22,6 +22,7 @@ def settings(tmp_path: Path) -> Settings:
     return Settings(
         app_env="test",
         demo_auth_enabled=False,
+        seed_fake_data=False,
         database_url="sqlite+pysqlite:///:memory:",
         upload_dir=tmp_path / "uploads",
         max_upload_bytes=5 * 1024 * 1024,
@@ -108,4 +109,3 @@ def make_png(seed: int = 1, *, metadata: str | None = None) -> bytes:
         pnginfo.add_text("variant", metadata)
     image.save(output, format="PNG", pnginfo=pnginfo)
     return output.getvalue()
-

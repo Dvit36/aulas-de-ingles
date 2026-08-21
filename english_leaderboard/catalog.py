@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 from .config import Settings
 from .models import Activity, ReminderConfiguration, Role, User
 
-
 CATALOG_SEED: tuple[dict[str, object], ...] = (
     {
         "code": "duolingo_beconfident",
@@ -137,6 +136,10 @@ def seed_database(session: Session, settings: Settings) -> None:
     from .local_auth import bootstrap_initial_admin
 
     bootstrap_initial_admin(session, settings)
+    if settings.seed_fake_data:
+        from .synthetic_data import seed_fake_students
+
+        seed_fake_students(session)
     if session.get(ReminderConfiguration, 1) is None:
         session.add(ReminderConfiguration(id=1, enabled=False))
     session.flush()

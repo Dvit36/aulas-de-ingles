@@ -60,7 +60,7 @@ english-leaderboard init-db
 streamlit run streamlit_app.py
 ```
 
-Abra `http://localhost:8501`. O `.env.example` ativa o modo demo e cria um aluno e um administrador locais. A aplicação começa na área pública: abra **Entrar**, escolha uma identidade e clique explicitamente em **Entrar**. Apenas selecionar um usuário não inicia uma sessão. A identidade escolhida permanece na sessão até usar **Minha conta → Sair do modo demo**.
+Abra `http://localhost:8501`. O `.env.example` ativa o modo demo, cria um aluno e um administrador locais e popula cinco alunos claramente marcados como **Demo** com 52 envios sintéticos e ranking idempotente. A aplicação começa na área pública: abra **Entrar**, escolha uma identidade e clique explicitamente em **Entrar**. Apenas selecionar um usuário não inicia uma sessão. A identidade escolhida permanece na sessão até usar **Minha conta → Sair do modo demo**. Defina `SEED_FAKE_DATA=false` para impedir a criação em bancos novos; a opção não apaga lançamentos já criados no ledger imutável.
 
 Nunca use o modo demo em produção; o startup recusa `APP_ENV=production` junto de `DEMO_AUTH_ENABLED=true`.
 
