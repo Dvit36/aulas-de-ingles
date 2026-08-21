@@ -111,3 +111,23 @@ def test_header_piece_has_no_partial_shadow() -> None:
     # A barra da marca não tem sombra; a navegação também não pode ter, senão
     # a sombra sólida começa no meio do cabeçalho.
     assert "box-shadow" not in nav_block
+
+
+def test_text_fields_get_a_visible_outline() -> None:
+    css = responsive_css()
+
+    # A borda do campo vive no invólucro do Streamlit, não no <input>: lá ela
+    # nasce branca sobre branco e o campo fica invisível.
+    assert '[data-testid="stTextInputRootElement"]' in css
+    assert '[data-testid="stTextAreaRootElement"]' in css
+    assert "border: 2px solid var(--robo-ink) !important" in css
+    assert ":focus-within" in css
+
+
+def test_primary_button_keeps_white_text_on_hover() -> None:
+    css = responsive_css()
+
+    bloco = css.split('button[kind="primary"]:hover,', 1)[1].split("}", 1)[0]
+    # Fundo vermelho exige letra branca; a regra genérica de hover pinta de
+    # carvão e deixaria o texto ilegível.
+    assert "color: var(--robo-white) !important" in bloco

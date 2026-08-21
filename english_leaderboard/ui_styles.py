@@ -336,20 +336,47 @@ main img,
   color: var(--robo-white);
 }
 
-input,
-textarea,
+/* Fundo vermelho pede letra branca em todos os estados. A regra genérica de
+   hover pinta o texto de carvão, o que sobre o vermelho fica ilegível. */
+.stButton > button[kind="primary"]:hover,
+.stButton > button[kind="primary"]:focus,
+.stButton > button[kind="primary"]:active,
+[data-testid="stFormSubmitButton"] > button[kind="primary"]:hover,
+[data-testid="stFormSubmitButton"] > button[kind="primary"]:focus,
+[data-testid="stFormSubmitButton"] > button[kind="primary"]:active {
+  background: var(--robo-red);
+  color: var(--robo-white) !important;
+}
+
+.stButton > button[kind="primary"]:hover *,
+[data-testid="stFormSubmitButton"] > button[kind="primary"]:hover * {
+  color: var(--robo-white) !important;
+}
+
+/* O Streamlit desenha a borda do campo no invólucro, não no <input>, e ela
+   nasce branca sobre fundo branco. Definir só `border-color` no elemento
+   interno não produzia contorno nenhum: o campo ficava invisível. */
+[data-testid="stTextInputRootElement"],
+[data-testid="stTextAreaRootElement"],
 [data-baseweb="select"] > div,
 [data-testid="stNumberInput"] > div > div {
-  border-color: var(--robo-ink) !important;
+  border: 2px solid var(--robo-ink) !important;
   border-radius: 0.65rem !important;
   background: var(--robo-white) !important;
 }
 
-input:focus,
-textarea:focus,
-[data-baseweb="select"] > div:focus-within {
-  outline: 3px solid var(--robo-yellow) !important;
-  outline-offset: 1px;
+input,
+textarea {
+  background: var(--robo-white) !important;
+  color: var(--robo-ink);
+}
+
+[data-testid="stTextInputRootElement"]:focus-within,
+[data-testid="stTextAreaRootElement"]:focus-within,
+[data-baseweb="select"] > div:focus-within,
+[data-testid="stNumberInput"] > div > div:focus-within {
+  border-color: var(--robo-red) !important;
+  box-shadow: 0 0 0 3px rgb(247 193 30 / 60%);
 }
 
 [data-testid="stFileUploaderDropzone"] {
