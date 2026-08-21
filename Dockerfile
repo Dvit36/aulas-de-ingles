@@ -19,6 +19,7 @@ RUN pip install --upgrade pip \
 COPY english_leaderboard ./english_leaderboard
 COPY streamlit_app.py README.md ./
 COPY docs ./docs
+COPY assets ./assets
 COPY .streamlit/config.toml ./.streamlit/config.toml
 
 RUN pip install --no-deps .

@@ -20,6 +20,11 @@ from .models import (
     utcnow,
 )
 
+LESSON_ACTIVITY_CODE = "duolingo_beconfident"
+LESSON_ACTIVITY_GROUP = "duolingo_beconfident"
+LESSON_BATCH_POINTS = 5
+LESSON_BATCH_SIZE = 5
+
 
 @dataclass(frozen=True)
 class AwardResult:
@@ -49,7 +54,7 @@ def _create_lesson_units(session: Session, submission: Submission) -> None:
                 LessonUnit(
                     submission_id=submission.id,
                     student_id=submission.student_id,
-                    activity_group="duolingo_beconfident",
+                    activity_group=LESSON_ACTIVITY_GROUP,
                     unit_index=index,
                     approved_at=submission.decided_at or submission.processed_at or utcnow(),
                 )
@@ -102,7 +107,7 @@ def award_approved_submission(
     if activity is None:
         raise ValueError("Atividade da submissão não encontrada")
 
-    if activity.code != "duolingo_beconfident":
+    if activity.code != LESSON_ACTIVITY_CODE:
         source_key = f"submission:{submission.id}"
         existing = session.scalar(
             select(LedgerTransaction).where(
@@ -130,9 +135,9 @@ def award_approved_submission(
         return AwardResult(activity.points, (ledger.id,), 0)
 
     _create_lesson_units(session, submission)
-    threshold = activity.unit_threshold
+    threshold = LESSON_BATCH_SIZE
     available = _available_lesson_units(
-        session, submission.student_id, "duolingo_beconfident"
+        session, submission.student_id, LESSON_ACTIVITY_GROUP
     )
     points = 0
     ledger_ids: list[str] = []
@@ -140,14 +145,14 @@ def award_approved_submission(
     while len(available) >= threshold:
         group_units = available[:threshold]
         sequence = _next_batch_sequence(
-            session, submission.student_id, "duolingo_beconfident"
+            session, submission.student_id, LESSON_ACTIVITY_GROUP
         )
         source_key = (
-            f"lesson_batch:{submission.student_id}:duolingo_beconfident:{sequence}"
+            f"lesson_batch:{submission.student_id}:{LESSON_ACTIVITY_GROUP}:{sequence}"
         )
         ledger = LedgerTransaction(
             student_id=submission.student_id,
-            points=activity.points,
+            points=LESSON_BATCH_POINTS,
             kind=LedgerKind.LESSON_BATCH,
             source_type="lesson_batch",
             source_id=None,
@@ -162,7 +167,7 @@ def award_approved_submission(
         session.flush()
         batch = LessonBatch(
             student_id=submission.student_id,
-            activity_group="duolingo_beconfident",
+            activity_group=LESSON_ACTIVITY_GROUP,
             sequence=sequence,
             ledger_transaction_id=ledger.id,
         )
@@ -171,7 +176,7 @@ def award_approved_submission(
         for unit in group_units:
             session.add(LessonBatchUnit(batch_id=batch.id, unit_id=unit.id))
         session.flush()
-        points += activity.points
+        points += LESSON_BATCH_POINTS
         ledger_ids.append(ledger.id)
         batches += 1
         available = available[threshold:]
@@ -207,8 +212,8 @@ def lesson_progress(
     session: Session,
     student_id: str,
     *,
-    activity_group: str = "duolingo_beconfident",
-    threshold: int = 5,
+    activity_group: str = LESSON_ACTIVITY_GROUP,
+    threshold: int = LESSON_BATCH_SIZE,
 ) -> tuple[int, int]:
     unused = session.scalar(
         select(func.count(LessonUnit.id))

@@ -32,7 +32,9 @@ def test_missing_oidc_configuration_does_not_crash(
 ) -> None:
     monkeypatch.setattr(streamlit_app.st, "user", {})
 
-    state = streamlit_app.authenticate(session, settings)
+    state = streamlit_app.authenticate(
+        session, replace(settings, local_auth_enabled=False)
+    )
 
     assert state.actor is None
     assert state.oidc_available is False
@@ -72,8 +74,12 @@ def test_public_and_authenticated_navigation_expose_account_routes(
     student = streamlit_app._student_routes(session, users[Role.STUDENT], settings)
 
     assert [route.label for route in public] == ["Entrar"]
-    assert streamlit_app._account_route(users[Role.ADMIN], settings).label == "Minha conta"
-    assert {route.label for route in admin} >= {"Visão geral", "Revisões", "Relatórios"}
+    assert (
+        streamlit_app._account_route(session, users[Role.ADMIN], settings).label
+        == "Minha conta"
+    )
+    assert {route.label for route in admin} >= {"Visão geral", "Envios", "Relatórios"}
+    assert "Reuniões" not in {route.label for route in admin}
     assert {route.label for route in student} >= {"Início", "Enviar", "Ranking"}
     assert "Entrar" not in {route.label for route in admin}
     assert "Entrar" not in {route.label for route in student}
@@ -146,3 +152,45 @@ def test_navigation_uses_hidden_router_and_visible_page_links(monkeypatch) -> No
     assert [link[1]["label"] for link in calls["links"]] == ["Entrar"]
     assert len(calls["images"]) == 1
     assert calls["ran"] is True
+
+
+def test_requested_internal_route_is_restored_after_login(monkeypatch) -> None:
+    state: dict[str, object] = {}
+    monkeypatch.setattr(streamlit_app.st, "session_state", state)
+    monkeypatch.setattr(
+        streamlit_app.st,
+        "context",
+        SimpleNamespace(url="https://app.example/internal/catalog?view=active"),
+    )
+    streamlit_app._remember_requested_route()
+    assert state["post_login_route"] == "catalog"
+
+    switched: list[object] = []
+    page = SimpleNamespace(run=lambda: None)
+    monkeypatch.setattr(streamlit_app.st, "Page", lambda *_args, **_kwargs: page)
+    monkeypatch.setattr(
+        streamlit_app.st,
+        "navigation",
+        lambda *_args, **_kwargs: SimpleNamespace(run=lambda: None),
+    )
+    monkeypatch.setattr(streamlit_app.st, "switch_page", switched.append)
+    monkeypatch.setattr(streamlit_app.st, "container", lambda **_kwargs: _FakeContainer())
+    monkeypatch.setattr(streamlit_app.st, "page_link", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(streamlit_app.st, "image", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(streamlit_app.st, "markdown", lambda *_args, **_kwargs: None)
+    state["post_login_ready"] = True
+
+    streamlit_app._run_navigation(
+        [streamlit_app.PageRoute("Catálogo", "catalog", ":material/book:", lambda: None)]
+    )
+
+    assert switched == [page]
+    assert "post_login_route" not in state
+
+
+class _FakeContainer:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False

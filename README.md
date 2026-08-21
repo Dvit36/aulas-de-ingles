@@ -7,20 +7,24 @@ O MVP foi desenhado para cerca de 15 alunos em uma única máquina. Não usa API
 ## O que está incluído
 
 - página pública **Entrar** em uma barra de navegação superior, sem menu lateral;
-- login OIDC explícito com Google e allowlist de e-mails, iniciado somente pela página **Entrar**;
+- autenticação local fechada com Argon2, senha temporária, troca obrigatória,
+  sessões persistentes e revogáveis e bloqueio por tentativas;
 - modo demo local com escolha de identidade e clique explícito em **Entrar**, bloqueado em produção;
 - depois do login, rotas permitidas pelo papel e a página **Minha conta** com identidade e logout;
 - papéis `student` e `admin`, validados também na camada de serviço;
 - catálogo configurável com pontuação histórica preservada;
-- upload multi-imagem, validação do formato real, limites, EXIF e nomes UUID;
+- caixa única de upload para PNG, JPEG, WebP, PDF, DOCX e TXT, com validação
+  do conteúdo real, limites, extração seletiva e nomes UUID;
 - OCR RapidOCR/ONNX local, carregado uma vez com `st.cache_resource`;
 - SHA-256 para duplicata exata e ImageHash pHash para alerta visual;
 - regras conservadoras para Duolingo/BeConfident e campos estruturais;
 - fila administrativa, correção de unidades, aprovação e rejeição auditadas;
 - uma unidade por conclusão; `combo` nunca é interpretado como número de lições;
 - grupos únicos de cinco lições que geram 5 pontos;
-- reunião em inglês confirmada por administrador;
-- ledger, leaderboard geral/por período, CSV, XLSX e espelho opcional no Google Sheets;
+- Reunião em inglês tratada como atividade comum configurável, sem fluxo especial;
+- ledger, leaderboard geral/por período, XLSX e espelho opcional no Google Sheets;
+- históricos visuais por aluno e administrador, gestão segura de contas/atividades
+  e lembretes SMTP configuráveis em processo separado;
 - importação idempotente da planilha legada e relatório JSON;
 - SQLite WAL, uploads persistentes, backup, Docker e testes offline.
 
@@ -28,16 +32,19 @@ O MVP foi desenhado para cerca de 15 alunos em uma única máquina. Não usa API
 
 A cópia `inputs/aulas ingles 7565.xlsx` foi lida sem modificação. A aba `Página1` contém 15 alunos, 81 lançamentos diários e 585 pontos. O catálogo da planilha tem uma regra antiga de 15 pontos para Impact; o seed usa os 10 pontos definidos no briefing.
 
-O arquivo citado originalmente em `/Users/luizc/Downloads/aulas ingles 7565.xlsx` e os quatro screenshots específicos com `combo x40`/`x51` não estavam acessíveis. O workspace contém 35 screenshots alternativos — 21 Duolingo e 14 BeConfident — que servem para testes representativos. Veja [docs/PRD.md](docs/PRD.md) e [docs/SPEC.md](docs/SPEC.md).
+Os arquivos reais usados na validação ficam fora do repositório para preservar
+dados pessoais. Screenshots anonimizados ou sintéticos podem ser usados em testes
+locais. Veja [docs/PRD.md](docs/PRD.md) e [docs/SPEC.md](docs/SPEC.md).
 
 ## Requisitos
 
 - Python 3.11 ou 3.12 (RapidOCR legado não suporta Python 3.13+);
-- Streamlit 1.50 ou superior;
+- Streamlit 1.56 ou superior, com o extra de autenticação;
 - aproximadamente 2–4 CPUs, 8 GB de RAM e SSD;
 - Docker + Docker Compose, se optar por containers.
 
-O núcleo da aplicação, OCR e testes funcionam sem API externa. Somente login OIDC e a sincronização opcional com Google Sheets exigem internet.
+O núcleo da aplicação, autenticação local, OCR e testes funcionam sem API externa.
+Somente SMTP e a sincronização opcional com Google Sheets exigem internet.
 
 ## Execução local em modo demo
 
@@ -57,16 +64,57 @@ Abra `http://localhost:8501`. O `.env.example` ativa o modo demo e cria um aluno
 
 Nunca use o modo demo em produção; o startup recusa `APP_ENV=production` junto de `DEMO_AUTH_ENABLED=true`.
 
-## Autenticação OIDC/Google
+## Primeiro administrador e autenticação local
 
-1. Configure no Google um cliente OIDC e autorize a URI `https://SEU_HOST/oauth2callback`.
-2. Copie e preencha `.streamlit/secrets.toml.example`; nunca versione `secrets.toml`.
-3. No `.env`, use `APP_ENV=production`, `DEMO_AUTH_ENABLED=false`, liste todos os e-mails em `ALLOWED_EMAILS` e os administradores em `ADMIN_EMAILS`.
-4. Inicie atrás de HTTPS. Na área pública, abra **Entrar** e clique em **Entrar com Google**. O botão chama `st.login("google")`, e a identidade é lida de `st.user`.
+Não existe cadastro público. Antes do primeiro `init-db`, defina no ambiente:
 
-Documentação oficial: [autenticação OIDC do Streamlit](https://docs.streamlit.io/develop/concepts/connections/authentication) e [`st.login`](https://docs.streamlit.io/develop/api-reference/user/st.login).
+```dotenv
+LOCAL_AUTH_ENABLED=true
+BOOTSTRAP_ADMIN_NAME=Nome do administrador
+BOOTSTRAP_ADMIN_EMAIL=admin@equipe.org
+BOOTSTRAP_ADMIN_PASSWORD=uma-senha-forte-com-10-ou-mais-caracteres
+```
 
-Alunos importados recebem inicialmente e-mails locais `@local.invalid`. Antes do primeiro login OIDC, o administrador deve editar esses e-mails na tela **Alunos** para os endereços autorizados reais.
+Execute `english-leaderboard init-db`. A conta é criada apenas quando ainda não
+existe administrador local e nunca é sobrescrita em reinicializações. No primeiro
+login, a troca da senha é obrigatória. Depois disso, o administrador cria as demais
+contas pela página **Alunos**; a senha temporária é mostrada uma única vez.
+
+As senhas usam Argon2. A sessão usa token aleatório opaco, armazenado apenas como
+SHA-256 no banco, expira após `SESSION_HOURS` e é revogada em logout, alteração,
+redefinição, desativação ou mudança de papel. Após `LOGIN_MAX_ATTEMPTS` falhas, a
+conta fica bloqueada por `LOGIN_LOCK_MINUTES`. A aplicação deve ser publicada atrás
+de HTTPS. O modo Google OIDC legado continua disponível somente quando
+`LOCAL_AUTH_ENABLED=false`.
+
+### Streamlit Community Cloud (demonstração)
+
+Antes de atualizar a aplicação no Community Cloud, abra **Manage app → Settings →
+Secrets** e acrescente valores de nível raiz (TOML):
+
+```toml
+APP_ENV = "production"
+DEMO_AUTH_ENABLED = false
+LOCAL_AUTH_ENABLED = true
+BOOTSTRAP_ADMIN_NAME = "Nome do administrador"
+BOOTSTRAP_ADMIN_EMAIL = "admin@equipe.org"
+BOOTSTRAP_ADMIN_PASSWORD = "uma-senha-inicial-forte-2026"
+REMINDER_DRY_RUN = true
+```
+
+Segredos de nível raiz são disponibilizados pelo Streamlit como variáveis de
+ambiente. Não coloque esses valores no GitHub. Em um host com volume persistente,
+o segredo de bootstrap pode ser removido depois da primeira criação; reinicializações
+não sobrescrevem uma conta local já existente.
+
+O Community Cloud **não garante persistência do filesystem local**. Portanto,
+SQLite e uploads nesse ambiente servem somente para demonstração e podem ser
+apagados em rebuilds/reinicializações. Nesse caso, mantenha os três segredos de
+bootstrap para que a conta possa ser recriada após a perda do banco, usando uma
+senha exclusiva para a demo. Para uso real com alunos, use o Compose/VPS com
+volumes persistentes e backups descritos abaixo.
+
+Documentação oficial: [Secrets no Community Cloud](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management) e [persistência de dados locais](https://docs.streamlit.io/develop/concepts/connections/connecting-to-data).
 
 ## Navegação e telas móveis
 
@@ -75,16 +123,67 @@ Alunos importados recebem inicialmente e-mails locais `@local.invalid`. Antes do
   sólidas. Os logos versionados ficam em `assets/brand/`.
 - Sem autenticação, o aplicativo abre diretamente em **Entrar**.
 - Depois da autenticação, ela mostra as páginas autorizadas para `student` ou `admin` e acrescenta **Minha conta**.
-- **Minha conta** exibe nome, e-mail e papel e concentra a saída da sessão demo ou OIDC.
+- **Minha conta** exibe nome, e-mail, papel, troca de senha e logout.
 - Em viewport móvel de até `768px`, os layouts com várias colunas devem ser empilhados verticalmente.
 - Botões, seletores e demais controles interativos devem ter área de toque com pelo menos `44px` de altura.
 - Tabelas, imagens e formulários ocupam a largura disponível sem exigir zoom; a barra superior própria quebra seus botões em novas linhas e nunca vira uma gaveta lateral em telas estreitas.
 
 Esses critérios devem ser conferidos tanto em `768px` quanto em uma largura menor representativa de celular antes de uma entrega de interface.
 
+## Documentos e controle de acesso
+
+A mesma caixa de envio aceita imagens, PDF, DOCX e TXT. Duolingo/BeConfident
+continua restrito a imagens. PDF textual é extraído diretamente; somente PDF sem
+texto carrega renderizador e OCR. DOCX é aberto como pacote Office, rejeitando
+macros e objetos incorporados; TXT aceita UTF-8 ou CP-1252 e rejeita conteúdo
+binário. `.doc`, HTML, scripts, executáveis, conteúdo com extensão divergente e
+PDF acima de `MAX_PDF_PAGES` são recusados.
+
+Além do limite individual, cada submissão respeita `MAX_UPLOAD_FILES` e
+`MAX_UPLOAD_TOTAL_BYTES`. DOCX possui orçamento de expansão e taxa de compressão;
+PDF digitalizado possui orçamento agregado de pixels antes da renderização. Esses
+limites evitam que um usuário autenticado esgote memória ou CPU do servidor.
+
+Cada arquivo recebe UUID, modo `0600`, SHA-256 e registro no banco. Downloads são
+resolvidos por ID e passam novamente pela autorização da submissão; caminhos
+internos e nomes físicos não são mostrados.
+
+## Lembretes por e-mail
+
+Lembretes começam desativados e `REMINDER_DRY_RUN=true`. O administrador configura
+frequência, dia, hora, fuso, inatividade, assunto, modelo e opt-out individual.
+Defina `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`,
+`SMTP_FROM_EMAIL`, `SMTP_FROM_NAME` e `SMTP_USE_TLS`. Para um ciclo manual:
+
+```bash
+english-leaderboard run-reminders --force
+```
+
+Para manter o processo independente do Streamlit:
+
+```bash
+english-leaderboard scheduler
+```
+
+O `docker-compose.yml` já contém `reminder_scheduler`. Cada destinatário/período
+tem chave única, impedindo duplicidade; falhas transitórias recebem no máximo três
+tentativas. Testes e configuração inicial nunca enviam e-mail real.
+
+## Migrações
+
+`initialize_database` executa migrações aditivas e repetíveis registradas em
+`schema_migrations`. A migração 1 acrescenta autenticação local, arquivamento,
+arquivos genéricos e lembretes, sem remover tabelas históricas, reuniões antigas,
+submissões, ledger ou uploads. Faça backup antes de atualizar um volume existente:
+
+```bash
+english-leaderboard backup --destination backups
+english-leaderboard init-db
+```
+
 ## Sincronização automática com Google Sheets
 
-Os dados continuam tendo uma única fonte de verdade: SQLite e o ledger imutável. Quando habilitado, o Google Sheets recebe um espelho completo das abas `Leaderboard` e `Ledger` depois de cada alteração confirmada. Uma falha do Google gera um aviso, mas não desfaz submissões, aprovações, reuniões ou importações.
+Os dados continuam tendo uma única fonte de verdade: SQLite e o ledger imutável. Quando habilitado, o Google Sheets recebe um espelho completo das abas `Leaderboard` e `Ledger` depois de cada alteração confirmada. Uma falha do Google gera um aviso, mas não desfaz submissões, aprovações, ajustes ou importações.
 
 Foi usado Google **Sheets**, e não um documento de texto do Google Docs, porque leaderboard e ledger são dados tabulares.
 
@@ -104,7 +203,7 @@ GOOGLE_APPLICATION_CREDENTIALS=./secrets/google-service-account.json
 
 6. Reinicie a aplicação. Na página administrativa **Ledger e exportações**, use **Sincronizar agora** para o primeiro espelho e **Abrir planilha** para conferir o resultado. Depois disso, alterações feitas pela aplicação são sincronizadas automaticamente.
 
-A credencial OIDC do login e a conta de serviço do Sheets são coisas diferentes e não devem ser reutilizadas. O cliente solicita somente o escopo `spreadsheets`; não precisa de acesso geral ao Drive. Como permissões do Google são concedidas à planilha inteira e a aba `Ledger` contém histórico administrativo, mantenha essa planilha restrita aos administradores.
+A autenticação local e a conta de serviço do Sheets são coisas diferentes. O cliente solicita somente o escopo `spreadsheets`; não precisa de acesso geral ao Drive. Como permissões do Google são concedidas à planilha inteira e a aba `Ledger` contém histórico administrativo, mantenha essa planilha restrita aos administradores.
 
 Para reconciliar manualmente ou por um agendador periódico:
 
@@ -180,7 +279,7 @@ docker compose -f docker-compose.yml -f docker-compose.google.yml up --build -d
 
 Defina `GOOGLE_SERVICE_ACCOUNT_FILE` se o arquivo no host tiver outro caminho. O `.env` ainda precisa de `GOOGLE_SHEETS_AUTO_SYNC=true` e do ID da planilha; o overlay define o caminho correto da credencial dentro do container.
 
-Para o primeiro teste local via Docker, mantenha `APP_ENV=development` e `DEMO_AUTH_ENABLED=true`. Para produção, configure OIDC/allowlist e desative o demo antes do `up`.
+Para o primeiro teste local via Docker, mantenha `APP_ENV=development` e `DEMO_AUTH_ENABLED=true`. Para produção, desative o demo, configure o administrador inicial por variáveis de ambiente e use HTTPS antes do `up`.
 
 Volumes:
 
@@ -197,7 +296,7 @@ Recriar o container não apaga os volumes. `docker compose down -v` apaga os vol
 3. Prefira uma destas opções:
    - Tailscale/VPN, mantendo o serviço privado; ou
    - Caddy/Nginx como proxy reverso com certificado HTTPS e redirecionamento HTTP→HTTPS.
-4. Configure DNS e a redirect URI OIDC com o hostname definitivo.
+4. Configure DNS e HTTPS com o hostname definitivo.
 5. Rode `docker compose up --build -d` e valide `/_stcore/health`.
 6. Agende backups, copie-os para outro disco/host e teste restauração.
 
@@ -237,13 +336,18 @@ Faça primeiro um ensaio em ambiente separado. Não restaure sobre uma instânci
 ```text
 streamlit_app.py                 interface aluno/admin
 english_leaderboard/models.py   modelo e restrições
+english_leaderboard/local_auth.py Argon2, bootstrap e sessões revogáveis
+english_leaderboard/migrations.py migrações aditivas e repetíveis
 english_leaderboard/services.py casos de uso e auditoria
 english_leaderboard/rules.py    motor configurável/conservador
 english_leaderboard/ocr.py      adaptador RapidOCR local
 english_leaderboard/image_processing.py validação, OpenCV e hashes
+english_leaderboard/document_processing.py PDF/DOCX/TXT seguros
 english_leaderboard/scoring.py  ledger e grupos de cinco
+english_leaderboard/reminders.py SMTP, deduplicação e dry-run
+english_leaderboard/scheduler.py processo independente de lembretes
 english_leaderboard/importer.py importação idempotente
-english_leaderboard/exporter.py downloads CSV/XLSX
+english_leaderboard/exporter.py downloads XLSX
 english_leaderboard/google_sheets.py espelho idempotente via Sheets API
 docs/                           PRD, SPEC e plano verificável
 tests/                          suite offline
@@ -255,6 +359,7 @@ tests/                          suite offline
 - pHash encontra semelhança visual, mas telas legítimas do mesmo aplicativo são parecidas; por isso nunca rejeita sozinho.
 - Regras simples não avaliam qualidade/veracidade de resumos; essas entregas vão para revisão.
 - OCR pode falhar em imagens comprimidas ou textos pequenos; baixa confiança vai para revisão.
-- Estados aprovados são terminais no MVP. Uma correção posterior deve usar transação compensatória auditada, ainda não exposta na UI.
+- Estados aprovados são terminais no MVP. Correções de pontos usam uma nova transação compensatória auditada na página de relatórios; a submissão original não é reescrita.
+- O cookie persistente contém somente um token opaco e recebe `SameSite=Lax` e `Secure` em produção. Como o Streamlit expõe cookies de requisição apenas para leitura, a ponte de gravação executada no navegador não consegue marcar o cookie como `HttpOnly`; a expiração, o hash no banco e a revogação reduzem esse risco residual.
 - SQLite é adequado ao volume atual; uma futura migração pode reutilizar `DATABASE_URL`, mas exige migrações formais e testes no novo dialeto.
 - Google Sheets é um espelho eventualmente consistente e administrativo; indisponibilidade externa não altera o ledger local, e o comando de reconciliação refaz o snapshot completo.

@@ -1,4 +1,4 @@
-"""CSV and XLSX exports for leaderboard and immutable-ledger views.
+"""XLSX exports for leaderboard and immutable-ledger views.
 
 The functions in this module deliberately accept already-authorized rows instead of
 opening a database session.  Keeping query/authorization concerns in the service
@@ -12,13 +12,11 @@ from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from io import BytesIO
-from typing import Any, Literal
+from typing import Any
 
 import pandas as pd
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
-
-ExportFormat = Literal["csv", "xlsx"]
 
 LEADERBOARD_COLUMNS = ("position", "student", "points")
 LEDGER_COLUMNS = (
@@ -129,12 +127,6 @@ def _safe_frame(frame: pd.DataFrame, *, for_excel: bool) -> pd.DataFrame:
     return safe
 
 
-def _csv_bytes(frame: pd.DataFrame) -> bytes:
-    safe = _safe_frame(frame, for_excel=False)
-    # UTF-8 BOM keeps names with accents readable in desktop Excel.
-    return safe.to_csv(index=False, lineterminator="\n").encode("utf-8-sig")
-
-
 def _xlsx_bytes(frame: pd.DataFrame, *, sheet_name: str) -> bytes:
     safe = _safe_frame(frame, for_excel=True)
     output = BytesIO()
@@ -172,12 +164,6 @@ def _xlsx_bytes(frame: pd.DataFrame, *, sheet_name: str) -> bytes:
     return output.getvalue()
 
 
-def leaderboard_to_csv(rows: pd.DataFrame | Iterable[Any]) -> bytes:
-    """Return a leaderboard download encoded as UTF-8 CSV bytes."""
-
-    return _csv_bytes(_as_dataframe(rows, empty_columns=LEADERBOARD_COLUMNS))
-
-
 def leaderboard_to_xlsx(rows: pd.DataFrame | Iterable[Any]) -> bytes:
     """Return a styled leaderboard workbook as XLSX bytes."""
 
@@ -185,12 +171,6 @@ def leaderboard_to_xlsx(rows: pd.DataFrame | Iterable[Any]) -> bytes:
         _as_dataframe(rows, empty_columns=LEADERBOARD_COLUMNS),
         sheet_name="Leaderboard",
     )
-
-
-def ledger_to_csv(rows: pd.DataFrame | Iterable[Any]) -> bytes:
-    """Return an immutable-ledger view encoded as UTF-8 CSV bytes."""
-
-    return _csv_bytes(_as_dataframe(rows, empty_columns=LEDGER_COLUMNS))
 
 
 def ledger_to_xlsx(rows: pd.DataFrame | Iterable[Any]) -> bytes:
@@ -202,37 +182,7 @@ def ledger_to_xlsx(rows: pd.DataFrame | Iterable[Any]) -> bytes:
     )
 
 
-def export_leaderboard(
-    rows: pd.DataFrame | Iterable[Any],
-    format: ExportFormat = "csv",
-) -> bytes:
-    """Dispatch a leaderboard export while always returning download-ready bytes."""
-
-    if format == "csv":
-        return leaderboard_to_csv(rows)
-    if format == "xlsx":
-        return leaderboard_to_xlsx(rows)
-    raise ValueError("format must be 'csv' or 'xlsx'")
-
-
-def export_ledger(
-    rows: pd.DataFrame | Iterable[Any],
-    format: ExportFormat = "csv",
-) -> bytes:
-    """Dispatch a ledger export while always returning download-ready bytes."""
-
-    if format == "csv":
-        return ledger_to_csv(rows)
-    if format == "xlsx":
-        return ledger_to_xlsx(rows)
-    raise ValueError("format must be 'csv' or 'xlsx'")
-
-
 __all__ = [
-    "export_leaderboard",
-    "export_ledger",
-    "leaderboard_to_csv",
     "leaderboard_to_xlsx",
-    "ledger_to_csv",
     "ledger_to_xlsx",
 ]

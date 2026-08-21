@@ -4,12 +4,16 @@
 .venv
 __pycache__
 .pytest_cache
+.ruff_cache
+.DS_Store
 .coverage
 data
 uploads
 backups
 import-reports
 inputs
+frontend-atual
+frontend-atual.zip
 .streamlit/secrets.toml
 secrets
 *service-account*.json

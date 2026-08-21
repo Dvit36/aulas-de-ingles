@@ -44,8 +44,10 @@ def create_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 def initialize_database(engine: Engine) -> None:
     from . import models  # noqa: F401 - registers tables on Base.metadata
+    from .migrations import apply_migrations
 
     Base.metadata.create_all(engine)
+    apply_migrations(engine)
     if engine.dialect.name == "sqlite":
         # Ledger corrections must be compensating INSERTs, never silent mutation.
         with engine.begin() as connection:

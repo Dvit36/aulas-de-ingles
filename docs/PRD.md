@@ -7,18 +7,18 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 ## Usuários
 
 - **Aluno:** consulta catálogo, pontuação, posição e progresso; envia comprovantes; acompanha análise e decisões.
-- **Administrador:** revisa casos ambíguos, corrige unidades, gerencia alunos e catálogo, registra reuniões, consulta/exporta ledger e leaderboard.
+- **Administrador:** revisa envios, corrige unidades, gerencia contas e catálogo, configura lembretes e consulta/exporta ledger e leaderboard.
 
 ## Fluxos principais
 
 1. Sem autenticação, a pessoa acessa diretamente a página pública **Entrar** pela navegação superior.
-2. Na página **Entrar**, produção inicia Google OIDC por ação explícita; no modo demo, escolher uma identidade não basta — é necessário clicar em **Entrar**.
+2. Na página **Entrar**, o usuário informa e-mail e senha; não existe cadastro público. O modo demo permanece somente para desenvolvimento.
 3. Depois da autenticação, a navegação mostra as rotas permitidas pelo papel e **Minha conta**, que concentra identidade e logout.
-4. O aluno autenticado escolhe uma atividade, informa campos exigidos e envia uma ou mais imagens.
+4. O aluno autenticado escolhe uma atividade, informa campos exigidos e envia imagens, PDF, DOCX ou TXT pela mesma caixa.
 5. O servidor valida o arquivo, armazena-o com nome aleatório, executa OCR local e aplica regras configuráveis.
 6. Evidência inequívoca e de alta confiança é aprovada; conteúdo subjetivo ou evidência ambígua vai para revisão; arquivo inválido ou duplicata exata comprovada é rejeitado.
 7. A aprovação cria unidades ou uma transação imutável no ledger. O leaderboard é sempre recalculado a partir do ledger.
-8. O administrador decide pendências, com justificativa e auditoria, ou registra diretamente uma reunião em inglês.
+8. O administrador decide pendências com justificativa e auditoria; Reunião em inglês é uma atividade comum.
 9. Depois do commit local, a aplicação pode espelhar leaderboard e ledger em uma planilha Google administrativa; falhas externas não revertem o lançamento.
 
 ## Regras de negócio
@@ -29,7 +29,7 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 - Uma unidade pertence a, no máximo, um grupo premiado.
 - Atividades de pontuação direta usam a pontuação vigente no momento da aprovação. Alterações futuras no catálogo não modificam o ledger.
 - Resumos/anotações são validados apenas estruturalmente. O MVP não afirma avaliar qualidade ou veracidade e encaminha conteúdo subjetivo à revisão.
-- Reunião em inglês é criada/confirmada por administrador, sem screenshot, e concede 30 pontos.
+- Reunião em inglês permanece no catálogo como atividade comum de 30 pontos.
 - Horários e datas mostrados nas imagens não são fonte confiável. O recebimento usa relógio do servidor.
 - Duplicata SHA-256 pode ser rejeitada automaticamente. Similaridade perceptual apenas sinaliza revisão.
 - Rejeição ou cancelamento não concede pontos.
@@ -55,12 +55,13 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 
 ## Escopo do MVP
 
-- Área pública com **Entrar**, Google OIDC explícito e modo demo local com confirmação explícita.
+- Área pública com **Entrar**, autenticação local fechada, troca obrigatória de senha temporária e modo demo local opcional.
 - Papéis `student` e `admin`, allowlist e autorização também na camada de serviço.
 - Cadastro/edição de usuários e catálogo.
-- Submissão multi-imagem, OCR local, validações, duplicidade e fila de revisão.
-- Ledger, grupos de cinco, reuniões, leaderboard geral/por período e progresso individual.
-- Histórico/auditoria, exportação CSV/XLSX, sincronização opcional com Google Sheets e importação idempotente da planilha legada.
+- Submissão de imagens/documentos, extração seletiva, validações, duplicidade e fila de revisão.
+- Ledger, grupos de cinco, atividades comuns, leaderboard geral/por período e progresso individual.
+- Histórico visual/auditoria, exportação XLSX, sincronização opcional com Google Sheets e importação idempotente da planilha legada.
+- Gestão ativa/inativa/arquivada e lembretes SMTP idempotentes em processo separado.
 - Navegação superior: rotas públicas antes do login; rotas dinâmicas pelo papel e **Minha conta** depois do login.
 - Interface web responsiva: em até `768px`, colunas empilhadas e controles interativos com altura mínima de `44px`.
 - SQLite WAL, uploads persistentes, Docker Compose, health check, backup documentado e testes offline.
@@ -77,7 +78,8 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 - O login identifica quem enviou, mas prints sem nome não provam quem realizou a atividade.
 - OCR e heurísticas podem errar; limiares são conservadores e casos duvidosos vão para revisão.
 - O volume esperado é cerca de 15 alunos; processamento síncrono numa única máquina é suficiente.
-- O caminho original `/Users/luizc/Downloads/aulas ingles 7565.xlsx` não estava acessível na inspeção. Foi analisada somente a cópia `inputs/aulas ingles 7565.xlsx`, sem modificá-la.
+- A planilha real foi analisada apenas localmente e permanece fora do repositório,
+  sem modificações, para preservar dados pessoais.
 - Os quatro screenshots específicos citados no briefing não estavam anexados. O workspace contém 35 JPEGs alternativos (21 Duolingo e 14 BeConfident), usados para inspeção e testes representativos; nenhum contém `combo x40` ou `combo x51`.
 - E-mails iniciais e administradores serão fornecidos por variáveis de ambiente; em desenvolvimento, usuários demo são criados pelo seed.
 
@@ -92,12 +94,12 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 7. Baixa confiança e hash apenas semelhante entram na fila administrativa.
 8. Aprovação manual atualiza o leaderboard na mesma transação lógica.
 9. Rejeição não altera o ledger.
-10. Administrador registra reunião confirmada de 30 pontos.
+10. Administrador pode ajustar pontos somente por transação compensatória auditada.
 11. Banco e uploads sobrevivem à reinicialização de containers.
 12. Importar novamente a mesma planilha não duplica transações.
 13. Testes automatizados obrigatórios passam sem internet ou API externa.
 14. O README contém o caminho completo da execução local e por Docker/VPS.
 15. Com a integração habilitada, um commit atualiza o snapshot do Sheets; uma falha da API preserva o dado local e pode ser reconciliada sem duplicação.
 16. Usuário deslogado vê apenas **Entrar** na navegação superior; após login, vê as rotas do seu papel e **Minha conta**.
-17. Selecionar uma identidade demo sem clicar em **Entrar** não autentica; o logout em **Minha conta** encerra a sessão demo ou OIDC.
+17. Refresh preserva a sessão opaca válida e a URL atual; logout, expiração ou troca de senha revogam a sessão.
 18. Em viewport de até `768px`, colunas são empilhadas, conteúdo não exige zoom e controles de toque têm pelo menos `44px` de altura.

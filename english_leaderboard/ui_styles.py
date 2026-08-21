@@ -265,6 +265,33 @@ main img,
   font-weight: 800;
 }
 
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2rem;
+  margin-bottom: 0.75rem;
+  padding: 0.25rem 0.7rem;
+  border: 2px solid var(--robo-ink);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.status-processing { background: #dbeafe; }
+.status-review { background: var(--robo-yellow); }
+.status-approved { background: #bbf7d0; }
+.status-rejected { background: #fecaca; }
+.status-cancelled { background: #e5e7eb; }
+
+[data-testid="stExpander"] {
+  margin-bottom: 0.75rem;
+  border: 2px solid var(--robo-ink);
+  border-radius: 1rem;
+  background: var(--robo-white);
+  box-shadow: 3px 3px 0 rgb(32 32 29 / 28%);
+}
+
 /* Controles */
 .stButton > button,
 .stDownloadButton > button,

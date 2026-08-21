@@ -183,21 +183,24 @@ def analyze_submission_rules(
     similar_duplicate_flags: Sequence[bool] | None = None,
     previous_summaries: Iterable[str] = (),
     auto_approve_confidence: float = 0.88,
+    evidence_count: int | None = None,
+    document_texts: Sequence[str] = (),
 ) -> AnalysisDecision:
     checks: list[RuleResult] = []
     exact_flags = list(exact_duplicate_flags or [False] * len(images))
     similar_flags = list(similar_duplicate_flags or [False] * len(images))
     requires_images = bool(getattr(activity, "requires_images", True))
 
-    image_count_ok = bool(images) if requires_images else True
+    received_evidence = len(images) if evidence_count is None else evidence_count
+    image_count_ok = received_evidence > 0 if requires_images else True
     checks.append(
         RuleResult(
             "required_images",
             CheckOutcome.PASS if image_count_ok else CheckOutcome.FAIL,
             requires_images,
             1.0 if image_count_ok else 0.0,
-            "Imagens recebidas" if image_count_ok else "A atividade exige imagem",
-            {"count": len(images)},
+            "Comprovação recebida" if image_count_ok else "A atividade exige comprovação",
+            {"count": received_evidence, "image_count": len(images)},
         )
     )
 
@@ -254,11 +257,13 @@ def analyze_submission_rules(
         )
     )
 
-    all_texts = [str(_ocr_value(result, "text", "") or "") for result in ocr_results]
+    image_texts = [str(_ocr_value(result, "text", "") or "") for result in ocr_results]
+    all_texts = [*image_texts, *(text for text in document_texts if text)]
     consolidated_text = "\n".join(text for text in all_texts if text).strip()
     ocr_confidences = [
         float(_ocr_value(result, "confidence", 0.0) or 0.0) for result in ocr_results
     ]
+    ocr_confidences.extend(1.0 for text in document_texts if text)
     ocr_confidence = sum(ocr_confidences) / len(ocr_confidences) if ocr_confidences else 0.0
     ocr_ok = bool(normalize_text(consolidated_text))
     checks.append(
@@ -277,7 +282,7 @@ def analyze_submission_rules(
     completions = 0
     completion_scores: list[float] = []
     per_image_details: list[dict[str, Any]] = []
-    for index, text in enumerate(all_texts):
+    for index, text in enumerate(image_texts):
         colors = _image_value(images[index], "color_signals", {}) if index < len(images) else {}
         platform, platform_score, details = detect_platform(text, color_signals=colors)
         completed, completion_score, phrases = detect_completion(text, platform)
@@ -422,7 +427,7 @@ def analyze_submission_rules(
         recognized_units=(
             0
             if status == SubmissionStatus.REJECTED
-            else completions if declared_group else (1 if images else 0)
+            else completions if declared_group else (1 if received_evidence else 0)
         ),
         detected_platform=detected_platform,
         ocr_text=consolidated_text,

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from io import BytesIO
+
+from PIL import Image
+
 from english_leaderboard.image_processing import (
     ImagePolicy,
     ImageValidationError,
     analyze_image_bytes,
     phash_distance,
 )
-from english_leaderboard.models import SubmissionStatus
 from english_leaderboard.rules import detect_completion, detect_platform
 
 from conftest import make_png
@@ -22,6 +25,19 @@ def test_real_format_validation_and_hashes():
     assert result.mime_type == "image/png"
     assert len(result.sha256) == 64
     assert result.width == 480
+
+
+def test_jpeg_and_webp_are_validated_from_real_content() -> None:
+    source = Image.open(BytesIO(make_png(14))).convert("RGB")
+    for image_format, expected_mime in (
+        ("JPEG", "image/jpeg"),
+        ("WEBP", "image/webp"),
+    ):
+        output = BytesIO()
+        source.save(output, format=image_format)
+        result = analyze_image_bytes(output.getvalue())
+        assert result.image_format == image_format
+        assert result.mime_type == expected_mime
 
 
 def test_invalid_bytes_are_rejected():
@@ -59,4 +75,3 @@ def test_beconfident_detection():
     assert platform == "beconfident"
     assert confidence > 0.8
     assert complete
-

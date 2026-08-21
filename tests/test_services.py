@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
-
 import pytest
 from sqlalchemy import func, select
 
@@ -10,7 +8,6 @@ from english_leaderboard.models import (
     Activity,
     DuplicateKind,
     DuplicateMatch,
-    LedgerTransaction,
     Role,
     SubmissionStatus,
     User,
@@ -20,7 +17,6 @@ from english_leaderboard.services import (
     UploadPayload,
     admin_ledger_rows,
     list_review_queue,
-    record_meeting,
     review_submission,
     submit_evidence,
 )
@@ -182,30 +178,6 @@ def test_manual_approval_updates_leaderboard_and_rejection_does_not(session, use
     )
     session.commit()
     assert student_total(session, student.id) == 10
-
-
-def test_admin_records_meeting_with_audit_and_points(session, users):
-    meeting = record_meeting(
-        session,
-        actor=users[Role.ADMIN],
-        student_id=users[Role.STUDENT].id,
-        meeting_date=date(2026, 8, 14),
-        description="Reunião semanal de estratégia em inglês",
-    )
-    session.commit()
-    assert meeting.ledger_transaction_id
-    assert student_total(session, users[Role.STUDENT].id) == 30
-    assert session.scalar(select(func.count(LedgerTransaction.id))) == 1
-    repeated = record_meeting(
-        session,
-        actor=users[Role.ADMIN],
-        student_id=users[Role.STUDENT].id,
-        meeting_date=date(2026, 8, 14),
-        description="  Reunião semanal de estratégia em inglês  ",
-    )
-    session.commit()
-    assert repeated.id == meeting.id
-    assert session.scalar(select(func.count(LedgerTransaction.id))) == 1
 
 
 def test_admin_queries_are_guarded_in_service_layer(session, users):

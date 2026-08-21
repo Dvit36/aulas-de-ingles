@@ -8,7 +8,7 @@ class AuthorizationError(PermissionError):
 
 
 def require_active(user: User) -> None:
-    if not user.active:
+    if not user.active or user.archived_at is not None:
         raise AuthorizationError("Usuário inativo")
 
 
@@ -21,6 +21,7 @@ def require_admin(user: User) -> None:
 def can_view_submission(user: User, submission: Submission) -> bool:
     return bool(
         user.active
+        and user.archived_at is None
         and (user.role == Role.ADMIN or submission.student_id == user.id)
     )
 
@@ -34,4 +35,3 @@ def require_self_or_admin(actor: User, student_id: str) -> None:
     require_active(actor)
     if actor.role != Role.ADMIN and actor.id != student_id:
         raise AuthorizationError("Usuário não pode agir por outro aluno")
-

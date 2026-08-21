@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 import logging
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import streamlit as st
@@ -20,21 +21,21 @@ from english_leaderboard.database import (
     session_scope,
 )
 from english_leaderboard.exporter import (
-    leaderboard_to_csv,
     leaderboard_to_xlsx,
-    ledger_to_csv,
     ledger_to_xlsx,
 )
 from english_leaderboard.google_sheets import sync_leaderboard_and_ledger
 from english_leaderboard.models import (
     Activity,
+    AuditLog,
     DuplicateMatch,
+    EmailAttempt,
     LedgerTransaction,
     Role,
     Submission,
-    SubmissionImage,
     SubmissionStatus,
     User,
+    utcnow,
 )
 from english_leaderboard.ocr import create_ocr_engine
 from english_leaderboard.scoring import (
@@ -47,14 +48,38 @@ from english_leaderboard.services import (
     UploadPayload,
     admin_ledger_rows,
     admin_student_submissions,
-    get_submission_for_user,
-    list_review_queue,
-    record_meeting,
+    archive_or_delete_activity,
+    archive_or_delete_user,
+    create_activity,
+    create_points_adjustment,
+    create_user_account,
+    get_submission_file_for_user,
+    list_submissions,
+    reset_user_password,
     resolve_oidc_user,
     review_submission,
     save_activity_changes,
     save_user,
     submit_evidence,
+)
+from english_leaderboard.browser_session import (
+    forget_token,
+    remember_token,
+    render_cookie_bridge,
+    request_cookie,
+)
+from english_leaderboard.local_auth import (
+    AuthenticationError,
+    change_password,
+    login_with_password,
+    resolve_auth_session,
+    revoke_session,
+)
+from english_leaderboard.reminders import (
+    get_reminder_configuration,
+    render_reminder,
+    save_reminder_configuration,
+    send_test_reminder,
 )
 from english_leaderboard.ui_styles import render_global_styles
 
@@ -74,15 +99,23 @@ st.set_page_config(
 render_global_styles(st)
 
 
-STATUS_LABELS = {
-    SubmissionStatus.PROCESSING: "Processando",
-    SubmissionStatus.APPROVED_AUTO: "Aprovada automaticamente",
-    SubmissionStatus.NEEDS_REVIEW: "Aguardando revisão",
-    SubmissionStatus.APPROVED_MANUAL: "Aprovada manualmente",
-    SubmissionStatus.REJECTED: "Rejeitada",
-    SubmissionStatus.CANCELLED: "Cancelada",
-}
 LOGGER = logging.getLogger("english_leaderboard.ui")
+KNOWN_ROUTE_PATHS = frozenset(
+    {
+        "overview",
+        "submissions",
+        "users",
+        "catalog",
+        "ledger",
+        "reminders",
+        "home",
+        "submit",
+        "history",
+        "leaderboard",
+        "account",
+        "change-password",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -99,6 +132,7 @@ class AuthenticationState:
     error: str | None = None
     oidc_logged_in: bool = False
     oidc_available: bool = True
+    local_token: str | None = None
 
 
 def show_operation_error(context: str, error: Exception) -> None:
@@ -202,6 +236,18 @@ def _oidc_login_state() -> bool | None:
     return bool(value)
 
 
+def _remember_requested_route() -> None:
+    """Keep a safe internal destination while an expired user signs in again."""
+
+    try:
+        raw_url = str(st.context.url)
+    except Exception:
+        return
+    path = urlparse(raw_url).path.rstrip("/").split("/")[-1]
+    if path in KNOWN_ROUTE_PATHS and path != "change-password":
+        st.session_state["post_login_route"] = path
+
+
 def authenticate(session, settings: Settings) -> AuthenticationState:
     """Resolve an existing session without implicitly logging anyone in."""
 
@@ -217,6 +263,19 @@ def authenticate(session, settings: Settings) -> AuthenticationState:
                 error="A identidade demo selecionada não está mais disponível.",
             )
         return AuthenticationState(actor=actor)
+
+    if settings.local_auth_enabled:
+        if st.session_state.get("clear_local_auth_cookie"):
+            return AuthenticationState(actor=None)
+        token = request_cookie(st)
+        actor = resolve_auth_session(session, token)
+        if actor is None:
+            _remember_requested_route()
+            if token:
+                forget_token(st)
+            return AuthenticationState(actor=None)
+        remember_token(st, token or "")
+        return AuthenticationState(actor=actor, local_token=token)
 
     oidc_login_state = _oidc_login_state()
     if oidc_login_state is None:
@@ -306,6 +365,49 @@ def login_view(
                 st.rerun()
             return
 
+        if settings.local_auth_enabled:
+            admin_exists = bool(
+                session.scalar(
+                    select(func.count(User.id)).where(
+                        User.role == Role.ADMIN,
+                        User.password_hash.is_not(None),
+                    )
+                )
+            )
+            if not admin_exists:
+                st.error(
+                    "Nenhum administrador inicial foi configurado. Defina "
+                    "BOOTSTRAP_ADMIN_NAME, BOOTSTRAP_ADMIN_EMAIL e "
+                    "BOOTSTRAP_ADMIN_PASSWORD e reinicie a aplicação."
+                )
+                return
+            with st.form("local_login_form"):
+                email = st.text_input("E-mail", autocomplete="email")
+                password = st.text_input(
+                    "Senha", type="password", autocomplete="current-password"
+                )
+                submitted = st.form_submit_button("Entrar", type="primary")
+            if submitted:
+                try:
+                    result = login_with_password(
+                        session,
+                        email=email,
+                        password=password,
+                        settings=settings,
+                    )
+                    session.commit()
+                except AuthenticationError as error:
+                    session.commit()
+                    st.error(str(error))
+                else:
+                    remember_token(st, result.token)
+                    st.session_state["post_login_ready"] = True
+                    st.session_state["local_auth_expires_at"] = (
+                        result.expires_at.isoformat()
+                    )
+                    st.rerun()
+            return
+
         if not oidc_available:
             st.info(
                 "O administrador deve configurar o provedor Google ou ativar "
@@ -324,13 +426,15 @@ def login_view(
             st.login("google")
 
 
-def account_view(actor: User, settings: Settings) -> None:
+def account_view(session, actor: User, settings: Settings) -> None:
     st.header("Minha conta")
     role_label = "Administrador" if actor.role == Role.ADMIN else "Aluno"
     with st.container(border=True, key="account_card"):
         st.write(f"**Nome:** {actor.display_name}")
         st.write(f"**E-mail:** {actor.email}")
         st.write(f"**Papel:** {role_label}")
+        if actor.last_login_at:
+            st.write(f"**Último acesso:** {actor.last_login_at:%d/%m/%Y %H:%M}")
 
         if settings.demo_auth_enabled:
             st.caption("Sessão local de demonstração")
@@ -340,8 +444,93 @@ def account_view(actor: User, settings: Settings) -> None:
                 st.rerun()
             return
 
+        if settings.local_auth_enabled:
+            with st.expander("Alterar minha senha"):
+                with st.form("account_password_change"):
+                    current_password = st.text_input(
+                        "Senha atual", type="password", key="account_current_password"
+                    )
+                    new_password = st.text_input(
+                        "Nova senha", type="password", key="account_new_password"
+                    )
+                    confirmation = st.text_input(
+                        "Confirmar nova senha",
+                        type="password",
+                        key="account_password_confirmation",
+                    )
+                    password_submitted = st.form_submit_button("Alterar senha")
+                if password_submitted:
+                    if new_password != confirmation:
+                        st.error("As novas senhas não coincidem.")
+                    else:
+                        try:
+                            change_password(
+                                session,
+                                user=actor,
+                                current_password=current_password,
+                                new_password=new_password,
+                            )
+                            session.commit()
+                        except Exception as error:
+                            session.rollback()
+                            show_operation_error("change_password", error)
+                        else:
+                            forget_token(st)
+                            st.success("Senha alterada. Entre novamente.")
+            if st.button("Sair", type="primary"):
+                revoke_session(session, request_cookie(st))
+                session.commit()
+                forget_token(st)
+                st.rerun()
+            return
+
         if st.button("Sair", type="primary"):
             st.logout()
+
+
+def forced_password_change_view(session, actor: User, settings: Settings) -> None:
+    st.header("Crie sua nova senha")
+    st.warning("A senha temporária deve ser substituída antes de continuar.")
+    with st.container(border=True, key="account_card"):
+        with st.form("forced_password_change"):
+            current_password = st.text_input(
+                "Senha temporária", type="password", autocomplete="current-password"
+            )
+            new_password = st.text_input(
+                "Nova senha", type="password", autocomplete="new-password"
+            )
+            confirmation = st.text_input(
+                "Confirme a nova senha", type="password", autocomplete="new-password"
+            )
+            submitted = st.form_submit_button("Alterar senha", type="primary")
+        if submitted:
+            if new_password != confirmation:
+                st.error("As novas senhas não coincidem.")
+                return
+            try:
+                change_password(
+                    session,
+                    user=actor,
+                    current_password=current_password,
+                    new_password=new_password,
+                )
+                session.commit()
+            except Exception as error:
+                session.rollback()
+                show_operation_error("change_password", error)
+                return
+            forget_token(st)
+            render_cookie_bridge(st, clear=True, secure=settings.is_production)
+            st.success("Senha alterada. Entre novamente com a nova senha.")
+
+
+def _password_change_route(session, actor: User, settings: Settings) -> PageRoute:
+    return PageRoute(
+        "Trocar senha",
+        "change-password",
+        ":material/password:",
+        lambda: forced_password_change_view(session, actor, settings),
+    )
 
 
 def _run_navigation(routes: Sequence[PageRoute]) -> None:
@@ -360,6 +549,18 @@ def _run_navigation(routes: Sequence[PageRoute]) -> None:
         for index, route in enumerate(routes)
     ]
     selected_page = st.navigation(pages, position="hidden")
+    if st.session_state.pop("post_login_ready", False):
+        destination = st.session_state.pop("post_login_route", None)
+        destination_page = next(
+            (
+                page
+                for page, route in zip(pages, routes, strict=True)
+                if route.url_path == destination
+            ),
+            None,
+        )
+        if destination_page is not None:
+            st.switch_page(destination_page)
     with st.container(
         key="brand_header",
         horizontal=True,
@@ -413,12 +614,12 @@ def _public_routes(
     ]
 
 
-def _account_route(actor: User, settings: Settings) -> PageRoute:
+def _account_route(session, actor: User, settings: Settings) -> PageRoute:
     return PageRoute(
         "Minha conta",
         "account",
         ":material/account_circle:",
-        lambda: account_view(actor, settings),
+        lambda: account_view(session, actor, settings),
     )
 
 
@@ -431,16 +632,10 @@ def _admin_routes(session, actor: User, settings: Settings) -> list[PageRoute]:
             lambda: admin_dashboard(session),
         ),
         PageRoute(
-            "Revisões",
-            "review-queue",
-            ":material/rate_review:",
+            "Envios",
+            "submissions",
+            ":material/inbox:",
             lambda: review_queue_view(session, actor, settings),
-        ),
-        PageRoute(
-            "Reuniões",
-            "meeting",
-            ":material/groups:",
-            lambda: meeting_view(session, actor, settings),
         ),
         PageRoute(
             "Alunos",
@@ -459,6 +654,12 @@ def _admin_routes(session, actor: User, settings: Settings) -> list[PageRoute]:
             "ledger",
             ":material/receipt_long:",
             lambda: ledger_view(session, actor, settings),
+        ),
+        PageRoute(
+            "Lembretes",
+            "reminders",
+            ":material/mail:",
+            lambda: reminders_view(session, actor, settings),
         ),
     ]
 
@@ -504,11 +705,26 @@ def leaderboard_view(session, *, key_prefix: str = "leaderboard") -> None:
             st.error("A data inicial deve ser anterior à final.")
             return
     rows = leaderboard_rows(session, start=start, end=end)
-    st.dataframe(
-        [{"Posição": row["position"], "Aluno": row["student"], "Pontos": row["points"]} for row in rows],
-        width="stretch",
-        hide_index=True,
-    )
+    if not rows:
+        st.info("Ainda não há alunos no leaderboard.")
+        return
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    podium = [row for row in rows if int(row["position"]) <= 3]
+    columns = st.columns(max(1, len(podium)))
+    for column, row in zip(columns, podium, strict=True):
+        with column.container(border=True):
+            column.markdown(f"## {medals.get(int(row['position']), '🏅')}")
+            column.subheader(str(row["student"]))
+            column.metric("Pontos", int(row["points"]))
+            column.caption(f"Posição #{row['position']}")
+    remaining = [row for row in rows if int(row["position"]) > 3]
+    if remaining:
+        st.markdown("#### Classificação geral")
+        for row in remaining:
+            with st.container(border=True):
+                left, right = st.columns([4, 1])
+                left.write(f"**#{row['position']} · {row['student']}**")
+                right.write(f"**{row['points']} pts**")
 
 
 def student_dashboard(session, actor: User) -> None:
@@ -517,39 +733,30 @@ def student_dashboard(session, actor: User) -> None:
     board = leaderboard_rows(session)
     own = next((row for row in board if row["student_id"] == actor.id), None)
     progress, threshold = lesson_progress(session, actor.id)
-    col1, col2, col3 = st.columns(3)
+    pending = int(
+        session.scalar(
+            select(func.count(Submission.id)).where(
+                Submission.student_id == actor.id,
+                Submission.status.in_(
+                    [SubmissionStatus.PROCESSING, SubmissionStatus.NEEDS_REVIEW]
+                ),
+            )
+        )
+        or 0
+    )
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Pontuação", student_total(session, actor.id))
     col2.metric("Posição", f"#{own['position']}" if own else "—")
     col3.metric("Progresso de lições", f"{progress} de {threshold}")
+    col4.metric("Pendências", pending)
     st.caption(
         "O login identifica quem enviou, mas um print sem nome não prova de forma absoluta quem realizou a atividade."
     )
 
-    st.subheader("Catálogo ativo")
-    activities = list(
-        session.scalars(
-            select(Activity)
-            .where(Activity.active.is_(True), Activity.code != "english_meeting")
-            .order_by(Activity.name)
-        ).all()
-    )
-    st.dataframe(
-        [
-            {
-                "Atividade": activity.name,
-                "Pontos": (
-                    f"{activity.points} a cada {activity.unit_threshold} unidades"
-                    if activity.unit_threshold > 1
-                    else str(activity.points)
-                ),
-                "Revisão de conteúdo": "Sim" if activity.content_review_required else "Não",
-            }
-            for activity in activities
-        ],
-        width="stretch",
-        hide_index=True,
-    )
-    leaderboard_view(session, key_prefix="student_dashboard")
+    st.link_button("Novo envio", "submit", icon=":material/add:")
+    st.subheader("Atividades recentes")
+    recent = list_submissions(session, actor=actor)[:3]
+    _render_submission_cards(session, actor, recent, settings=None, compact=True)
 
 
 def submission_form(session, actor: User, settings: Settings) -> None:
@@ -557,7 +764,7 @@ def submission_form(session, actor: User, settings: Settings) -> None:
     activities = list(
         session.scalars(
             select(Activity)
-            .where(Activity.active.is_(True), Activity.code != "english_meeting")
+            .where(Activity.active.is_(True), Activity.archived_at.is_(None))
             .order_by(Activity.name)
         ).all()
     )
@@ -572,7 +779,7 @@ def submission_form(session, actor: User, settings: Settings) -> None:
     activity = next(item for item in activities if item.id == activity_id)
     requirements = []
     if activity.requires_images:
-        requirements.append("imagem")
+        requirements.append("comprovação")
     if activity.requires_summary:
         requirements.append(f"resumo/anotações ({activity.summary_min_chars}+ caracteres)")
     if activity.requires_title_or_url:
@@ -583,19 +790,41 @@ def submission_form(session, actor: User, settings: Settings) -> None:
         title = st.text_input("Título (quando aplicável)", max_chars=500)
         url = st.text_input("URL (quando aplicável)", max_chars=2048)
         summary = st.text_area("Resumo ou anotações", height=180)
+        allowed_types = (
+            ["jpg", "jpeg", "png", "webp"]
+            if activity.code == "duolingo_beconfident"
+            else ["jpg", "jpeg", "png", "webp", "pdf", "docx", "txt"]
+        )
         files = st.file_uploader(
             "Comprovação",
-            type=["jpg", "jpeg", "png", "webp"],
+            type=allowed_types,
             accept_multiple_files=True,
+            max_upload_size=max(1, settings.max_upload_bytes // (1024 * 1024)),
             help=f"Até {settings.max_upload_bytes // (1024 * 1024)} MB por arquivo.",
         )
         submitted = st.form_submit_button("Enviar e analisar", type="primary")
     if not submitted:
         return
+    files = list(files or [])
+    if len(files) > settings.max_upload_files:
+        st.error(
+            f"Envie no máximo {settings.max_upload_files} arquivos por submissão."
+        )
+        return
+    total_upload_bytes = sum(int(file.size) for file in files)
+    if total_upload_bytes > settings.max_upload_total_bytes:
+        total_limit_mb = settings.max_upload_total_bytes // (1024 * 1024)
+        st.error(f"O conjunto de arquivos não pode ultrapassar {total_limit_mb} MB.")
+        return
     payloads = [UploadPayload(file.name, file.getvalue()) for file in files]
     with st.spinner("Validando arquivo e executando OCR local…"):
         try:
-            engine = cached_ocr_engine() if payloads else None
+            image_extensions = {".jpg", ".jpeg", ".png", ".webp"}
+            engine = (
+                cached_ocr_engine()
+                if any(Path(file.name).suffix.casefold() in image_extensions for file in files)
+                else None
+            )
             result = submit_evidence(
                 session,
                 actor=actor,
@@ -624,221 +853,432 @@ def submission_form(session, actor: User, settings: Settings) -> None:
     st.caption(f"Confiança: {result.confidence:.0%} · ID {result.submission_id}")
 
 
-def _submission_rows(submissions: list[Submission]) -> list[dict[str, object]]:
-    return [
-        {
-            "Recebida": submission.received_at,
-            "Atividade": submission.activity.name,
-            "Estado": STATUS_LABELS[submission.status],
-            "Plataforma": submission.detected_platform or "—",
-            "Unidades": submission.recognized_units,
-            "Pontos gerados": submission.points_awarded,
-            "Motivo": submission.admin_reason or "—",
-            "ID": submission.id,
-        }
-        for submission in submissions
-    ]
+STATUS_VISUAL = {
+    SubmissionStatus.PROCESSING: ("⏳", "Processando", "processing"),
+    SubmissionStatus.APPROVED_AUTO: ("✅", "Aprovado automaticamente", "approved"),
+    SubmissionStatus.NEEDS_REVIEW: ("👀", "Aguardando revisão", "review"),
+    SubmissionStatus.APPROVED_MANUAL: ("✅", "Aprovado manualmente", "approved"),
+    SubmissionStatus.REJECTED: ("❌", "Rejeitado", "rejected"),
+    SubmissionStatus.CANCELLED: ("⊘", "Cancelado", "cancelled"),
+}
+
+
+def _status_badge(status: SubmissionStatus) -> None:
+    icon, label, css_class = STATUS_VISUAL[status]
+    st.markdown(
+        f'<span class="status-badge status-{css_class}">{icon} {label}</span>',
+        unsafe_allow_html=True,
+    )
+
+
+def _submission_filters(session, *, prefix: str, include_students: bool = False):
+    students = list(
+        session.scalars(
+            select(User)
+            .where(User.role == Role.STUDENT)
+            .order_by(User.display_name)
+        ).all()
+    )
+    activities = list(session.scalars(select(Activity).order_by(Activity.name)).all())
+    columns = st.columns(4 if include_students else 3)
+    query = st.query_params
+    offset = 0
+    student_id = None
+    if include_students:
+        student_options = [None, *[student.id for student in students]]
+        requested_student = query.get(f"{prefix}_student") or None
+        student_id = columns[0].selectbox(
+            "Aluno",
+            student_options,
+            index=student_options.index(requested_student)
+            if requested_student in student_options
+            else 0,
+            format_func=lambda value: "Todos os alunos"
+            if value is None
+            else next(item.display_name for item in students if item.id == value),
+            key=f"{prefix}_student",
+        )
+        offset = 1
+    status_options = [None, *list(SubmissionStatus)]
+    requested_status = query.get(f"{prefix}_status") or None
+    requested_status_value = (
+        SubmissionStatus(requested_status)
+        if requested_status in {status.value for status in SubmissionStatus}
+        else None
+    )
+    status_value = columns[offset].selectbox(
+        "Estado",
+        status_options,
+        index=status_options.index(requested_status_value),
+        format_func=lambda value: "Todos os estados"
+        if value is None
+        else STATUS_VISUAL[value][1],
+        key=f"{prefix}_status",
+    )
+    activity_options = [None, *[activity.id for activity in activities]]
+    requested_activity = query.get(f"{prefix}_activity") or None
+    activity_id = columns[offset + 1].selectbox(
+        "Atividade",
+        activity_options,
+        index=activity_options.index(requested_activity)
+        if requested_activity in activity_options
+        else 0,
+        format_func=lambda value: "Todas as atividades"
+        if value is None
+        else next(item.name for item in activities if item.id == value),
+        key=f"{prefix}_activity",
+    )
+    period_options = [0, 7, 30, 90]
+    try:
+        requested_period = int(query.get(f"{prefix}_period", "0"))
+    except (TypeError, ValueError):
+        requested_period = 0
+    period = columns[offset + 2].selectbox(
+        "Período",
+        period_options,
+        index=period_options.index(requested_period)
+        if requested_period in period_options
+        else 0,
+        format_func=lambda value: "Todo o período" if value == 0 else f"Últimos {value} dias",
+        key=f"{prefix}_period",
+    )
+    if include_students:
+        query[f"{prefix}_student"] = student_id or ""
+    query[f"{prefix}_status"] = status_value.value if status_value else ""
+    query[f"{prefix}_activity"] = activity_id or ""
+    query[f"{prefix}_period"] = str(period)
+    start = utcnow() - timedelta(days=period) if period else None
+    return student_id, status_value, activity_id, start
+
+
+def _render_submission_files(
+    session,
+    actor: User,
+    submission: Submission,
+    settings: Settings | None,
+) -> None:
+    if settings is None:
+        file_count = len(submission.files) or len(submission.images)
+        st.caption(f"📎 {file_count} arquivo(s) enviado(s)")
+        return
+    if submission.files:
+        for index, stored_file in enumerate(submission.files, start=1):
+            icon = {"image": "🖼️", "pdf": "📕", "docx": "📘", "txt": "📄"}.get(
+                stored_file.file_kind, "📎"
+            )
+            label = stored_file.client_filename or f"Arquivo {index}"
+            try:
+                authorized_file, path = get_submission_file_for_user(
+                    session,
+                    actor=actor,
+                    file_id=stored_file.id,
+                    settings=settings,
+                )
+            except LookupError:
+                st.warning(f"{icon} {label} não está disponível no armazenamento.")
+                continue
+            if authorized_file.file_kind == "image":
+                st.image(str(path), caption=label, width="stretch")
+            st.download_button(
+                f"{icon} Abrir/baixar {label}",
+                data=path.read_bytes(),
+                file_name=label,
+                mime=authorized_file.mime_type,
+                key=f"download_{submission.id}_{stored_file.id}",
+            )
+        return
+    # Compatibility with images created before the generic file migration.
+    for image in submission.images:
+        path = settings.upload_dir / image.storage_key
+        if path.is_file():
+            st.image(
+                str(path),
+                caption=image.client_filename or "Imagem enviada",
+                width="stretch",
+            )
+
+
+def _render_submission_timeline(submission: Submission) -> None:
+    st.markdown("**Evolução do processamento**")
+    st.write(f"✅ Enviado · {submission.received_at:%d/%m/%Y %H:%M}")
+    if submission.processed_at:
+        st.write(f"✅ Processado · {submission.processed_at:%d/%m/%Y %H:%M}")
+    else:
+        st.write("⏳ Processamento em andamento")
+    if submission.status == SubmissionStatus.NEEDS_REVIEW:
+        st.write("👀 Aguardando decisão administrativa")
+    elif submission.decided_at:
+        icon, label, _ = STATUS_VISUAL[submission.status]
+        st.write(f"{icon} {label} · {submission.decided_at:%d/%m/%Y %H:%M}")
+
+
+def _render_submission_cards(
+    session,
+    actor: User,
+    submissions: list[Submission],
+    settings: Settings | None,
+    *,
+    compact: bool = False,
+    admin_mode: bool = False,
+) -> None:
+    if not submissions:
+        st.info("Nenhum envio encontrado para os filtros selecionados.")
+        return
+    for submission in submissions:
+        icon, label, _ = STATUS_VISUAL[submission.status]
+        heading = (
+            f"{icon} {submission.activity.name} · "
+            f"{submission.received_at:%d/%m/%Y %H:%M}"
+        )
+        if admin_mode:
+            heading = f"{submission.student.display_name} · {heading}"
+        with st.expander(heading, expanded=False):
+            _status_badge(submission.status)
+            possible_points = int(
+                submission.rule_snapshot_json.get("points", submission.activity.points)
+            )
+            metrics = st.columns(3)
+            metrics[0].metric("Pontos possíveis", possible_points)
+            metrics[1].metric("Pontos concedidos", submission.points_awarded)
+            metrics[2].metric("Unidades", submission.recognized_units)
+            if submission.admin_reason:
+                st.info(f"Justificativa: {submission.admin_reason}")
+            if compact:
+                _render_submission_files(session, actor, submission, None)
+                continue
+            _render_submission_files(session, actor, submission, settings)
+            _render_submission_timeline(submission)
+            if submission.title:
+                st.write(f"**Título:** {submission.title}")
+            if submission.url:
+                st.write(f"**URL:** {submission.url}")
+            if submission.summary:
+                st.text_area(
+                    "Resumo/anotações",
+                    submission.summary,
+                    height=140,
+                    disabled=True,
+                    key=f"summary_{submission.id}",
+                )
+            if admin_mode:
+                st.text_area(
+                    "Texto extraído",
+                    submission.ocr_text or "(vazio)",
+                    height=160,
+                    disabled=True,
+                    key=f"ocr_{submission.id}",
+                )
+                with st.expander("Verificações e auditoria"):
+                    for check in submission.checks:
+                        symbol = {"pass": "✅", "review": "⚠️", "fail": "❌"}[
+                            check.outcome.value
+                        ]
+                        st.write(f"{symbol} **{check.rule_name}** — {check.message}")
+                    audit_logs = list(
+                        session.scalars(
+                            select(AuditLog)
+                            .where(
+                                AuditLog.entity_type == "submission",
+                                AuditLog.entity_id == submission.id,
+                            )
+                            .order_by(AuditLog.created_at)
+                        ).all()
+                    )
+                    for log in audit_logs:
+                        st.write(
+                            f"🕘 {log.created_at:%d/%m/%Y %H:%M} · "
+                            f"{log.action} · {log.reason or 'sem observação'}"
+                        )
+                image_ids = [image.id for image in submission.images]
+                matches = (
+                    list(
+                        session.scalars(
+                            select(DuplicateMatch).where(
+                                DuplicateMatch.image_id.in_(image_ids)
+                            )
+                        ).all()
+                    )
+                    if image_ids
+                    else []
+                )
+                if matches:
+                    st.warning(
+                        f"{len(matches)} possível(is) duplicidade(s) exata(s) ou visual(is)."
+                    )
+                if submission.status == SubmissionStatus.NEEDS_REVIEW:
+                    with st.form(f"review_{submission.id}"):
+                        units = st.number_input(
+                            "Unidades reconhecidas",
+                            min_value=0,
+                            max_value=max(1, len(submission.images)),
+                            value=max(1, submission.recognized_units),
+                            disabled=submission.activity.code != "duolingo_beconfident",
+                        )
+                        reason = st.text_area("Justificativa administrativa")
+                        approve = st.form_submit_button("Aprovar", type="primary")
+                        reject = st.form_submit_button("Rejeitar")
+                    if approve or reject:
+                        try:
+                            result = review_submission(
+                                session,
+                                actor=actor,
+                                submission_id=submission.id,
+                                approve=approve,
+                                reason=reason,
+                                recognized_units=int(units) if approve else None,
+                            )
+                            session.commit()
+                            if settings is not None:
+                                sync_google_sheets_snapshot(session, settings)
+                        except Exception as error:
+                            session.rollback()
+                            show_operation_error("review_submission", error)
+                        else:
+                            st.success(
+                                "Decisão salva. "
+                                f"Pontos gerados: {result.points_created}."
+                            )
 
 
 def student_history(session, actor: User, settings: Settings) -> None:
-    st.header("Minhas submissões")
-    submissions = list(
-        session.scalars(
-            select(Submission)
-            .where(Submission.student_id == actor.id)
-            .order_by(Submission.received_at.desc())
-        ).all()
+    st.header("Histórico")
+    _, status_value, activity_id, start = _submission_filters(
+        session, prefix="student_history"
     )
-    # Load authorized detail through the service to avoid bypassing access rules.
-    detailed = [get_submission_for_user(session, actor=actor, submission_id=item.id) for item in submissions]
-    st.dataframe(_submission_rows(detailed), width="stretch", hide_index=True)
-    if not detailed:
-        return
-    selected = st.selectbox(
-        "Ver análise",
-        [submission.id for submission in detailed],
-        format_func=lambda value: next(
-            f"{item.received_at:%d/%m %H:%M} · {item.activity.name}"
-            for item in detailed
-            if item.id == value
-        ),
+    submissions = list_submissions(
+        session,
+        actor=actor,
+        status=status_value,
+        activity_id=activity_id,
+        start=start,
     )
-    submission = next(item for item in detailed if item.id == selected)
-    st.write(f"**Estado:** {STATUS_LABELS[submission.status]}")
-    if submission.admin_reason:
-        st.info(submission.admin_reason)
-    with st.expander("Resultados das verificações"):
-        st.dataframe(
-            [
-                {
-                    "Regra": check.rule_name,
-                    "Resultado": check.outcome.value,
-                    "Obrigatória": check.required,
-                    "Confiança": check.score,
-                    "Mensagem": check.message,
-                }
-                for check in submission.checks
-            ],
-            hide_index=True,
-            width="stretch",
-        )
+    _render_submission_cards(session, actor, submissions, settings)
 
 
 def review_queue_view(session, actor: User, settings: Settings) -> None:
-    st.header("Fila de revisão")
-    queue = list_review_queue(session, actor=actor)
-    if not queue:
-        st.success("Fila vazia.")
-        return
-    selected = st.selectbox(
-        "Submissão",
-        [submission.id for submission in queue],
-        format_func=lambda value: next(
-            f"{item.student.display_name} · {item.activity.name} · {item.received_at:%d/%m %H:%M}"
-            for item in queue
-            if item.id == value
-        ),
+    st.header("Histórico de envios")
+    student_id, status_value, activity_id, start = _submission_filters(
+        session, prefix="admin_submissions", include_students=True
     )
-    submission = next(item for item in queue if item.id == selected)
-    left, right = st.columns([2, 1])
-    with left:
-        st.write(f"**Aluno:** {submission.student.display_name}")
-        st.write(f"**Atividade declarada:** {submission.activity.name}")
-        st.write(f"**Plataforma detectada:** {submission.detected_platform or 'não conclusiva'}")
-        st.write(f"**Confiança:** {submission.confidence:.0%}")
-        if submission.title:
-            st.write(f"**Título:** {submission.title}")
-        if submission.url:
-            st.write(f"**URL:** {submission.url}")
-        if submission.summary:
-            st.text_area("Resumo/anotações", submission.summary, height=150, disabled=True)
-        st.text_area("OCR extraído", submission.ocr_text or "(vazio)", height=180, disabled=True)
-    with right:
-        for image in submission.images:
-            path = settings.upload_dir / image.storage_key
-            if path.is_file():
-                st.image(
-                    str(path),
-                    caption=f"{image.image_format} · {image.width}×{image.height}",
-                    width="stretch",
-                )
-    st.subheader("Regras")
-    st.dataframe(
-        [
-            {
-                "Regra": check.rule_name,
-                "Resultado": check.outcome.value,
-                "Obrigatória": check.required,
-                "Confiança": check.score,
-                "Mensagem": check.message,
-            }
-            for check in submission.checks
-        ],
-        width="stretch",
-        hide_index=True,
+    submissions = list_submissions(
+        session,
+        actor=actor,
+        student_id=student_id,
+        status=status_value,
+        activity_id=activity_id,
+        start=start,
     )
-    image_ids = [image.id for image in submission.images]
-    matches = list(
-        session.scalars(
-            select(DuplicateMatch).where(DuplicateMatch.image_id.in_(image_ids))
-        ).all()
-    ) if image_ids else []
-    if matches:
-        st.warning("Foram encontradas correspondências exatas ou visuais.")
-        st.dataframe(
-            [
-                {
-                    "Tipo": match.kind.value,
-                    "Distância pHash": match.distance,
-                    "Mesmo aluno": match.same_student,
-                    "Imagem comparada": match.matched_image_id,
-                }
-                for match in matches
-            ],
-            hide_index=True,
-            width="stretch",
-        )
-        with st.expander("Comparar imagens semelhantes"):
-            for match in matches[:5]:
-                current_image = session.get(SubmissionImage, match.image_id)
-                matched_image = session.get(SubmissionImage, match.matched_image_id)
-                columns = st.columns(2)
-                if current_image:
-                    current_path = settings.upload_dir / current_image.storage_key
-                    if current_path.is_file():
-                        columns[0].image(
-                            str(current_path),
-                            caption="Imagem desta submissão",
-                            width="stretch",
-                        )
-                if matched_image:
-                    matched_path = settings.upload_dir / matched_image.storage_key
-                    if matched_path.is_file():
-                        columns[1].image(
-                            str(matched_path),
-                            caption=f"Correspondência {match.kind.value}",
-                            width="stretch",
-                        )
-
-    with st.form(f"review_{submission.id}"):
-        units = st.number_input(
-            "Unidades reconhecidas",
-            min_value=0,
-            max_value=100,
-            value=max(1, submission.recognized_units),
-            disabled=submission.activity.code != "duolingo_beconfident",
-        )
-        reason = st.text_area("Justificativa administrativa")
-        approve = st.form_submit_button("Aprovar", type="primary")
-        reject = st.form_submit_button("Rejeitar")
-    if approve or reject:
-        try:
-            result = review_submission(
-                session,
-                actor=actor,
-                submission_id=submission.id,
-                approve=approve,
-                reason=reason,
-                recognized_units=int(units) if approve else None,
-            )
-            session.commit()
-            sync_google_sheets_snapshot(session, settings)
-        except Exception as error:
-            session.rollback()
-            show_operation_error("review_submission", error)
-            return
-        st.success(
-            f"Decisão salva: {STATUS_LABELS[result.status]}. Pontos gerados: {result.points_created}."
-        )
+    pending = sum(
+        item.status == SubmissionStatus.NEEDS_REVIEW for item in submissions
+    )
+    if pending:
+        st.warning(f"{pending} envio(s) aguardando revisão nos filtros atuais.")
+    _render_submission_cards(
+        session,
+        actor,
+        submissions,
+        settings,
+        admin_mode=True,
+    )
 
 
 def users_view(session, actor: User, settings: Settings | None = None) -> None:
     st.header("Alunos e administradores")
     users = list(session.scalars(select(User).order_by(User.display_name)).all())
+    active_count = sum(user.active and user.archived_at is None for user in users)
+    inactive_count = sum(not user.active and user.archived_at is None for user in users)
+    archived_count = sum(user.archived_at is not None for user in users)
+    summary = st.columns(3)
+    summary[0].metric("Ativos", active_count)
+    summary[1].metric("Inativos", inactive_count)
+    summary[2].metric("Arquivados", archived_count)
     st.dataframe(
         [
-            {"Nome": user.display_name, "E-mail": user.email, "Papel": user.role.value, "Ativo": user.active}
+            {
+                "Nome": user.display_name,
+                "E-mail": user.email,
+                "Papel": "Administrador" if user.role == Role.ADMIN else "Aluno",
+                "Estado": "Arquivado"
+                if user.archived_at
+                else "Ativo"
+                if user.active
+                else "Inativo",
+                "Último acesso": user.last_login_at,
+            }
             for user in users
         ],
         width="stretch",
         hide_index=True,
     )
-    choices = ["__new__", *[user.id for user in users]]
+    generated = st.session_state.pop("generated_temp_password", None)
+    if generated:
+        st.success("Senha temporária gerada. Copie-a agora; ela não será exibida novamente.")
+        st.code(generated, language=None)
+    with st.expander("Criar nova conta"):
+        with st.form("new_user_form", clear_on_submit=True):
+            new_name = st.text_input("Nome")
+            new_email = st.text_input("E-mail")
+            new_role = st.selectbox(
+                "Papel", [Role.STUDENT.value, Role.ADMIN.value]
+            )
+            new_reason = st.text_input("Motivo", value="Cadastro administrativo")
+            create_submitted = st.form_submit_button("Criar e gerar senha temporária")
+        if create_submitted:
+            try:
+                _, temporary_password = create_user_account(
+                    session,
+                    actor=actor,
+                    email=new_email,
+                    display_name=new_name,
+                    role=new_role,
+                    reason=new_reason,
+                )
+                session.commit()
+            except Exception as error:
+                session.rollback()
+                show_operation_error("create_user", error)
+            else:
+                st.session_state["generated_temp_password"] = temporary_password
+                st.rerun()
+
+    editable_users = [user for user in users if user.archived_at is None]
+    if not editable_users:
+        return
     selected = st.selectbox(
-        "Editar",
-        choices,
-        format_func=lambda value: "Novo usuário" if value == "__new__" else next(user.display_name for user in users if user.id == value),
+        "Conta para administrar",
+        [user.id for user in editable_users],
+        format_func=lambda value: next(
+            user.display_name for user in editable_users if user.id == value
+        ),
     )
-    current = next((user for user in users if user.id == selected), None)
+    current = next(user for user in editable_users if user.id == selected)
     with st.form("user_form"):
-        name = st.text_input("Nome", value=current.display_name if current else "")
-        email = st.text_input("E-mail", value=current.email if current else "")
-        role = st.selectbox("Papel", [Role.STUDENT.value, Role.ADMIN.value], index=1 if current and current.role == Role.ADMIN else 0)
-        active = st.checkbox("Ativo", value=current.active if current else True)
-        submitted = st.form_submit_button("Salvar")
+        name = st.text_input("Nome", value=current.display_name)
+        email = st.text_input("E-mail", value=current.email)
+        role = st.selectbox(
+            "Papel",
+            [Role.STUDENT.value, Role.ADMIN.value],
+            index=1 if current.role == Role.ADMIN else 0,
+        )
+        active = st.checkbox("Conta ativa", value=current.active)
+        reminders_enabled = st.checkbox(
+            "Receber lembretes", value=current.reminders_enabled
+        )
+        reason = st.text_input("Motivo da alteração")
+        submitted = st.form_submit_button("Salvar alterações", type="primary")
     if submitted:
         try:
-            save_user(session, actor=actor, email=email, display_name=name, role=role, active=active, user_id=current.id if current else None)
+            save_user(
+                session,
+                actor=actor,
+                email=email,
+                display_name=name,
+                role=role,
+                active=active,
+                user_id=current.id,
+                reason=reason,
+                reminders_enabled=reminders_enabled,
+            )
             session.commit()
             if settings is not None:
                 sync_google_sheets_snapshot(session, settings)
@@ -846,6 +1286,60 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
         except Exception as error:
             session.rollback()
             show_operation_error("save_user", error)
+
+    with st.expander("Redefinir senha"):
+        with st.form("reset_password_form"):
+            reset_reason = st.text_input("Motivo da redefinição")
+            reset_confirm = st.checkbox("Confirmo a redefinição da senha")
+            reset_submitted = st.form_submit_button("Gerar nova senha temporária")
+        if reset_submitted:
+            if not reset_confirm:
+                st.error("Confirme a redefinição.")
+            else:
+                try:
+                    temporary_password = reset_user_password(
+                        session,
+                        actor=actor,
+                        user_id=current.id,
+                        reason=reset_reason,
+                    )
+                    session.commit()
+                except Exception as error:
+                    session.rollback()
+                    show_operation_error("reset_password", error)
+                else:
+                    st.session_state["generated_temp_password"] = temporary_password
+                    st.rerun()
+
+    with st.expander("Excluir ou arquivar conta"):
+        st.warning(
+            "Contas com histórico serão arquivadas. Contas nunca utilizadas "
+            "podem ser removidas permanentemente."
+        )
+        with st.form("delete_user_form"):
+            delete_reason = st.text_input("Motivo da exclusão/arquivamento")
+            confirmation = st.text_input(
+                f'Digite "{current.email}" para confirmar'
+            )
+            delete_submitted = st.form_submit_button("Confirmar exclusão")
+        if delete_submitted:
+            if confirmation.strip().lower() != current.email.lower():
+                st.error("A confirmação não corresponde ao e-mail da conta.")
+            else:
+                try:
+                    result = archive_or_delete_user(
+                        session,
+                        actor=actor,
+                        user_id=current.id,
+                        reason=delete_reason,
+                    )
+                    session.commit()
+                except Exception as error:
+                    session.rollback()
+                    show_operation_error("delete_user", error)
+                else:
+                    st.success("Conta arquivada." if result == "archived" else "Conta excluída.")
+                    st.rerun()
 
 
 def catalog_view(session, actor: User, settings: Settings | None = None) -> None:
@@ -858,27 +1352,91 @@ def catalog_view(session, actor: User, settings: Settings | None = None) -> None
                 "Código": item.code,
                 "Pontos futuros": item.points,
                 "Unidades": item.unit_threshold,
-                "Ativa": item.active,
+                "Estado": "Arquivada"
+                if item.archived_at
+                else "Ativa"
+                if item.active
+                else "Inativa",
             }
             for item in activities
         ],
         width="stretch",
         hide_index=True,
     )
-    selected = st.selectbox("Atividade para editar", [item.id for item in activities], format_func=lambda value: next(item.name for item in activities if item.id == value))
-    activity = next(item for item in activities if item.id == selected)
+    with st.expander("Criar atividade"):
+        with st.form("new_activity_form", clear_on_submit=True):
+            new_code = st.text_input("Código interno")
+            new_name = st.text_input("Nome da atividade")
+            new_points = st.number_input("Pontos", min_value=1, value=10)
+            new_threshold = st.number_input("Unidades por prêmio", min_value=1, value=1)
+            new_requires_proof = st.checkbox("Exige comprovação", value=True)
+            new_requires_summary = st.checkbox("Exige resumo/anotações")
+            new_requires_title = st.checkbox("Exige título ou URL")
+            new_review = st.checkbox("Exige revisão humana", value=True)
+            new_reason = st.text_input("Motivo", value="Criação administrativa")
+            create_submitted = st.form_submit_button("Criar atividade")
+        if create_submitted:
+            try:
+                create_activity(
+                    session,
+                    actor=actor,
+                    code=new_code,
+                    name=new_name,
+                    points=int(new_points),
+                    unit_threshold=int(new_threshold),
+                    requires_images=new_requires_proof,
+                    requires_summary=new_requires_summary,
+                    requires_title_or_url=new_requires_title,
+                    content_review_required=new_review,
+                    reason=new_reason,
+                )
+                session.commit()
+            except Exception as error:
+                session.rollback()
+                show_operation_error("create_activity", error)
+            else:
+                st.success("Atividade criada.")
+                st.rerun()
+
+    editable = [item for item in activities if item.archived_at is None]
+    if not editable:
+        return
+    selected = st.selectbox(
+        "Atividade para editar",
+        [item.id for item in editable],
+        format_func=lambda value: next(item.name for item in editable if item.id == value),
+    )
+    activity = next(item for item in editable if item.id == selected)
+    fixed_lesson_policy = activity.code == "duolingo_beconfident"
     with st.form("activity_form"):
         name = st.text_input("Nome", value=activity.name)
-        points = st.number_input("Pontos para futuras aprovações", min_value=1, max_value=1000, value=activity.points)
+        points = st.number_input(
+            "Pontos para futuras aprovações",
+            min_value=1,
+            max_value=1000,
+            value=5 if fixed_lesson_policy else activity.points,
+            disabled=fixed_lesson_policy,
+            help="Política fixa: 5 pontos." if fixed_lesson_policy else None,
+        )
         minimum = st.number_input("Mínimo de caracteres", min_value=0, max_value=10000, value=activity.summary_min_chars)
-        threshold = st.number_input("Unidades por premiação", min_value=1, max_value=100, value=activity.unit_threshold)
-        requires_images = st.checkbox("Exige imagem", value=activity.requires_images)
+        threshold = st.number_input(
+            "Unidades por premiação",
+            min_value=1,
+            max_value=100,
+            value=5 if fixed_lesson_policy else activity.unit_threshold,
+            disabled=fixed_lesson_policy,
+            help="Política fixa: um grupo contém 5 lições."
+            if fixed_lesson_policy
+            else None,
+        )
+        requires_images = st.checkbox("Exige comprovação", value=activity.requires_images)
         requires_summary = st.checkbox("Exige resumo/anotações", value=activity.requires_summary)
         requires_title = st.checkbox("Exige título ou URL", value=activity.requires_title_or_url)
         content_review = st.checkbox("Exige revisão humana de conteúdo", value=activity.content_review_required)
         auto_approvable = st.checkbox("Pode ser autoaprovada", value=activity.auto_approvable)
         active = st.checkbox("Ativa", value=activity.active)
-        submitted = st.form_submit_button("Salvar")
+        reason = st.text_input("Motivo da alteração")
+        submitted = st.form_submit_button("Salvar", type="primary")
     if submitted:
         try:
             save_activity_changes(
@@ -895,6 +1453,7 @@ def catalog_view(session, actor: User, settings: Settings | None = None) -> None
                 requires_title_or_url=requires_title,
                 content_review_required=content_review,
                 auto_approvable=auto_approvable,
+                reason=reason,
             )
             session.commit()
             if settings is not None:
@@ -903,33 +1462,164 @@ def catalog_view(session, actor: User, settings: Settings | None = None) -> None
         except Exception as error:
             session.rollback()
             show_operation_error("save_activity", error)
+    with st.expander("Excluir ou arquivar atividade"):
+        st.warning(
+            "Atividades com histórico serão arquivadas. Atividades nunca usadas "
+            "podem ser excluídas permanentemente."
+        )
+        with st.form("delete_activity_form"):
+            delete_reason = st.text_input("Motivo da exclusão/arquivamento")
+            confirmation = st.text_input(
+                f'Digite "{activity.code}" para confirmar'
+            )
+            delete_submitted = st.form_submit_button("Confirmar exclusão")
+        if delete_submitted:
+            if confirmation.strip() != activity.code:
+                st.error("A confirmação não corresponde ao código da atividade.")
+            else:
+                try:
+                    result = archive_or_delete_activity(
+                        session,
+                        actor=actor,
+                        activity_id=activity.id,
+                        reason=delete_reason,
+                    )
+                    session.commit()
+                except Exception as error:
+                    session.rollback()
+                    show_operation_error("delete_activity", error)
+                else:
+                    st.success(
+                        "Atividade arquivada."
+                        if result == "archived"
+                        else "Atividade excluída."
+                    )
+                    st.rerun()
 
 
-def meeting_view(session, actor: User, settings: Settings | None = None) -> None:
-    st.header("Registrar reunião em inglês")
-    students = list(
-        session.scalars(
-            select(User).where(User.role == Role.STUDENT, User.active.is_(True)).order_by(User.display_name)
-        ).all()
-    )
-    if not students:
-        st.info("Cadastre um aluno ativo primeiro.")
-        return
-    with st.form("meeting_form", clear_on_submit=True):
-        student_id = st.selectbox("Aluno", [student.id for student in students], format_func=lambda value: next(student.display_name for student in students if student.id == value))
-        meeting_date = st.date_input("Data", value=date.today())
-        description = st.text_input("Reunião ou descrição")
-        submitted = st.form_submit_button("Confirmar e conceder pontos", type="primary")
+def reminders_view(session, actor: User, settings: Settings) -> None:
+    st.header("Lembretes por e-mail")
+    configuration = get_reminder_configuration(session)
+    mode_label = "Dry-run: nenhum e-mail será enviado" if settings.reminder_dry_run else "Envio SMTP real habilitado"
+    st.info(mode_label)
+    weekdays = [
+        "Segunda-feira",
+        "Terça-feira",
+        "Quarta-feira",
+        "Quinta-feira",
+        "Sexta-feira",
+        "Sábado",
+        "Domingo",
+    ]
+    with st.form("reminder_configuration_form"):
+        enabled = st.checkbox("Ativar lembretes", value=configuration.enabled)
+        frequency = st.selectbox(
+            "Frequência",
+            ["daily", "weekly"],
+            index=0 if configuration.frequency == "daily" else 1,
+            format_func=lambda value: "Diária" if value == "daily" else "Semanal",
+        )
+        weekday = st.selectbox(
+            "Dia da semana",
+            list(range(7)),
+            index=configuration.weekday,
+            format_func=lambda value: weekdays[value],
+            disabled=frequency == "daily",
+        )
+        send_hour = st.number_input(
+            "Horário (hora cheia)", min_value=0, max_value=23, value=configuration.send_hour
+        )
+        timezone_name = st.text_input(
+            "Fuso horário", value=configuration.timezone_name
+        )
+        inactive_days = st.number_input(
+            "Dias sem atividade aprovada",
+            min_value=1,
+            max_value=365,
+            value=configuration.inactive_days,
+        )
+        audiences = {
+            "inactive_students": "Todos os alunos inativos no período",
+            "never_approved": "Alunos que nunca tiveram atividade aprovada",
+            "previously_active": "Alunos que já participaram e ficaram inativos",
+        }
+        audience = st.selectbox(
+            "Público-alvo",
+            list(audiences),
+            index=list(audiences).index(configuration.audience)
+            if configuration.audience in audiences
+            else 0,
+            format_func=audiences.get,
+        )
+        subject = st.text_input("Assunto", value=configuration.subject_template)
+        body = st.text_area(
+            "Modelo da mensagem",
+            value=configuration.body_template,
+            height=180,
+            help="Variáveis disponíveis: {name} e {email}.",
+        )
+        submitted = st.form_submit_button("Salvar configuração", type="primary")
     if submitted:
         try:
-            meeting = record_meeting(session, actor=actor, student_id=student_id, meeting_date=meeting_date, description=description)
+            save_reminder_configuration(
+                session,
+                actor=actor,
+                enabled=enabled,
+                frequency=frequency,
+                weekday=int(weekday),
+                send_hour=int(send_hour),
+                timezone_name=timezone_name,
+                inactive_days=int(inactive_days),
+                subject_template=subject,
+                body_template=body,
+                audience=audience,
+            )
             session.commit()
-            if settings is not None:
-                sync_google_sheets_snapshot(session, settings)
-            st.success(f"Reunião registrada com auditoria. ID {meeting.id}")
         except Exception as error:
             session.rollback()
-            show_operation_error("record_meeting", error)
+            show_operation_error("save_reminders", error)
+        else:
+            st.success("Configuração de lembretes salva.")
+
+    with st.expander("Pré-visualização"):
+        preview_subject, preview_body = render_reminder(configuration, actor)
+        st.write(f"**Assunto:** {preview_subject}")
+        st.text(preview_body)
+        if st.button("Gerar envio de teste para mim"):
+            try:
+                attempt = send_test_reminder(
+                    session, actor=actor, settings=settings
+                )
+                session.commit()
+            except Exception as error:
+                session.rollback()
+                show_operation_error("test_reminder", error)
+            else:
+                st.success(f"Teste registrado com estado: {attempt.status.value}.")
+
+    attempts = list(
+        session.scalars(
+            select(EmailAttempt).order_by(EmailAttempt.created_at.desc()).limit(50)
+        ).all()
+    )
+    st.subheader("Últimas tentativas")
+    if not attempts:
+        st.info("Nenhuma tentativa registrada.")
+    else:
+        st.dataframe(
+            [
+                {
+                    "Data": attempt.created_at,
+                    "Destinatário": attempt.recipient_email,
+                    "Estado": attempt.status.value,
+                    "Dry-run": attempt.dry_run,
+                    "Tentativas": attempt.attempt_count,
+                }
+                for attempt in attempts
+            ],
+            width="stretch",
+            hide_index=True,
+        )
 
 
 def ledger_view(session, actor: User, settings: Settings | None = None) -> None:
@@ -960,11 +1650,19 @@ def ledger_view(session, actor: User, settings: Settings | None = None) -> None:
     rows = admin_ledger_rows(session, actor=actor, start=start_dt, end=end_dt)
     st.dataframe(rows, width="stretch", hide_index=True)
     board = leaderboard_rows(session, start=start, end=end)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.download_button("Ledger CSV", ledger_to_csv(rows), "ledger.csv", "text/csv")
-    c2.download_button("Ledger XLSX", ledger_to_xlsx(rows), "ledger.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    c3.download_button("Leaderboard CSV", leaderboard_to_csv(board), "leaderboard.csv", "text/csv")
-    c4.download_button("Leaderboard XLSX", leaderboard_to_xlsx(board), "leaderboard.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    c1, c2 = st.columns(2)
+    c1.download_button(
+        "Ledger XLSX",
+        ledger_to_xlsx(rows),
+        "ledger.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    c2.download_button(
+        "Leaderboard XLSX",
+        leaderboard_to_xlsx(board),
+        "leaderboard.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
     leaderboard_view(session, key_prefix="admin_ledger")
     st.subheader("Histórico individual")
     students = list(
@@ -990,7 +1688,47 @@ def ledger_view(session, actor: User, settings: Settings | None = None) -> None:
         submissions = admin_student_submissions(
             session, actor=actor, student_id=selected_student
         )
-        st.dataframe(_submission_rows(submissions), width="stretch", hide_index=True)
+        st.caption(f"{len(submissions)} submissão(ões) no histórico; detalhes em Envios.")
+
+    st.subheader("Ajuste auditado de pontos")
+    if students:
+        with st.form("points_adjustment_form"):
+            adjustment_student = st.selectbox(
+                "Aluno do ajuste",
+                [student.id for student in students],
+                format_func=lambda value: next(
+                    student.display_name for student in students if student.id == value
+                ),
+            )
+            adjustment_points = st.number_input(
+                "Pontos (use valor negativo para remover)",
+                min_value=-10000,
+                max_value=10000,
+                value=0,
+            )
+            adjustment_reason = st.text_area("Motivo obrigatório")
+            adjustment_confirm = st.checkbox("Confirmo o ajuste no ledger")
+            adjustment_submit = st.form_submit_button("Registrar ajuste")
+        if adjustment_submit:
+            if not adjustment_confirm:
+                st.error("Confirme o ajuste.")
+            else:
+                try:
+                    create_points_adjustment(
+                        session,
+                        actor=actor,
+                        student_id=adjustment_student,
+                        points=int(adjustment_points),
+                        reason=adjustment_reason,
+                    )
+                    session.commit()
+                    if settings is not None:
+                        sync_google_sheets_snapshot(session, settings)
+                except Exception as error:
+                    session.rollback()
+                    show_operation_error("points_adjustment", error)
+                else:
+                    st.success("Ajuste registrado como nova transação imutável.")
 
 
 def admin_dashboard(session) -> None:
@@ -1012,16 +1750,31 @@ def main() -> None:
         st.error(f"Configuração inválida: {error}")
         st.stop()
     with session_scope(factory) as session:
+        clear_cookie = bool(st.session_state.get("clear_local_auth_cookie"))
         auth_state = authenticate(session, settings)
+        if clear_cookie:
+            render_cookie_bridge(st, clear=True, secure=settings.is_production)
+            st.session_state.pop("clear_local_auth_cookie", None)
+        expires_value = st.session_state.pop("local_auth_expires_at", None)
+        if auth_state.local_token and expires_value:
+            render_cookie_bridge(
+                st,
+                token=auth_state.local_token,
+                expires_at=datetime.fromisoformat(str(expires_value)),
+                secure=settings.is_production,
+            )
         actor = auth_state.actor
         if actor is None:
             _run_navigation(_public_routes(session, settings, auth_state))
+            return
+        if settings.local_auth_enabled and actor.must_change_password:
+            _run_navigation([_password_change_route(session, actor, settings)])
             return
         if actor.role == Role.ADMIN:
             routes = _admin_routes(session, actor, settings)
         else:
             routes = _student_routes(session, actor, settings)
-        routes.append(_account_route(actor, settings))
+        routes.append(_account_route(session, actor, settings))
         _run_navigation(routes)
 
 

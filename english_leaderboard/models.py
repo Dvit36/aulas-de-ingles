@@ -67,11 +67,26 @@ class LedgerKind(StrEnum):
     ADJUSTMENT = "adjustment"
 
 
+class EmailAttemptStatus(StrEnum):
+    PENDING = "pending"
+    SENT = "sent"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
 role_enum = SAEnum(Role, native_enum=False, length=16, validate_strings=True, create_constraint=True, name="role_enum")
 status_enum = SAEnum(SubmissionStatus, native_enum=False, length=24, validate_strings=True, create_constraint=True, name="submission_status_enum")
 check_enum = SAEnum(CheckOutcome, native_enum=False, length=12, validate_strings=True, create_constraint=True, name="check_outcome_enum")
 duplicate_enum = SAEnum(DuplicateKind, native_enum=False, length=12, validate_strings=True, create_constraint=True, name="duplicate_kind_enum")
 ledger_enum = SAEnum(LedgerKind, native_enum=False, length=32, validate_strings=True, create_constraint=True, name="ledger_kind_enum")
+email_attempt_enum = SAEnum(
+    EmailAttemptStatus,
+    native_enum=False,
+    length=16,
+    validate_strings=True,
+    create_constraint=True,
+    name="email_attempt_status_enum",
+)
 
 
 class TimestampMixin:
@@ -94,6 +109,20 @@ class User(TimestampMixin, Base):
     display_name: Mapped[str] = mapped_column(String(160))
     role: Mapped[Role] = mapped_column(role_enum, default=Role.STUDENT)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    password_hash: Mapped[str | None] = mapped_column(String(500))
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    session_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failed_login_attempts: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reminders_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
     oidc_issuer: Mapped[str | None] = mapped_column(String(500))
     oidc_subject: Mapped[str | None] = mapped_column(String(500))
 
@@ -124,6 +153,7 @@ class Activity(TimestampMixin, Base):
     content_review_required: Mapped[bool] = mapped_column(Boolean, default=False)
     auto_approvable: Mapped[bool] = mapped_column(Boolean, default=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     config_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
@@ -167,6 +197,9 @@ class Submission(TimestampMixin, Base):
     images: Mapped[list["SubmissionImage"]] = relationship(
         back_populates="submission", cascade="all, delete-orphan"
     )
+    files: Mapped[list["SubmissionFile"]] = relationship(
+        back_populates="submission", cascade="all, delete-orphan"
+    )
     checks: Mapped[list["RuleCheck"]] = relationship(
         back_populates="submission", cascade="all, delete-orphan"
     )
@@ -202,6 +235,55 @@ class SubmissionImage(Base):
     )
 
     submission: Mapped[Submission] = relationship(back_populates="images")
+
+
+class SubmissionFile(Base):
+    """Stored evidence of any supported type, including images and documents."""
+
+    __tablename__ = "submission_files"
+    __table_args__ = (
+        CheckConstraint("size_bytes > 0", name="ck_submission_file_size_positive"),
+        Index("ix_submission_file_sha256", "sha256"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    submission_id: Mapped[str] = mapped_column(
+        ForeignKey("submissions.id", ondelete="CASCADE"), index=True
+    )
+    image_id: Mapped[str | None] = mapped_column(
+        ForeignKey("submission_images.id", ondelete="SET NULL"), unique=True
+    )
+    storage_key: Mapped[str] = mapped_column(String(255), unique=True)
+    client_filename: Mapped[str | None] = mapped_column(String(255))
+    mime_type: Mapped[str] = mapped_column(String(120))
+    file_kind: Mapped[str] = mapped_column(String(16), index=True)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    page_count: Mapped[int | None] = mapped_column(Integer)
+    extracted_text: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+    submission: Mapped[Submission] = relationship(back_populates="files")
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+    __table_args__ = (Index("ix_auth_session_user_expires", "user_id", "expires_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    session_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class RuleCheck(Base):
@@ -264,6 +346,31 @@ class ApprovedEvidence(Base):
     sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
     image_id: Mapped[str] = mapped_column(
         ForeignKey("submission_images.id"), unique=True, nullable=False
+    )
+    submission_id: Mapped[str] = mapped_column(
+        ForeignKey("submissions.id"), index=True, nullable=False
+    )
+    student_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), index=True, nullable=False
+    )
+    claimed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class ApprovedFileEvidence(Base):
+    """Atomic claim for any stored file, including documents.
+
+    ``ApprovedEvidence`` remains untouched for compatibility with databases that
+    already contain image claims. New submissions also claim their generic file
+    rows so two concurrent approvals cannot award the same document twice.
+    """
+
+    __tablename__ = "approved_file_evidence"
+
+    sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    file_id: Mapped[str] = mapped_column(
+        ForeignKey("submission_files.id"), unique=True, nullable=False
     )
     submission_id: Mapped[str] = mapped_column(
         ForeignKey("submissions.id"), index=True, nullable=False
@@ -389,6 +496,58 @@ class AuditLog(Base):
     reason: Mapped[str | None] = mapped_column(Text)
     before_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     after_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
+class ReminderConfiguration(TimestampMixin, Base):
+    __tablename__ = "reminder_configuration"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    frequency: Mapped[str] = mapped_column(String(16), default="weekly")
+    weekday: Mapped[int] = mapped_column(Integer, default=1)
+    send_hour: Mapped[int] = mapped_column(Integer, default=9)
+    timezone_name: Mapped[str] = mapped_column(
+        String(80), default="America/Sao_Paulo"
+    )
+    inactive_days: Mapped[int] = mapped_column(Integer, default=7)
+    subject_template: Mapped[str] = mapped_column(
+        String(300), default="Lembrete de atividades de inglês"
+    )
+    body_template: Mapped[str] = mapped_column(
+        Text,
+        default=(
+            "Olá, {name}! Sentimos sua falta nas atividades de inglês. "
+            "Acesse a plataforma para enviar uma nova atividade."
+        ),
+    )
+    audience: Mapped[str] = mapped_column(String(32), default="inactive_students")
+    updated_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class EmailAttempt(Base):
+    __tablename__ = "email_attempts"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_email_attempt_dedupe_key"),
+        Index("ix_email_attempt_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), index=True)
+    recipient_email: Mapped[str] = mapped_column(String(320))
+    subject: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[EmailAttemptStatus] = mapped_column(
+        email_attempt_enum, default=EmailAttemptStatus.PENDING, index=True
+    )
+    dedupe_key: Mapped[str] = mapped_column(String(255))
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )

@@ -1,4 +1,4 @@
-streamlit>=1.50,<2
+streamlit[auth]>=1.56,<2
 SQLAlchemy>=2.0,<3
 rapidocr-onnxruntime==1.4.4
 onnxruntime>=1.17,<2
@@ -8,6 +8,10 @@ ImageHash>=4.3,<5
 pandas>=2.2,<4
 openpyxl>=3.1,<4
 python-dotenv>=1.0,<2
+argon2-cffi>=23.1,<26
+pypdf>=5,<7
+python-docx>=1.1,<2
+pypdfium2>=4.30,<5
 google-api-python-client>=2,<3
 google-auth>=2,<3
 google-auth-httplib2>=0.2,<1

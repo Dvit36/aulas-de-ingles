@@ -169,6 +169,33 @@ def command_health(_: argparse.Namespace) -> int:
     return 0
 
 
+def command_run_reminders(args: argparse.Namespace) -> int:
+    from .reminders import run_due_reminders
+
+    settings, factory = _runtime()
+    with session_scope(factory) as session:
+        seed_database(session, settings)
+        attempts = run_due_reminders(session, settings, force=bool(args.force))
+        payload = [
+            {
+                "id": attempt.id,
+                "recipient": attempt.recipient_email,
+                "status": attempt.status.value,
+                "dry_run": attempt.dry_run,
+            }
+            for attempt in attempts
+        ]
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def command_scheduler(_: argparse.Namespace) -> int:
+    from .scheduler import run_forever
+
+    run_forever()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="english-leaderboard",
@@ -205,6 +232,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reconcilia leaderboard e ledger com o Google Sheets",
     )
     sheets_parser.set_defaults(func=command_sync_google_sheets)
+
+    reminder_parser = commands.add_parser(
+        "run-reminders", help="Executa um ciclo de lembretes"
+    )
+    reminder_parser.add_argument(
+        "--force", action="store_true", help="Ignora dia/horário configurados"
+    )
+    reminder_parser.set_defaults(func=command_run_reminders)
+
+    scheduler_parser = commands.add_parser(
+        "scheduler", help="Mantém o processo independente de lembretes"
+    )
+    scheduler_parser.set_defaults(func=command_scheduler)
     return parser
 
 

@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import Settings
-from .models import Activity, Role, User
+from .models import Activity, ReminderConfiguration, Role, User
 
 
 CATALOG_SEED: tuple[dict[str, object], ...] = (
@@ -91,7 +91,7 @@ CATALOG_SEED: tuple[dict[str, object], ...] = (
         "points": 30,
         "requires_images": False,
         "auto_approvable": False,
-        "config_json": {"admin_only": True},
+        "config_json": {},
     },
 )
 
@@ -134,4 +134,9 @@ def seed_demo_users(session: Session, settings: Settings) -> list[User]:
 def seed_database(session: Session, settings: Settings) -> None:
     seed_catalog(session)
     seed_demo_users(session, settings)
+    from .local_auth import bootstrap_initial_admin
 
+    bootstrap_initial_admin(session, settings)
+    if session.get(ReminderConfiguration, 1) is None:
+        session.add(ReminderConfiguration(id=1, enabled=False))
+    session.flush()

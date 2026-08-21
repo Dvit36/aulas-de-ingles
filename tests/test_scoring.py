@@ -70,6 +70,47 @@ def test_ten_units_form_two_non_overlapping_batches(session, users):
     assert session.scalar(select(func.count(LessonBatchUnit.unit_id))) == 10
 
 
+def test_sixth_through_ninth_lessons_do_not_create_a_second_award(session, users):
+    student = users[Role.STUDENT]
+    activity = _activity(session, "duolingo_beconfident")
+    awards = []
+    for index in range(1, 11):
+        submission = Submission(
+            student_id=student.id,
+            activity_id=activity.id,
+            status=SubmissionStatus.APPROVED_MANUAL,
+            recognized_units=1,
+        )
+        session.add(submission)
+        session.flush()
+        awards.append(award_approved_submission(session, submission).points_created)
+        if index == 9:
+            assert lesson_progress(session, student.id) == (4, 5)
+    session.commit()
+    assert awards == [0, 0, 0, 0, 5, 0, 0, 0, 0, 5]
+    assert student_total(session, student.id) == 10
+
+
+def test_lesson_policy_cannot_be_changed_by_mutable_catalog_values(session, users):
+    student = users[Role.STUDENT]
+    activity = _activity(session, "duolingo_beconfident")
+    activity.points = 99
+    activity.unit_threshold = 1
+    awards = []
+    for _ in range(5):
+        submission = Submission(
+            student_id=student.id,
+            activity_id=activity.id,
+            status=SubmissionStatus.APPROVED_MANUAL,
+            recognized_units=1,
+        )
+        session.add(submission)
+        session.flush()
+        awards.append(award_approved_submission(session, submission).points_created)
+    assert awards == [0, 0, 0, 0, 5]
+    assert student_total(session, student.id) == 5
+
+
 def test_direct_activity_is_idempotent_and_historical_points_do_not_change(session, users):
     student = users[Role.STUDENT]
     activity = _activity(session, "impact_summary")

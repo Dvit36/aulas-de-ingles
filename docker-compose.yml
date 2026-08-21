@@ -23,6 +23,24 @@ services:
       retries: 3
       start_period: 45s
 
+  reminder_scheduler:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DEMO_AUTH_ENABLED: ${DEMO_AUTH_ENABLED:-false}
+      DATABASE_URL: sqlite:////data/db/app.db
+      UPLOAD_DIR: /data/uploads
+    entrypoint: ["english-leaderboard", "scheduler"]
+    volumes:
+      - app_db:/data/db
+      - app_uploads:/data/uploads
+    depends_on:
+      app:
+        condition: service_healthy
+
 volumes:
   app_db:
   app_uploads:

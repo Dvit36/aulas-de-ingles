@@ -14,12 +14,13 @@ Streamlit UI -> Auth/Services -> Rules + OCR + Scoring
 
 `DATABASE_URL` seleciona SQLite hoje e permite um dialeto Postgres no futuro sem alterar regras de domínio. Para SQLite são habilitados foreign keys, busy timeout e WAL.
 
-A navegação usa `st.Page` com `st.navigation(position="hidden")` como roteador e uma barra própria de `st.page_link` sempre visível; o projeto requer Streamlit `>=1.50`. Assim, o celular não converte o menu em uma gaveta lateral. Sem autenticação, o roteador abre apenas **Entrar**. Depois da autenticação, monta as rotas do papel (`student` ou `admin`) e acrescenta **Minha conta**, sem controles na sidebar.
+A navegação usa `st.Page` com `st.navigation(position="hidden")` como roteador e uma barra própria de `st.page_link` sempre visível; o projeto requer Streamlit `>=1.56` com o extra `auth`. Assim, o celular não converte o menu em uma gaveta lateral. Sem autenticação, o roteador abre apenas **Entrar**. Depois da autenticação, monta as rotas do papel (`student` ou `admin`) e acrescenta **Minha conta**, sem controles na sidebar.
 
 ## Interface e responsividade
 
-- A página pública **Entrar** é a única que inicia autenticação. Em produção, o clique chama `st.login("google")`; no demo, o `selectbox` apenas escolhe a identidade e o submit explícito persiste `demo_user_id` em `st.session_state`.
-- **Minha conta** mostra nome, e-mail e papel. O logout OIDC usa `st.logout()`; o logout demo remove `demo_user_id` e reinicia a execução pública.
+- A página pública **Entrar** valida senha Argon2 no servidor. O primeiro administrador é criado idempotentemente por variáveis `BOOTSTRAP_ADMIN_*`; não há cadastro público.
+- Sessões usam token opaco aleatório, hash SHA-256 no banco, expiração e versão revogável. O cookie contém apenas o token e usa `SameSite=Lax`, `Secure` em produção; papel e senha nunca ficam no navegador.
+- **Minha conta** mostra identidade, troca de senha e logout. Senha temporária bloqueia todas as outras rotas até a troca.
 - O breakpoint móvel de referência é `max-width: 768px`.
 - Nesse breakpoint, grupos de colunas da interface são apresentados em uma única coluna, na ordem de leitura.
 - Botões, inputs, seletores, links de ação e controles equivalentes têm alvo de toque com altura mínima de `44px`.
@@ -45,10 +46,14 @@ A navegação usa `st.Page` com `st.navigation(position="hidden")` como roteador
 - `rule_checks`: resultado individual, obrigatoriedade, score e detalhes.
 - `duplicate_matches`: imagem comparada, tipo (`exact`/`similar`) e distância perceptual.
 - `approved_evidence`: claim SHA-256 único criado atomicamente antes da pontuação; fecha corridas concorrentes de reenvio exato.
+- `approved_file_evidence`: claim SHA-256 único de evidência genérica; estende a mesma garantia a PDF, DOCX e TXT.
 - `lesson_units`: unidades aprovadas, únicas por submissão/índice.
 - `lesson_batches` e `lesson_batch_units`: grupos de cinco; restrição única em `unit_id` impede reutilização.
 - `ledger_transactions`: pontos assinados e imutáveis, tipo, origem e `source_key` única.
-- `meetings`: reunião, data, descrição, aluno e administrador confirmador.
+- `meetings`: preservada somente para registros históricos anteriores à remoção do fluxo especial.
+- `submission_files`: metadados e texto extraído de imagens/PDF/DOCX/TXT.
+- `auth_sessions`: sessões opacas, expiração e revogação.
+- `reminder_configuration` e `email_attempts`: configuração, deduplicação e auditoria de e-mail.
 - `audit_logs`: ator, ação, entidade, antes/depois e motivo.
 - `import_runs` e `import_records`: relatório e chaves externas idempotentes.
 
@@ -90,12 +95,12 @@ Toda transição é validada por máquina de estados e auditada. Operações de 
 
 ## Segurança
 
-- Produção usa `st.login`/OIDC (Google preferencial) somente após clique na página **Entrar**, com segredos fora do repositório, allowlist de e-mails, `email_verified` obrigatório e papel salvo no banco.
+- Produção usa autenticação local fechada e HTTPS; hashes Argon2 e tokens de sessão nunca são registrados em logs.
 - Modo demo exige `DEMO_AUTH_ENABLED=true`, confirmação explícita na página **Entrar** e falha no startup se combinado com `APP_ENV=production`.
 - A camada de serviço repete a autorização; ocultar controles na UI não é considerado proteção suficiente.
-- Upload é limitado por bytes e formatos reais JPEG/PNG/WEBP, decodificado antes de persistir e gravado com UUID.
+- Upload é limitado por arquivo, quantidade, bytes agregados, páginas e formatos reais JPEG/PNG/WEBP/PDF/DOCX/TXT. DOCX tem limites de membros/expansão/compressão e PDF tem orçamento de pixels antes da renderização; tudo é validado antes de persistir e gravado com UUID e modo `0600`.
 - CORS/XSRF permanecem habilitados. Logs não incluem bytes nem OCR/imagem completos.
-- A aplicação deve ficar atrás de HTTPS em proxy reverso ou acessível por VPN/Tailscale; OIDC exige redirect URI HTTPS em produção.
+- A aplicação deve ficar atrás de HTTPS em proxy reverso ou acessível por VPN/Tailscale; isso protege o cookie opaco e as credenciais em trânsito.
 
 ## Persistência e backup
 
@@ -120,8 +125,8 @@ O importador nunca salva no arquivo fonte.
 
 ## Implantação
 
-- Imagem Python 3.12 slim, Streamlit `>=1.50`, dependências locais e health check em `/_stcore/health`.
-- Compose com um serviço, porta 8501 e volumes `app_data`/`app_uploads`.
-- Configuração por `.env`; segredos OIDC em arquivo montado ou mecanismo de segredos da VPS.
+- Imagem Python 3.12 slim, Streamlit `>=1.56` com Authlib, dependências locais e health check em `/_stcore/health`.
+- Compose com aplicação e scheduler independente, porta 8501 e volumes compartilhados de banco/uploads.
+- Configuração por `.env`; senhas do administrador inicial e SMTP ficam somente no ambiente/secret manager.
 - Máquina alvo: 2–4 CPUs, 8 GB RAM e SSD. Sem workers distribuídos.
 - Em VPS: firewall, proxy Caddy/Nginx com TLS ou Tailscale/VPN, backups externos e atualização controlada da imagem.
