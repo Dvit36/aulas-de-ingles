@@ -32,6 +32,7 @@ from .image_processing import (
 )
 from .local_auth import (
     generate_temporary_password,
+    normalize_username,
     revoke_all_user_sessions,
     set_temporary_password,
 )
@@ -44,6 +45,7 @@ from .models import (
     CheckOutcome,
     DuplicateKind,
     DuplicateMatch,
+    GoalConfiguration,
     LedgerKind,
     LedgerTransaction,
     Role,
@@ -125,8 +127,8 @@ def resolve_oidc_user(
     normalized = email.strip().lower()
     if not normalized or "@" not in normalized:
         raise AuthorizationError("OIDC não forneceu um e-mail válido")
-    if normalized not in settings.allowed_emails:
-        raise AuthorizationError("E-mail não está na lista autorizada")
+    if normalized not in settings.allowed_usernames:
+        raise AuthorizationError("Identidade não está na lista autorizada")
     user = None
     if issuer and subject:
         user = session.scalar(
@@ -136,12 +138,14 @@ def resolve_oidc_user(
             )
         )
     if user is None:
-        user = session.scalar(select(User).where(User.email == normalized))
+        user = session.scalar(select(User).where(User.username == normalized))
     if user is None:
         user = User(
-            email=normalized,
+            username=normalized,
             display_name=(display_name or normalized.split("@", 1)[0]).strip(),
-            role=Role.ADMIN if normalized in settings.admin_emails else Role.STUDENT,
+            role=Role.ADMIN
+            if normalized in settings.admin_usernames
+            else Role.STUDENT,
             active=True,
             oidc_issuer=issuer,
             oidc_subject=subject,
@@ -154,7 +158,7 @@ def resolve_oidc_user(
             action="user_created_from_oidc",
             entity_type="user",
             entity_id=user.id,
-            after={"email": user.email, "role": user.role.value},
+            after={"username": user.username, "role": user.role.value},
         )
     elif not user.active:
         raise AuthorizationError("Usuário está inativo")
@@ -923,6 +927,50 @@ def save_activity_changes(
     return activity
 
 
+def get_goal_configuration(session: Session) -> GoalConfiguration:
+    """Configuração única de metas, criada com o padrão na primeira leitura."""
+
+    configuration = session.get(GoalConfiguration, 1)
+    if configuration is None:
+        configuration = GoalConfiguration(id=1)
+        session.add(configuration)
+        session.flush()
+    return configuration
+
+
+def save_goal_configuration(
+    session: Session,
+    *,
+    actor: User,
+    weekly_lesson_goal: int,
+) -> GoalConfiguration:
+    """Define quantas lições por semana a equipe deve cumprir.
+
+    A meta é orientativa: nenhuma pontuação depende dela e o ledger não muda.
+    """
+
+    require_admin(actor)
+    goal = int(weekly_lesson_goal)
+    if goal < 1:
+        raise ValueError("A meta semanal deve ser de pelo menos uma lição")
+    if goal > 200:
+        raise ValueError("A meta semanal não pode passar de 200 lições")
+    configuration = get_goal_configuration(session)
+    before = {"weekly_lesson_goal": configuration.weekly_lesson_goal}
+    configuration.weekly_lesson_goal = goal
+    configuration.updated_by_id = actor.id
+    add_audit(
+        session,
+        actor_id=actor.id,
+        action="goal_configuration_updated",
+        entity_type="goal_configuration",
+        entity_id="1",
+        before=before,
+        after={"weekly_lesson_goal": configuration.weekly_lesson_goal},
+    )
+    return configuration
+
+
 def set_activity_active(
     session: Session,
     *,
@@ -1008,7 +1056,7 @@ def save_user(
     session: Session,
     *,
     actor: User,
-    email: str,
+    username: str,
     display_name: str,
     role: Role | str = Role.STUDENT,
     active: bool = True,
@@ -1016,19 +1064,17 @@ def save_user(
     reminders_enabled: bool | None = None,
 ) -> User:
     require_admin(actor)
-    normalized = email.strip().lower()
-    if "@" not in normalized:
-        raise ValueError("E-mail inválido")
+    normalized = normalize_username(username)
     requested_role = Role(role)
     user = (
         session.get(User, user_id)
         if user_id
-        else session.scalar(select(User).where(User.email == normalized))
+        else session.scalar(select(User).where(User.username == normalized))
     )
     before = None
     if user is None:
         user = User(
-            email=normalized,
+            username=normalized,
             display_name=display_name.strip(),
             role=requested_role,
             active=bool(active),
@@ -1037,12 +1083,12 @@ def save_user(
         action = "user_created"
     else:
         conflict = session.scalar(
-            select(User).where(User.email == normalized, User.id != user.id)
+            select(User).where(User.username == normalized, User.id != user.id)
         )
         if conflict is not None:
-            raise ValueError("E-mail já pertence a outro usuário")
+            raise ValueError("Usuário já pertence a outra conta")
         before = {
-            "email": user.email,
+            "username": user.username,
             "display_name": user.display_name,
             "role": user.role.value,
             "active": user.active,
@@ -1067,7 +1113,7 @@ def save_user(
                 raise ValueError(
                     "Não é permitido desativar o último administrador ativo"
                 )
-        user.email = normalized
+        user.username = normalized
         user.display_name = display_name.strip() or user.display_name
         user.role = requested_role
         user.active = bool(active)
@@ -1087,7 +1133,7 @@ def save_user(
         before=before,
         after={
             "display_name": user.display_name,
-            "email": user.email,
+            "username": user.username,
             "role": user.role.value,
             "active": user.active,
         },
@@ -1099,19 +1145,19 @@ def create_user_account(
     session: Session,
     *,
     actor: User,
-    email: str,
+    username: str,
     display_name: str,
     role: Role | str = Role.STUDENT,
 ) -> tuple[User, str]:
     require_admin(actor)
-    normalized = email.strip().lower()
-    if session.scalar(select(User.id).where(func.lower(User.email) == normalized)):
-        raise ValueError("Já existe uma conta com esse e-mail")
+    normalized = normalize_username(username)
+    if session.scalar(select(User.id).where(func.lower(User.username) == normalized)):
+        raise ValueError("Já existe uma conta com esse usuário")
     temporary_password = generate_temporary_password()
     user = save_user(
         session,
         actor=actor,
-        email=normalized,
+        username=normalized,
         display_name=display_name,
         role=role,
         active=True,
@@ -1208,6 +1254,30 @@ def archive_or_delete_user(
     return "deleted"
 
 
+def count_activity_references(session: Session, activity_id: str) -> int:
+    """Conta submissões e lançamentos que impedem a exclusão física.
+
+    A interface usa esta contagem para dizer, antes da confirmação, se a
+    atividade será arquivada ou removida definitivamente.
+    """
+
+    return sum(
+        int(value or 0)
+        for value in (
+            session.scalar(
+                select(func.count(Submission.id)).where(
+                    Submission.activity_id == activity_id
+                )
+            ),
+            session.scalar(
+                select(func.count(LedgerTransaction.id)).where(
+                    LedgerTransaction.activity_id == activity_id
+                )
+            ),
+        )
+    )
+
+
 def archive_or_delete_activity(
     session: Session,
     *,
@@ -1222,21 +1292,7 @@ def archive_or_delete_activity(
         raise ValueError(
             "A atividade principal Duolingo/BeConfident não pode ser excluída"
         )
-    references = sum(
-        int(value or 0)
-        for value in (
-            session.scalar(
-                select(func.count(Submission.id)).where(
-                    Submission.activity_id == activity.id
-                )
-            ),
-            session.scalar(
-                select(func.count(LedgerTransaction.id)).where(
-                    LedgerTransaction.activity_id == activity.id
-                )
-            ),
-        )
-    )
+    references = count_activity_references(session, activity.id)
     add_audit(
         session,
         actor_id=actor.id,
@@ -1351,9 +1407,11 @@ __all__ = [
     "archive_or_delete_activity",
     "archive_or_delete_user",
     "cancel_submission",
+    "count_activity_references",
     "create_activity",
     "create_points_adjustment",
     "create_user_account",
+    "get_goal_configuration",
     "get_submission_file_for_user",
     "get_submission_for_user",
     "list_review_queue",
@@ -1362,6 +1420,7 @@ __all__ = [
     "resolve_oidc_user",
     "review_submission",
     "save_activity_changes",
+    "save_goal_configuration",
     "save_user",
     "set_activity_active",
     "submit_evidence",

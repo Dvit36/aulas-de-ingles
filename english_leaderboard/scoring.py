@@ -26,6 +26,20 @@ LESSON_BATCH_POINTS = 5
 LESSON_BATCH_SIZE = 5
 
 
+def batch_policy(activity: Activity) -> tuple[int, int]:
+    """Unidades por grupo e pontos por grupo desta atividade.
+
+    Duolingo/BeConfident tem política fixa de 5 lições por 5 pontos. As demais
+    atividades seguem `unit_threshold`: limiar 1 paga a cada aprovação e limiar
+    maior acumula unidades até fechar um grupo. O grupo é sempre o código da
+    atividade, então unidades nunca migram entre atividades diferentes.
+    """
+
+    if activity.code == LESSON_ACTIVITY_CODE:
+        return LESSON_BATCH_SIZE, LESSON_BATCH_POINTS
+    return max(1, int(activity.unit_threshold or 1)), int(activity.points)
+
+
 @dataclass(frozen=True)
 class AwardResult:
     points_created: int = 0
@@ -40,7 +54,9 @@ def _approved(status: SubmissionStatus) -> bool:
     }
 
 
-def _create_lesson_units(session: Session, submission: Submission) -> None:
+def _create_lesson_units(
+    session: Session, submission: Submission, activity_group: str
+) -> None:
     existing = set(
         session.scalars(
             select(LessonUnit.unit_index).where(
@@ -54,9 +70,11 @@ def _create_lesson_units(session: Session, submission: Submission) -> None:
                 LessonUnit(
                     submission_id=submission.id,
                     student_id=submission.student_id,
-                    activity_group=LESSON_ACTIVITY_GROUP,
+                    activity_group=activity_group,
                     unit_index=index,
-                    approved_at=submission.decided_at or submission.processed_at or utcnow(),
+                    approved_at=submission.decided_at
+                    or submission.processed_at
+                    or utcnow(),
                 )
             )
     session.flush()
@@ -107,7 +125,8 @@ def award_approved_submission(
     if activity is None:
         raise ValueError("Atividade da submissão não encontrada")
 
-    if activity.code != LESSON_ACTIVITY_CODE:
+    threshold, batch_points = batch_policy(activity)
+    if threshold <= 1:
         source_key = f"submission:{submission.id}"
         existing = session.scalar(
             select(LedgerTransaction).where(
@@ -134,32 +153,27 @@ def award_approved_submission(
         submission.points_awarded = activity.points
         return AwardResult(activity.points, (ledger.id,), 0)
 
-    _create_lesson_units(session, submission)
-    threshold = LESSON_BATCH_SIZE
-    available = _available_lesson_units(
-        session, submission.student_id, LESSON_ACTIVITY_GROUP
-    )
+    group = activity.code
+    unit_label = "lições" if group == LESSON_ACTIVITY_CODE else "unidades"
+    _create_lesson_units(session, submission, group)
+    available = _available_lesson_units(session, submission.student_id, group)
     points = 0
     ledger_ids: list[str] = []
     batches = 0
     while len(available) >= threshold:
         group_units = available[:threshold]
-        sequence = _next_batch_sequence(
-            session, submission.student_id, LESSON_ACTIVITY_GROUP
-        )
-        source_key = (
-            f"lesson_batch:{submission.student_id}:{LESSON_ACTIVITY_GROUP}:{sequence}"
-        )
+        sequence = _next_batch_sequence(session, submission.student_id, group)
+        source_key = f"lesson_batch:{submission.student_id}:{group}:{sequence}"
         ledger = LedgerTransaction(
             student_id=submission.student_id,
-            points=LESSON_BATCH_POINTS,
+            points=batch_points,
             kind=LedgerKind.LESSON_BATCH,
             source_type="lesson_batch",
             source_id=None,
             source_key=source_key,
             activity_id=activity.id,
             submission_id=submission.id,
-            description=f"Grupo {sequence}: {threshold} lições validadas",
+            description=f"Grupo {sequence}: {threshold} {unit_label} validadas",
             occurred_at=submission.decided_at or submission.processed_at or utcnow(),
             created_by_id=actor_id,
         )
@@ -167,7 +181,7 @@ def award_approved_submission(
         session.flush()
         batch = LessonBatch(
             student_id=submission.student_id,
-            activity_group=LESSON_ACTIVITY_GROUP,
+            activity_group=group,
             sequence=sequence,
             ledger_transaction_id=ledger.id,
         )
@@ -176,7 +190,7 @@ def award_approved_submission(
         for unit in group_units:
             session.add(LessonBatchUnit(batch_id=batch.id, unit_id=unit.id))
         session.flush()
-        points += LESSON_BATCH_POINTS
+        points += batch_points
         ledger_ids.append(ledger.id)
         batches += 1
         available = available[threshold:]
@@ -227,6 +241,179 @@ def lesson_progress(
     return int(unused or 0) % threshold, threshold
 
 
+def pending_group_progress(
+    session: Session, student_id: str
+) -> list[dict[str, object]]:
+    """Unidades ainda não premiadas em cada atividade que agrupa unidades.
+
+    Permite ao aluno ver quanto falta para fechar o próximo grupo em qualquer
+    atividade com limiar maior que um, não só em Duolingo/BeConfident.
+    """
+
+    rows: list[dict[str, object]] = []
+    activities = session.scalars(
+        select(Activity)
+        .where(Activity.active.is_(True), Activity.archived_at.is_(None))
+        .order_by(Activity.name)
+    ).all()
+    for activity in activities:
+        threshold, _ = batch_policy(activity)
+        if threshold <= 1:
+            continue
+        unused, _ = lesson_progress(
+            session,
+            student_id,
+            activity_group=activity.code,
+            threshold=threshold,
+        )
+        rows.append(
+            {
+                "code": activity.code,
+                "activity": activity.name,
+                "unused": unused,
+                "threshold": threshold,
+            }
+        )
+    return rows
+
+
+def week_bounds(moment: datetime | None = None) -> tuple[datetime, datetime]:
+    """Início (segunda-feira, 00:00 UTC) e fim exclusivo da semana do momento."""
+
+    now = moment or utcnow()
+    monday = now.date() - timedelta(days=now.weekday())
+    start = datetime.combine(monday, time.min, tzinfo=timezone.utc)
+    return start, start + timedelta(days=7)
+
+
+def weekly_lesson_count(
+    session: Session,
+    student_id: str,
+    *,
+    moment: datetime | None = None,
+    activity_group: str = LESSON_ACTIVITY_GROUP,
+) -> int:
+    """Lições aprovadas do aluno na semana corrente.
+
+    Conta unidades, não pontos: a meta semanal fala de lições feitas, e um
+    grupo de cinco pode fechar em qualquer dia da semana seguinte.
+    """
+
+    start, end = week_bounds(moment)
+    return int(
+        session.scalar(
+            select(func.count(LessonUnit.id)).where(
+                LessonUnit.student_id == student_id,
+                LessonUnit.activity_group == activity_group,
+                LessonUnit.approved_at >= start,
+                LessonUnit.approved_at < end,
+            )
+        )
+        or 0
+    )
+
+
+def students_meeting_weekly_goal(
+    session: Session, goal: int, *, moment: datetime | None = None
+) -> tuple[int, int]:
+    """Quantos alunos ativos atingiram a meta da semana, e o total de alunos."""
+
+    students = list(
+        session.scalars(
+            select(User.id).where(
+                User.role == Role.STUDENT,
+                User.active.is_(True),
+                User.archived_at.is_(None),
+            )
+        ).all()
+    )
+    if goal <= 0:
+        return 0, len(students)
+    reached = sum(
+        1
+        for student_id in students
+        if weekly_lesson_count(session, student_id, moment=moment) >= goal
+    )
+    return reached, len(students)
+
+
+def next_rival(
+    session: Session,
+    student_id: str,
+    *,
+    start: date | datetime | None = None,
+    end: date | datetime | None = None,
+) -> dict[str, object] | None:
+    """Aluno imediatamente à frente e a diferença de pontos até alcançá-lo.
+
+    Retorna ``None`` para quem já lidera ou não aparece no leaderboard. Empates
+    não contam como estar à frente: só quem tem pontuação estritamente maior.
+    """
+
+    rows = leaderboard_rows(session, start=start, end=end)
+    position = next(
+        (index for index, row in enumerate(rows) if row["student_id"] == student_id),
+        None,
+    )
+    if position is None:
+        return None
+    mine = int(rows[position]["points"])
+    for candidate in reversed(rows[:position]):
+        if int(candidate["points"]) > mine:
+            return {
+                "student": candidate["student"],
+                "position": int(candidate["position"]),
+                "points": int(candidate["points"]),
+                "gap": int(candidate["points"]) - mine,
+            }
+    return None
+
+
+def activities_closing_gap(
+    session: Session, student_id: str, gap: int, *, limit: int = 4
+) -> list[dict[str, object]]:
+    """Atividades ativas que fecham a diferença, da mais rápida para a mais lenta.
+
+    Para atividades agrupadas o cálculo desconta as unidades já acumuladas, de
+    modo que o número mostrado é quantas comprovações ainda faltam de verdade.
+    """
+
+    if gap <= 0:
+        return []
+    activities = session.scalars(
+        select(Activity)
+        .where(Activity.active.is_(True), Activity.archived_at.is_(None))
+        .order_by(Activity.name)
+    ).all()
+    suggestions: list[dict[str, object]] = []
+    for activity in activities:
+        threshold, batch_points = batch_policy(activity)
+        if batch_points <= 0:
+            continue
+        groups = -(-gap // batch_points)  # teto da divisão
+        if threshold <= 1:
+            needed = groups
+        else:
+            pending, _ = lesson_progress(
+                session,
+                student_id,
+                activity_group=activity.code,
+                threshold=threshold,
+            )
+            needed = max(1, groups * threshold - pending)
+        suggestions.append(
+            {
+                "activity": activity.name,
+                "code": activity.code,
+                "points": batch_points,
+                "threshold": threshold,
+                "needed": needed,
+            }
+        )
+    suggestions.sort(key=lambda item: (item["needed"], -int(item["points"])))
+    return suggestions[:limit]
+
+
 def _period_bounds(
     start: date | datetime | None, end: date | datetime | None
 ) -> tuple[datetime | None, datetime | None]:
@@ -254,12 +441,12 @@ def leaderboard_rows(
         select(
             User.id,
             User.display_name,
-            User.email,
+            User.username,
             func.coalesce(func.sum(LedgerTransaction.points), 0).label("points"),
         )
         .outerjoin(LedgerTransaction, and_(*ledger_join))
         .where(User.role == Role.STUDENT)
-        .group_by(User.id, User.display_name, User.email)
+        .group_by(User.id, User.display_name, User.username)
     )
     if not include_inactive:
         statement = statement.where(User.active.is_(True))
@@ -278,7 +465,7 @@ def leaderboard_rows(
                 "position": position,
                 "student_id": row.id,
                 "student": row.display_name,
-                "email": row.email,
+                "username": row.username,
                 "points": points,
             }
         )

@@ -19,7 +19,7 @@ A navegação usa um registro estável de `st.Page` com `st.navigation(position=
 ## Interface e responsividade
 
 - A página pública **Entrar** valida senha Argon2 no servidor. O primeiro administrador é criado idempotentemente por variáveis `BOOTSTRAP_ADMIN_*`; não há cadastro público.
-- Sessões usam token opaco aleatório, hash SHA-256 no banco, expiração e versão revogável. Um componente v2 bidirecional mantém somente o token e sua validade em `localStorage`, com handshake e confirmação antes de liberar a área privada; papel, e-mail e senha nunca ficam no navegador. O banco continua sendo a autoridade para validade e revogação.
+- Sessões usam token opaco aleatório, hash SHA-256 no banco, expiração e versão revogável. Um componente v2 bidirecional mantém somente o token e sua validade em `localStorage`, com handshake e confirmação antes de liberar a área privada; papel, usuário e senha nunca ficam no navegador. O banco continua sendo a autoridade para validade e revogação.
 - **Minha conta** mostra identidade, troca de senha e logout. Senha temporária bloqueia todas as outras rotas até a troca.
 - O breakpoint móvel de referência é `max-width: 768px`.
 - Nesse breakpoint, grupos de colunas da interface são apresentados em uma única coluna, na ordem de leitura.
@@ -35,12 +35,12 @@ A navegação usa um registro estável de `st.Page` com `st.navigation(position=
 - O cliente usa `valueInputOption=RAW`, timeout de 15 segundos, retry curto com backoff/jitter para 429/5xx e exclusão mútua por planilha no processo.
 - Autenticação usa Application Default Credentials. Em ambiente local, `GOOGLE_APPLICATION_CREDENTIALS` pode apontar para chave de uma conta de serviço dedicada e montada somente leitura.
 - O escopo é apenas `spreadsheets`; a planilha deve existir e ser compartilhada diretamente com a conta. Não é necessário escopo Drive.
-- O leaderboard espelhado não inclui e-mail nem IDs internos. Como permissões são por arquivo, a planilha que contém o ledger é administrativa.
+- O leaderboard espelhado não inclui usuário nem IDs internos. Como permissões são por arquivo, a planilha que contém o ledger é administrativa.
 
 ## Modelo de dados
 
-- `users`: e-mail único, nome, papel, ativo.
-- `activities`: código único, nome, pontos atuais, limiar de unidades, requisitos e configuração JSON, ativo.
+- `users`: nome de usuário único, nome, papel, ativo. Bancos anteriores tinham a coluna `email`; a migração 2 a renomeia para `username` preservando os valores, então contas migradas continuam entrando com o identificador que já usavam.
+- `activities`: código único, nome, pontos atuais, limiar de unidades, requisitos e configuração JSON, ativo. O limiar vale para qualquer atividade: `1` pontua a cada aprovação, acima de `1` acumula unidades até fechar um grupo.
 - `submissions`: aluno, atividade, recebimento no servidor, campos textuais, OCR consolidado, plataforma, confiança, unidades, estado, observação administrativa histórica opcional e snapshot da regra. Novas decisões não exigem observação textual.
 - `submission_images`: chave aleatória, MIME real, dimensões, tamanho, SHA-256 e pHash.
 - `rule_checks`: resultado individual, obrigatoriedade, score e detalhes.
@@ -53,6 +53,7 @@ A navegação usa um registro estável de `st.Page` com `st.navigation(position=
 - `meetings`: preservada somente para registros históricos anteriores à remoção do fluxo especial.
 - `submission_files`: metadados e texto extraído de imagens/PDF/DOCX/TXT.
 - `auth_sessions`: sessões opacas, expiração e revogação.
+- `goal_configuration`: linha única com a meta de lições por semana e o autor da última alteração. Só orienta a interface; nenhuma pontuação depende dela.
 - `reminder_configuration` e `email_attempts`: configuração, deduplicação e auditoria de e-mail.
 - `audit_logs`: ator, ação, entidade, antes/depois e motivo histórico opcional; novas operações administrativas podem registrar `NULL` nesse campo.
 - `import_runs` e `import_records`: relatório e chaves externas idempotentes.
@@ -91,7 +92,7 @@ Toda transição é validada por máquina de estados e auditada. Operações de 
 - `source_key` única no ledger, unidade única por submissão/índice e participação única de unidade em lote impedem dupla pontuação no banco.
 - Submissões usam versionamento otimista; duas decisões administrativas concorrentes não podem sobrescrever silenciosamente o mesmo estado.
 - No SQLite, triggers bloqueiam `UPDATE` e `DELETE` no ledger. Correções são novos lançamentos compensatórios.
-- O agrupamento seleciona unidades não usadas em ordem de aprovação, em blocos de cinco, dentro da transação.
+- O agrupamento seleciona unidades não usadas em ordem de aprovação, em blocos do tamanho definido por `activities.unit_threshold`, dentro da transação. O grupo é identificado pelo código da atividade, então unidades de atividades distintas nunca se combinam.
 
 ## Segurança
 

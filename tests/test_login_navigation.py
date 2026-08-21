@@ -457,3 +457,43 @@ def test_command_handoff_registers_router_before_rerun_without_rendering(
         streamlit_app._run_navigation([route], rerun_before_render=True)
 
     assert events == ["navigation:hidden", "rerun"]
+
+
+def test_leaderboard_markup_has_no_empty_wrapper_and_ranks_the_podium() -> None:
+    rows = [
+        {"position": 1, "student_id": "a", "student": "Ana Souza (Demo)", "points": 85},
+        {"position": 2, "student_id": "b", "student": "Bruno Lima (Demo)", "points": 77},
+        {"position": 3, "student_id": "c", "student": "Carla Mendes", "points": 70},
+        {"position": 4, "student_id": "d", "student": "Diego Rocha", "points": 69},
+    ]
+
+    podium = streamlit_app._podium_html(rows[:3])
+    board = streamlit_app._board_html(rows, "d")
+
+    # Um único cartão do pódio: nada de containers vazios acima dos colocados.
+    assert podium.count('class="robo-podium"') == 1
+    assert podium.count('class="robo-podium-slot"') == 3
+    # Ordem visual 2º, 1º, 3º com o primeiro lugar em amarelo e mais alto.
+    assert podium.index("2º") < podium.index("1º") < podium.index("3º")
+    assert "background: var(--robo-yellow); min-height: 7.25rem;" in podium
+    assert board.count('class="robo-board-row"') == 4
+    assert board.count("robo-board-badge") == 1
+
+
+def test_leaderboard_initials_ignore_demo_markers_and_escape_names() -> None:
+    assert streamlit_app._initials("Ana Souza (Demo)") == "AS"
+    assert streamlit_app._initials("José da Silva Neto") == "JN"
+    assert streamlit_app._initials("Madonna") == "M"
+    assert streamlit_app._initials("") == "?"
+
+    rows = [
+        {
+            "position": 1,
+            "student_id": "x",
+            "student": "<script>alert(1)</script>",
+            "points": 3,
+        }
+    ]
+    markup = streamlit_app._board_html(rows, None)
+    assert "<script>" not in markup
+    assert "&lt;script&gt;" in markup

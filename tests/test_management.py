@@ -9,6 +9,7 @@ from english_leaderboard.models import Activity, Role, Submission, SubmissionSta
 from english_leaderboard.services import (
     archive_or_delete_activity,
     archive_or_delete_user,
+    count_activity_references,
     create_activity,
     create_points_adjustment,
     create_user_account,
@@ -40,7 +41,7 @@ def test_user_create_disable_reactivate_and_delete(session, users) -> None:
     account, temporary_password = create_user_account(
         session,
         actor=admin,
-        email="new@example.org",
+        username="new.student",
         display_name="New Student",
     )
     session.commit()
@@ -50,7 +51,7 @@ def test_user_create_disable_reactivate_and_delete(session, users) -> None:
     save_user(
         session,
         actor=admin,
-        email=account.email,
+        username=account.username,
         display_name=account.display_name,
         role=Role.STUDENT,
         active=False,
@@ -60,7 +61,7 @@ def test_user_create_disable_reactivate_and_delete(session, users) -> None:
     save_user(
         session,
         actor=admin,
-        email=account.email,
+        username=account.username,
         display_name=account.display_name,
         role=Role.STUDENT,
         active=True,
@@ -172,3 +173,74 @@ def test_core_lesson_activity_cannot_be_deleted(session, users) -> None:
             actor=users[Role.ADMIN],
             activity_id=activity.id,
         )
+
+
+def test_activity_reference_count_drives_the_delete_confirmation(
+    session, users
+) -> None:
+    admin = users[Role.ADMIN]
+    student = users[Role.STUDENT]
+    unused = create_activity(
+        session,
+        actor=admin,
+        code="unused_activity",
+        name="Atividade sem uso",
+        points=8,
+    )
+    used = create_activity(
+        session,
+        actor=admin,
+        code="used_activity",
+        name="Atividade com histórico",
+        points=8,
+    )
+    session.flush()
+    session.add(
+        Submission(
+            student_id=student.id,
+            activity_id=used.id,
+            status=SubmissionStatus.REJECTED,
+            rule_snapshot_json={"activity_name": used.name, "points": 8},
+        )
+    )
+    session.commit()
+    assert count_activity_references(session, unused.id) == 0
+    assert count_activity_references(session, used.id) == 1
+
+
+def test_weekly_goal_is_admin_only_validated_and_audited(session, users) -> None:
+    from english_leaderboard.authz import AuthorizationError
+    from english_leaderboard.models import AuditLog
+    from english_leaderboard.services import (
+        get_goal_configuration,
+        save_goal_configuration,
+    )
+
+    admin = users[Role.ADMIN]
+    student = users[Role.STUDENT]
+
+    assert get_goal_configuration(session).weekly_lesson_goal == 5
+
+    with pytest.raises(AuthorizationError):
+        save_goal_configuration(session, actor=student, weekly_lesson_goal=10)
+    session.rollback()
+
+    for invalid in (0, -3, 201):
+        with pytest.raises(ValueError):
+            save_goal_configuration(session, actor=admin, weekly_lesson_goal=invalid)
+        session.rollback()
+
+    configuration = save_goal_configuration(
+        session, actor=admin, weekly_lesson_goal=12
+    )
+    session.commit()
+
+    assert configuration.weekly_lesson_goal == 12
+    assert configuration.updated_by_id == admin.id
+    assert get_goal_configuration(session).weekly_lesson_goal == 12
+    entry = session.scalar(
+        select(AuditLog).where(AuditLog.action == "goal_configuration_updated")
+    )
+    assert entry is not None
+    assert entry.before_json == {"weekly_lesson_goal": 5}
+    assert entry.after_json == {"weekly_lesson_goal": 12}

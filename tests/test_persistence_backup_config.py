@@ -38,14 +38,18 @@ def test_sqlite_persists_after_engine_restart(tmp_path: Path):
     initialize_database(first_engine)
     first_factory = create_session_factory(first_engine)
     with first_factory() as session:
-        session.add(User(email="persist@example.org", display_name="Persist", role=Role.STUDENT))
+        session.add(
+            User(username="persist", display_name="Persist", role=Role.STUDENT)
+        )
         session.commit()
     first_engine.dispose()
 
     second_engine = create_database_engine(url)
     second_factory = create_session_factory(second_engine)
     with second_factory() as session:
-        assert session.scalar(select(User).where(User.email == "persist@example.org")) is not None
+        assert (
+            session.scalar(select(User).where(User.username == "persist")) is not None
+        )
     with sqlite3.connect(database) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
     second_engine.dispose()
@@ -68,8 +72,8 @@ def test_demo_auth_is_refused_in_production():
     settings = Settings(
         app_env="production",
         demo_auth_enabled=True,
-        allowed_emails=frozenset({"admin@example.org"}),
-        admin_emails=frozenset({"admin@example.org"}),
+        allowed_usernames=frozenset({"admin"}),
+        admin_usernames=frozenset({"admin"}),
     )
     with pytest.raises(RuntimeError):
         settings.validate()
@@ -115,7 +119,7 @@ def test_sqlite_ledger_rejects_update_and_preserves_value(tmp_path: Path):
     initialize_database(engine)
     factory = create_session_factory(engine)
     with factory() as session:
-        user = User(email="ledger@example.org", display_name="Ledger", role=Role.STUDENT)
+        user = User(username="ledger", display_name="Ledger", role=Role.STUDENT)
         session.add(user)
         session.flush()
         transaction = LedgerTransaction(
@@ -141,7 +145,7 @@ def test_submission_version_prevents_concurrent_terminal_decisions(tmp_path: Pat
     initialize_database(engine)
     factory = create_session_factory(engine)
     with factory() as setup:
-        user = User(email="version@example.org", display_name="Version", role=Role.STUDENT)
+        user = User(username="version", display_name="Version", role=Role.STUDENT)
         activity = Activity(code="version_test", name="Version test", points=1)
         setup.add_all([user, activity])
         setup.flush()
@@ -189,7 +193,7 @@ def test_database_and_committed_upload_survive_runtime_restart(tmp_path: Path):
     with first_factory() as session:
         seed_catalog(session)
         student = User(
-            email="restart@example.org",
+            username="restart",
             display_name="Restart",
             role=Role.STUDENT,
         )

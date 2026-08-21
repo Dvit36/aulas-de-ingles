@@ -116,14 +116,16 @@ def seed_demo_users(session: Session, settings: Settings) -> list[User]:
     if not settings.demo_auth_enabled:
         return []
     definitions: Iterable[tuple[str, str, Role]] = (
-        (settings.demo_student_email, "Aluno Demo", Role.STUDENT),
-        (settings.demo_admin_email, "Administrador Demo", Role.ADMIN),
+        (settings.demo_student_username, "Aluno Demo", Role.STUDENT),
+        (settings.demo_admin_username, "Administrador Demo", Role.ADMIN),
     )
     created: list[User] = []
-    for email, name, role in definitions:
-        user = session.scalar(select(User).where(User.email == email))
+    for username, name, role in definitions:
+        user = session.scalar(select(User).where(User.username == username))
         if user is None:
-            user = User(email=email, display_name=name, role=role, active=True)
+            user = User(
+                username=username, display_name=name, role=role, active=True
+            )
             session.add(user)
             created.append(user)
     session.flush()

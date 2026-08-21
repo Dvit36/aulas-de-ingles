@@ -106,8 +106,27 @@ def save_reminder_configuration(
     return configuration
 
 
+def recipient_address(user: User) -> str | None:
+    """Endereço de envio da conta, quando ela ainda tiver um.
+
+    O login passou a usar nome de usuário, que nem sempre é um e-mail. Contas
+    migradas mantêm o endereço antigo no campo e continuam recebendo; as demais
+    são puladas com registro explícito em vez de tentativa de SMTP inválida.
+    """
+
+    candidate = (user.username or "").strip()
+    local, separator, domain = candidate.partition("@")
+    if separator and local and "." in domain:
+        return candidate
+    return None
+
+
 def render_reminder(configuration: ReminderConfiguration, user: User) -> tuple[str, str]:
-    values = {"name": user.display_name, "email": user.email}
+    values = {
+        "name": user.display_name,
+        "username": user.username,
+        "email": recipient_address(user) or "",
+    }
     try:
         return (
             configuration.subject_template.format_map(values),
@@ -200,9 +219,10 @@ def create_and_send_attempt(
     if existing is not None:
         return existing
     subject, body = render_reminder(configuration, user)
+    address = recipient_address(user)
     attempt = EmailAttempt(
         user_id=user.id,
-        recipient_email=user.email,
+        recipient_email=address or "",
         subject=subject,
         body=body,
         status=EmailAttemptStatus.PENDING,
@@ -212,6 +232,11 @@ def create_and_send_attempt(
     )
     session.add(attempt)
     session.flush()
+    if address is None:
+        attempt.status = EmailAttemptStatus.SKIPPED
+        attempt.last_error = "conta sem endereço de e-mail: nada foi enviado"
+        attempt.attempt_count = 0
+        return attempt
     if settings.reminder_dry_run:
         attempt.status = EmailAttemptStatus.SKIPPED
         attempt.last_error = "dry-run: mensagem não enviada"
@@ -220,7 +245,7 @@ def create_and_send_attempt(
     for retry in range(1, 4):
         attempt.attempt_count = retry
         try:
-            _deliver_smtp(settings, user.email, subject, body)
+            _deliver_smtp(settings, address, subject, body)
         except (OSError, smtplib.SMTPException) as error:
             attempt.last_error = str(error)[:1000]
             if retry < 3:
@@ -286,6 +311,7 @@ __all__ = [
     "create_and_send_attempt",
     "eligible_students",
     "get_reminder_configuration",
+    "recipient_address",
     "reminder_is_due",
     "render_reminder",
     "run_due_reminders",

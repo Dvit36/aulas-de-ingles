@@ -26,9 +26,9 @@ def test_fake_student_seed_is_complete_and_idempotent(session) -> None:
     second = seed_fake_students(session)
     session.commit()
 
-    emails = [student.email for student in SYNTHETIC_STUDENTS]
+    usernames = [student.username for student in SYNTHETIC_STUDENTS]
     fake_users = list(
-        session.scalars(select(User).where(User.email.in_(emails))).all()
+        session.scalars(select(User).where(User.username.in_(usernames))).all()
     )
     assert first.users_created == 5
     assert first.submissions_created == 52
@@ -67,8 +67,10 @@ def test_fake_submissions_are_explicitly_marked(session) -> None:
 def test_database_seed_can_disable_fake_students(session, settings) -> None:
     seed_database(session, replace(settings, seed_fake_data=False))
 
-    fake_emails = [student.email for student in SYNTHETIC_STUDENTS]
+    fake_usernames = [student.username for student in SYNTHETIC_STUDENTS]
     assert (
-        session.scalar(select(func.count(User.id)).where(User.email.in_(fake_emails)))
+        session.scalar(
+            select(func.count(User.id)).where(User.username.in_(fake_usernames))
+        )
         == 0
     )

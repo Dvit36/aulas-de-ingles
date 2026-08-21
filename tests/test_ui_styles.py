@@ -69,3 +69,15 @@ def test_render_global_styles_uses_one_static_markdown_block() -> None:
     body, kwargs = fake.calls[0]
     assert body == f"<style>\n{returned}\n</style>"
     assert kwargs == {"unsafe_allow_html": True}
+
+
+def test_leaderboard_podium_and_board_styles_exist() -> None:
+    css = responsive_css()
+
+    assert ".robo-podium {" in css
+    assert ".robo-podium-block {" in css
+    assert ".robo-board-row {" in css
+    assert ".robo-board-badge {" in css
+    # O pódio herda o cartão escuro e o contorno da identidade Robonáticos.
+    assert "background: var(--robo-charcoal)" in css
+    assert "border: var(--robo-border)" in css

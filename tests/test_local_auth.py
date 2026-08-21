@@ -35,7 +35,7 @@ def test_bootstrap_admin_is_idempotent_and_never_overwrites(tmp_path) -> None:
         database_url=f"sqlite:///{tmp_path / 'bootstrap.db'}",
         upload_dir=tmp_path / "uploads",
         bootstrap_admin_name="Primeira Admin",
-        bootstrap_admin_email="admin@example.org",
+        bootstrap_admin_username="admin",
         bootstrap_admin_password="SenhaInicial123!",
     )
     with factory() as session:
@@ -64,13 +64,13 @@ def test_login_persistent_session_password_change_logout_and_expiry(
     with pytest.raises(AuthenticationError):
         login_with_password(
             session,
-            email=user.email,
+            username=user.username,
             password="errada",
             settings=settings,
         )
     result = login_with_password(
         session,
-        email=user.email,
+        username=user.username,
         password="SenhaTemporaria123!",
         settings=settings,
     )
@@ -89,7 +89,7 @@ def test_login_persistent_session_password_change_logout_and_expiry(
 
     renewed = login_with_password(
         session,
-        email=user.email,
+        username=user.username,
         password="NovaSenhaSegura456!",
         settings=settings,
     )
@@ -100,7 +100,7 @@ def test_login_persistent_session_password_change_logout_and_expiry(
 
     expired = login_with_password(
         session,
-        email=user.email,
+        username=user.username,
         password="NovaSenhaSegura456!",
         settings=settings,
     )
@@ -143,7 +143,7 @@ def test_last_active_admin_cannot_be_disabled(session, users) -> None:
         save_user(
             session,
             actor=admin,
-            email=admin.email,
+            username=admin.username,
             display_name=admin.display_name,
             role=Role.ADMIN,
             active=False,

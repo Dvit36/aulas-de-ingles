@@ -607,11 +607,11 @@ def _enum_value(model: type[Any], column_name: str | None, value: str) -> Any:
     return value
 
 
-def _legacy_email(normalized_name: str) -> str:
+def _legacy_username(normalized_name: str) -> str:
     ascii_slug = re.sub(r"[^a-z0-9]+", "-", normalized_name).strip("-")
     ascii_slug = ascii_slug[:40] or "student"
     digest = sha256(normalized_name.encode("utf-8")).hexdigest()[:12]
-    return f"legacy+{ascii_slug}-{digest}@local.invalid"
+    return f"legacy-{ascii_slug}-{digest}"
 
 
 def _load_models() -> tuple[type[Any], type[Any], type[Any] | None, type[Any] | None]:
@@ -718,15 +718,15 @@ def _resolve_student(
 
     columns = _model_columns(user_model)
     name_column = _first_column(user_model, ("name", "display_name", "full_name"))
-    email_column = _first_column(user_model, ("email",))
+    username_column = _first_column(user_model, ("username",))
     role_column = _first_column(user_model, ("role",))
     active_column = _first_column(user_model, ("active", "is_active"))
-    if name_column is None or email_column is None:
-        raise LegacyImportError("User model needs name and email columns")
+    if name_column is None or username_column is None:
+        raise LegacyImportError("User model needs name and username columns")
 
     kwargs: dict[str, Any] = {
         name_column: entry.student_name,
-        email_column: _legacy_email(entry.normalized_student),
+        username_column: _legacy_username(entry.normalized_student),
     }
     if role_column:
         kwargs[role_column] = _enum_value(user_model, role_column, "student")

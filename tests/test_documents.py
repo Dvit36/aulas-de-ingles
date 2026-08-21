@@ -133,7 +133,7 @@ def test_txt_submission_skips_ocr_and_download_is_owner_protected(
     )
     assert stored_file.file_kind == "txt"
     other = User(
-        email="other-student@example.org",
+        username="other-student",
         display_name="Other",
         role=Role.STUDENT,
     )

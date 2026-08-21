@@ -105,7 +105,7 @@ class User(TimestampMixin, Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    username: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(160))
     role: Mapped[Role] = mapped_column(role_enum, default=Role.STUDENT)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -524,6 +524,27 @@ class ReminderConfiguration(TimestampMixin, Base):
         ),
     )
     audience: Mapped[str] = mapped_column(String(32), default="inactive_students")
+    updated_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+
+
+class GoalConfiguration(TimestampMixin, Base):
+    """Meta de lições por semana definida pela administração.
+
+    Linha única, no mesmo estilo de ``reminder_configuration``. A meta orienta
+    o aluno e nunca altera o ledger: pontuação continua vindo das aprovações.
+    """
+
+    __tablename__ = "goal_configuration"
+    __table_args__ = (
+        CheckConstraint(
+            "weekly_lesson_goal > 0", name="ck_goal_weekly_lesson_positive"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    weekly_lesson_goal: Mapped[int] = mapped_column(
+        Integer, default=5, nullable=False
+    )
     updated_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
 
 

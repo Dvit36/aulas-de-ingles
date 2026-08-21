@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import secrets
 import string
 from dataclasses import dataclass
@@ -76,6 +77,26 @@ def generate_temporary_password(length: int = 16) -> str:
         return candidate
 
 
+USERNAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._@-]{2,149}")
+
+
+def normalize_username(value: str) -> str:
+    """Normaliza e valida um nome de usuário de login.
+
+    Aceita letras, dígitos e ``. _ - @`` em minúsculas. O arroba continua
+    permitido para que contas migradas do antigo campo de e-mail sigam
+    funcionando sem intervenção manual.
+    """
+
+    normalized = (value or "").strip().lower()
+    if not USERNAME_PATTERN.fullmatch(normalized):
+        raise ValueError(
+            "Usuário deve ter de 3 a 150 caracteres e usar apenas letras, "
+            "números, ponto, hífen, sublinhado ou arroba"
+        )
+    return normalized
+
+
 def bootstrap_initial_admin(session: Session, settings: Settings) -> User | None:
     """Create the first administrator once, without ever overwriting it."""
 
@@ -88,17 +109,18 @@ def bootstrap_initial_admin(session: Session, settings: Settings) -> User | None
         return existing_admin
     if not (
         settings.bootstrap_admin_name
-        and settings.bootstrap_admin_email
+        and settings.bootstrap_admin_username
         and settings.bootstrap_admin_password
     ):
         return None
-    normalized_email = settings.bootstrap_admin_email.strip().lower()
-    if "@" not in normalized_email:
-        raise ValueError("BOOTSTRAP_ADMIN_EMAIL inválido")
-    admin = session.scalar(select(User).where(User.email == normalized_email))
+    try:
+        normalized_username = normalize_username(settings.bootstrap_admin_username)
+    except ValueError as error:
+        raise ValueError(f"BOOTSTRAP_ADMIN_USERNAME inválido: {error}") from error
+    admin = session.scalar(select(User).where(User.username == normalized_username))
     if admin is None:
         admin = User(
-            email=normalized_email,
+            username=normalized_username,
             display_name=settings.bootstrap_admin_name.strip(),
             role=Role.ADMIN,
             active=True,
@@ -139,12 +161,12 @@ def create_auth_session(
 def login_with_password(
     session: Session,
     *,
-    email: str,
+    username: str,
     password: str,
     settings: Settings,
 ) -> LoginResult:
-    normalized = email.strip().lower()
-    user = session.scalar(select(User).where(func.lower(User.email) == normalized))
+    normalized = (username or "").strip().lower()
+    user = session.scalar(select(User).where(func.lower(User.username) == normalized))
     now = utcnow()
     if user is None:
         # Argon2 work reduces user-enumeration timing differences.
@@ -268,6 +290,7 @@ __all__ = [
     "generate_temporary_password",
     "hash_password",
     "login_with_password",
+    "normalize_username",
     "resolve_auth_session",
     "revoke_all_user_sessions",
     "revoke_session",

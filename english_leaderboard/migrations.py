@@ -38,6 +38,27 @@ def _add_missing_columns(
                 )
 
 
+def _rename_email_to_username(engine: Engine) -> None:
+    """Renomeia ``users.email`` para ``users.username`` preservando as linhas.
+
+    O login passou a usar nome de usuário. Bancos já implantados guardam os
+    identificadores na coluna antiga; o RENAME mantém os valores e as contas
+    continuam entrando com o que já usavam. Bancos novos já nascem com
+    ``username`` e esta migração não faz nada.
+    """
+
+    columns = {column["name"] for column in inspect(engine).get_columns("users")}
+    if "username" in columns or "email" not in columns:
+        return
+    with engine.begin() as connection:
+        connection.execute(text('ALTER TABLE "users" RENAME COLUMN "email" TO "username"'))
+        if engine.dialect.name == "sqlite":
+            connection.execute(text('DROP INDEX IF EXISTS "ix_users_email"'))
+            connection.execute(
+                text('CREATE UNIQUE INDEX IF NOT EXISTS "ix_users_username" ON "users" ("username")')
+            )
+
+
 def apply_migrations(engine: Engine) -> None:
     """Apply additive migrations after ``metadata.create_all``.
 
@@ -57,6 +78,8 @@ def apply_migrations(engine: Engine) -> None:
                 """
             )
         )
+
+    _rename_email_to_username(engine)
 
     if engine.dialect.name == "sqlite":
         _add_missing_columns(engine, "users", SQLITE_USER_COLUMNS)
@@ -83,6 +106,17 @@ def apply_migrations(engine: Engine) -> None:
                 SELECT 1, 'local authentication, generic files and reminders'
                 WHERE NOT EXISTS (
                     SELECT 1 FROM schema_migrations WHERE version = 1
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO schema_migrations(version, description)
+                SELECT 2, 'login identity moved from email to username'
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM schema_migrations WHERE version = 2
                 )
                 """
             )

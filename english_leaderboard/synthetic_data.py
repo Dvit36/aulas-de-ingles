@@ -19,7 +19,7 @@ _SEED_NAMESPACE = UUID("8a393fb8-f845-4a0c-90a8-6ea3cc909661")
 @dataclass(frozen=True)
 class SyntheticStudent:
     name: str
-    email: str
+    username: str
     activity_codes: tuple[str, ...]
 
 
@@ -33,7 +33,7 @@ class SyntheticSeedReport:
 SYNTHETIC_STUDENTS: tuple[SyntheticStudent, ...] = (
     SyntheticStudent(
         "Ana Souza (Demo)",
-        "ana.souza.demo@example.test",
+        "ana.souza.demo",
         (
             "write_improve_business",
             "cambridge_proficient",
@@ -43,7 +43,7 @@ SYNTHETIC_STUDENTS: tuple[SyntheticStudent, ...] = (
     ),
     SyntheticStudent(
         "Bruno Lima (Demo)",
-        "bruno.lima.demo@example.test",
+        "bruno.lima.demo",
         (
             "write_improve_business",
             "cambridge_proficient",
@@ -53,7 +53,7 @@ SYNTHETIC_STUDENTS: tuple[SyntheticStudent, ...] = (
     ),
     SyntheticStudent(
         "Carla Mendes (Demo)",
-        "carla.mendes.demo@example.test",
+        "carla.mendes.demo",
         (
             "write_improve_advanced",
             "cambridge_proficient",
@@ -63,7 +63,7 @@ SYNTHETIC_STUDENTS: tuple[SyntheticStudent, ...] = (
     ),
     SyntheticStudent(
         "Diego Rocha (Demo)",
-        "diego.rocha.demo@example.test",
+        "diego.rocha.demo",
         (
             "write_improve_advanced",
             "cambridge_independent",
@@ -74,7 +74,7 @@ SYNTHETIC_STUDENTS: tuple[SyntheticStudent, ...] = (
     ),
     SyntheticStudent(
         "Elisa Martins (Demo)",
-        "elisa.martins.demo@example.test",
+        "elisa.martins.demo",
         (
             "cambridge_independent",
             "youtube_lesson_notes",
@@ -90,22 +90,22 @@ def _seed_id(kind: str, key: str) -> str:
     return str(uuid5(_SEED_NAMESPACE, f"{_SEED_VERSION}:{kind}:{key}"))
 
 
-def _submission_id(email: str, slot: str) -> str:
-    return _seed_id("submission", f"{email}:{slot}")
+def _submission_id(username: str, slot: str) -> str:
+    return _seed_id("submission", f"{username}:{slot}")
 
 
 def _expected_submission_ids() -> tuple[str, ...]:
     identifiers: list[str] = []
     for student in SYNTHETIC_STUDENTS:
         identifiers.extend(
-            _submission_id(student.email, f"activity:{code}")
+            _submission_id(student.username, f"activity:{code}")
             for code in student.activity_codes
         )
         identifiers.extend(
-            _submission_id(student.email, f"lesson:{index}")
+            _submission_id(student.username, f"lesson:{index}")
             for index in range(1, 6)
         )
-        identifiers.append(_submission_id(student.email, "rejected"))
+        identifiers.append(_submission_id(student.username, "rejected"))
     return tuple(identifiers)
 
 
@@ -181,10 +181,12 @@ def seed_fake_students(session: Session) -> SyntheticSeedReport:
     """Create five marked fake students and varied history exactly once."""
 
     expected_ids = _expected_submission_ids()
-    emails = tuple(student.email for student in SYNTHETIC_STUDENTS)
+    usernames = tuple(student.username for student in SYNTHETIC_STUDENTS)
     existing_users = {
-        user.email: user
-        for user in session.scalars(select(User).where(User.email.in_(emails))).all()
+        user.username: user
+        for user in session.scalars(
+            select(User).where(User.username.in_(usernames))
+        ).all()
     }
     existing_submission_count = int(
         session.scalar(
@@ -192,28 +194,28 @@ def seed_fake_students(session: Session) -> SyntheticSeedReport:
         )
         or 0
     )
-    if len(existing_users) == len(emails) and existing_submission_count == len(
+    if len(existing_users) == len(usernames) and existing_submission_count == len(
         expected_ids
     ):
         return SyntheticSeedReport()
 
     users_created = 0
     for definition in SYNTHETIC_STUDENTS:
-        user = existing_users.get(definition.email)
+        user = existing_users.get(definition.username)
         if user is None:
             user = User(
-                id=_seed_id("user", definition.email),
-                email=definition.email,
+                id=_seed_id("user", definition.username),
+                username=definition.username,
                 display_name=definition.name,
                 role=Role.STUDENT,
                 active=True,
                 reminders_enabled=False,
             )
             session.add(user)
-            existing_users[definition.email] = user
+            existing_users[definition.username] = user
             users_created += 1
         elif user.role != Role.STUDENT:
-            raise ValueError(f"Conta sintética inválida: {definition.email}")
+            raise ValueError(f"Conta sintética inválida: {definition.username}")
     session.flush()
 
     activity_codes = {
@@ -241,11 +243,11 @@ def seed_fake_students(session: Session) -> SyntheticSeedReport:
     ledger_created = 0
 
     for student_index, definition in enumerate(SYNTHETIC_STUDENTS):
-        user = existing_users[definition.email]
+        user = existing_users[definition.username]
         for activity_index, code in enumerate(definition.activity_codes):
             submission, created = _create_submission(
                 session,
-                identifier=_submission_id(definition.email, f"activity:{code}"),
+                identifier=_submission_id(definition.username, f"activity:{code}"),
                 student=user,
                 activity=activities[code],
                 event_at=now
@@ -260,7 +262,7 @@ def seed_fake_students(session: Session) -> SyntheticSeedReport:
         for lesson_index in range(1, 6):
             submission, created = _create_submission(
                 session,
-                identifier=_submission_id(definition.email, f"lesson:{lesson_index}"),
+                identifier=_submission_id(definition.username, f"lesson:{lesson_index}"),
                 student=user,
                 activity=activities["duolingo_beconfident"],
                 event_at=now
@@ -277,7 +279,7 @@ def seed_fake_students(session: Session) -> SyntheticSeedReport:
 
         _, created = _create_submission(
             session,
-            identifier=_submission_id(definition.email, "rejected"),
+            identifier=_submission_id(definition.username, "rejected"),
             student=user,
             activity=activities["impact_summary"],
             event_at=now - timedelta(days=2 + student_index),

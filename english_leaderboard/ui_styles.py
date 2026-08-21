@@ -545,6 +545,180 @@ hr {
   }
 }
 
+/* Leaderboard: pódio e classificação seguem o protótipo Robonáticos #7565. */
+.robo-podium {
+  align-items: flex-end;
+  background: var(--robo-charcoal);
+  border: var(--robo-border);
+  border-radius: 2rem;
+  box-shadow: var(--robo-shadow);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: center;
+  margin-bottom: 1rem;
+  overflow: hidden;
+  padding: 1.375rem 1.125rem;
+}
+
+.robo-podium-slot {
+  align-items: center;
+  display: flex;
+  flex: 1 1 7.5rem;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 12.5rem;
+  min-width: 0;
+}
+
+.robo-avatar {
+  align-items: center;
+  background: var(--robo-white);
+  border: var(--robo-border);
+  border-radius: 999px;
+  color: var(--robo-ink);
+  display: flex;
+  flex: 0 0 auto;
+  font-family: "League Spartan", Impact, sans-serif;
+  font-weight: 800;
+  height: 3.5rem;
+  justify-content: center;
+  font-size: 1.125rem;
+  width: 3.5rem;
+}
+
+.robo-podium-name {
+  color: var(--robo-white);
+  font-weight: 700;
+  font-size: 0.8125rem;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+  text-align: center;
+  width: 100%;
+}
+
+.robo-podium-block {
+  align-items: center;
+  border: var(--robo-border);
+  border-radius: 1.25rem 1.25rem 0.375rem 0.375rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  justify-content: flex-end;
+  padding: 0.75rem 0.5rem;
+  width: 100%;
+}
+
+.robo-podium-place {
+  color: var(--robo-ink);
+  font-family: "League Spartan", Impact, sans-serif;
+  font-size: 1.875rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.robo-podium-points {
+  color: var(--robo-ink);
+  font-weight: 700;
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
+.robo-board {
+  background: var(--robo-white);
+  border: var(--robo-border);
+  border-radius: 1.5rem;
+  box-shadow: var(--robo-shadow);
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem;
+}
+
+.robo-board-row {
+  align-items: center;
+  border-bottom: 2px solid var(--robo-silver);
+  display: flex;
+  gap: 0.75rem;
+  min-height: var(--app-touch-target);
+  padding: 0.75rem 0.625rem;
+}
+
+.robo-board-row:last-child {
+  border-bottom: none;
+}
+
+.robo-board-place {
+  color: var(--robo-grey);
+  flex: 0 0 2.125rem;
+  font-family: "League Spartan", Impact, sans-serif;
+  font-size: 1.0625rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.robo-board-row .robo-avatar {
+  background: var(--robo-silver);
+  font-size: 0.75rem;
+  height: 2.125rem;
+  width: 2.125rem;
+}
+
+.robo-board-name {
+  flex: 1;
+  font-weight: 700;
+  font-size: 0.875rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.robo-board-badge {
+  background: var(--robo-yellow);
+  border: 2px solid var(--robo-ink);
+  border-radius: 999px;
+  flex: 0 0 auto;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  padding: 0.125rem 0.5rem;
+  text-transform: uppercase;
+}
+
+.robo-board-points {
+  flex: 0 0 auto;
+  font-family: "League Spartan", Impact, sans-serif;
+  font-size: 1.125rem;
+  font-weight: 800;
+}
+
+@media (max-width: 768px) {
+  .robo-podium {
+    border-radius: 1.5rem;
+    gap: 0.5rem;
+    padding: 1rem 0.75rem;
+  }
+
+  .robo-podium-slot {
+    flex: 1 1 5rem;
+  }
+
+  .robo-avatar {
+    font-size: 0.9375rem;
+    height: 2.75rem;
+    width: 2.75rem;
+  }
+
+  .robo-podium-place {
+    font-size: 1.5rem;
+  }
+
+  .robo-podium-name {
+    font-size: 0.75rem;
+  }
+
+  .robo-board-row {
+    gap: 0.5rem;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

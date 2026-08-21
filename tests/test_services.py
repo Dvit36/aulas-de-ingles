@@ -106,7 +106,7 @@ def test_phash_only_match_goes_to_review(session, users, settings):
 
 def test_exact_duplicate_is_compared_across_students(session, users, settings):
     first_student = users[Role.STUDENT]
-    other = User(email="other@example.org", display_name="Other", role=Role.STUDENT)
+    other = User(username="other", display_name="Other", role=Role.STUDENT)
     session.add(other)
     session.commit()
     activity = _activity(session, "duolingo_beconfident")

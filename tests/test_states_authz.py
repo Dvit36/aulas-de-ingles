@@ -36,7 +36,7 @@ def test_student_and_admin_permissions(session, users):
     submission = Submission(student_id=student.id, activity_id=activity.id)
     assert can_view_submission(student, submission)
     assert can_view_submission(admin, submission)
-    other = User(email="other@example.org", display_name="Other", role=Role.STUDENT)
+    other = User(username="other", display_name="Other", role=Role.STUDENT)
     session.add(other)
     session.flush()
     assert not can_view_submission(other, submission)

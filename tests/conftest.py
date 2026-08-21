@@ -43,13 +43,13 @@ def session(settings: Settings):
     db = factory()
     seed_catalog(db)
     admin = User(
-        email="admin@example.org",
+        username="admin",
         display_name="Admin",
         role=Role.ADMIN,
         active=True,
     )
     student = User(
-        email="student@example.org",
+        username="student",
         display_name="Student",
         role=Role.STUDENT,
         active=True,
@@ -67,7 +67,9 @@ def session(settings: Settings):
 def users(session):
     return {
         user.role: user
-        for user in session.scalars(select(User).where(User.email.in_(["admin@example.org", "student@example.org"]))).all()
+        for user in session.scalars(
+            select(User).where(User.username.in_(["admin", "student"]))
+        ).all()
     }
 
 

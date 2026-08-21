@@ -4,6 +4,7 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from html import escape
 from pathlib import Path
 from uuid import uuid4
 
@@ -62,10 +63,16 @@ from english_leaderboard.reminders import (
     send_test_reminder,
 )
 from english_leaderboard.scoring import (
+    LESSON_ACTIVITY_CODE,
+    activities_closing_gap,
     leaderboard_rows,
     ledger_rows,
     lesson_progress,
+    next_rival,
+    pending_group_progress,
     student_total,
+    students_meeting_weekly_goal,
+    weekly_lesson_count,
 )
 from english_leaderboard.services import (
     UploadPayload,
@@ -73,15 +80,18 @@ from english_leaderboard.services import (
     admin_student_submissions,
     archive_or_delete_activity,
     archive_or_delete_user,
+    count_activity_references,
     create_activity,
     create_points_adjustment,
     create_user_account,
+    get_goal_configuration,
     get_submission_file_for_user,
     list_submissions,
     reset_user_password,
     resolve_oidc_user,
     review_submission,
     save_activity_changes,
+    save_goal_configuration,
     save_user,
     set_activity_active,
     submit_evidence,
@@ -432,12 +442,12 @@ def login_view(
             if not admin_exists:
                 st.error(
                     "Nenhum administrador inicial foi configurado. Defina "
-                    "BOOTSTRAP_ADMIN_NAME, BOOTSTRAP_ADMIN_EMAIL e "
+                    "BOOTSTRAP_ADMIN_NAME, BOOTSTRAP_ADMIN_USERNAME e "
                     "BOOTSTRAP_ADMIN_PASSWORD e reinicie a aplicação."
                 )
                 return
             with st.form("local_login_form"):
-                email = st.text_input("E-mail", autocomplete="email")
+                username = st.text_input("Usuário", autocomplete="username")
                 password = st.text_input(
                     "Senha", type="password", autocomplete="current-password"
                 )
@@ -446,7 +456,7 @@ def login_view(
                 try:
                     result = login_with_password(
                         session,
-                        email=email,
+                        username=username,
                         password=password,
                         settings=settings,
                     )
@@ -482,7 +492,7 @@ def account_view(session, actor: User, settings: Settings) -> None:
     role_label = "Administrador" if actor.role == Role.ADMIN else "Aluno"
     with st.container(border=True, key="account_card"):
         st.write(f"**Nome:** {actor.display_name}")
-        st.write(f"**E-mail:** {actor.email}")
+        st.write(f"**Usuário:** {actor.username}")
         st.write(f"**Papel:** {role_label}")
         if actor.last_login_at:
             st.write(f"**Último acesso:** {actor.last_login_at:%d/%m/%Y %H:%M}")
@@ -692,7 +702,7 @@ def _admin_routes(session, actor: User | None, settings: Settings) -> list[PageR
             "Visão geral",
             "root",
             ":material/dashboard:",
-            lambda: admin_dashboard(session),
+            lambda: admin_dashboard(session, actor),
         ),
         PageRoute(
             "Envios",
@@ -739,7 +749,7 @@ def _student_routes(session, actor: User | None, settings: Settings) -> list[Pag
             "Ranking",
             "leaderboard",
             ":material/leaderboard:",
-            lambda: leaderboard_view(session, key_prefix="student_page"),
+            lambda: leaderboard_view(session, key_prefix="student_page", actor=actor),
         ),
     ]
 
@@ -775,7 +785,7 @@ def _root_view(
     elif settings.local_auth_enabled and actor.must_change_password:
         forced_password_change_view(session, actor, settings)
     elif actor.role == Role.ADMIN:
-        admin_dashboard(session)
+        admin_dashboard(session, actor)
     else:
         student_dashboard(session, actor)
 
@@ -902,7 +912,78 @@ def _visible_routes(
     return routes
 
 
-def leaderboard_view(session, *, key_prefix: str = "leaderboard") -> None:
+def _initials(name: str) -> str:
+    """Iniciais do avatar, ignorando marcações como "(Demo)"."""
+
+    parts = [
+        cleaned
+        for part in str(name).split()
+        if "(" not in part
+        and ")" not in part
+        and (cleaned := "".join(c for c in part if c.isalpha()))
+    ]
+    if not parts:
+        return "?"
+    letters = parts[0][:1] + (parts[-1][:1] if len(parts) > 1 else "")
+    return letters.upper()
+
+
+# Ordem visual do pódio e altura relativa de cada bloco: 2º, 1º, 3º.
+_PODIUM_LAYOUT = (
+    (1, "var(--robo-silver)", "5.25rem"),
+    (0, "var(--robo-yellow)", "7.25rem"),
+    (2, "var(--robo-white)", "4.125rem"),
+)
+
+
+def _podium_html(podium: Sequence[dict[str, object]]) -> str:
+    slots = []
+    for index, color, height in _PODIUM_LAYOUT:
+        if index >= len(podium):
+            continue
+        row = podium[index]
+        name = escape(str(row["student"]))
+        slots.append(
+            f'<div class="robo-podium-slot">'
+            f'<div class="robo-avatar">{escape(_initials(row["student"]))}</div>'
+            f'<span class="robo-podium-name">{name}</span>'
+            f'<div class="robo-podium-block" '
+            f'style="background: {color}; min-height: {height};">'
+            f'<span class="robo-podium-place">{int(row["position"])}º</span>'
+            f'<span class="robo-podium-points">{int(row["points"])} pts</span>'
+            f"</div></div>"
+        )
+    return f'<div class="robo-podium">{"".join(slots)}</div>'
+
+
+def _board_html(
+    rows: Sequence[dict[str, object]], highlight_id: str | None
+) -> str:
+    entries = []
+    for row in rows:
+        badge = (
+            '<span class="robo-board-badge">Você</span>'
+            if highlight_id is not None and row["student_id"] == highlight_id
+            else ""
+        )
+        entries.append(
+            f'<div class="robo-board-row">'
+            f'<span class="robo-board-place">{int(row["position"])}</span>'
+            f'<div class="robo-avatar">{escape(_initials(row["student"]))}</div>'
+            f'<span class="robo-board-name">{escape(str(row["student"]))}</span>'
+            f"{badge}"
+            f'<span class="robo-board-points">{int(row["points"])}</span>'
+            f"</div>"
+        )
+    return f'<div class="robo-board">{"".join(entries)}</div>'
+
+
+def leaderboard_view(
+    session,
+    *,
+    key_prefix: str = "leaderboard",
+    actor: User | None = None,
+) -> None:
     st.subheader("Leaderboard")
     use_period = st.checkbox("Filtrar por período", key=f"{key_prefix}_period")
     start = end = None
@@ -919,23 +1000,43 @@ def leaderboard_view(session, *, key_prefix: str = "leaderboard") -> None:
     if not rows:
         st.info("Ainda não há alunos no leaderboard.")
         return
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    podium = [row for row in rows if int(row["position"]) <= 3]
-    columns = st.columns(max(1, len(podium)))
-    for column, row in zip(columns, podium, strict=True):
-        with column.container(border=True):
-            column.markdown(f"## {medals.get(int(row['position']), '🏅')}")
-            column.subheader(str(row["student"]))
-            column.metric("Pontos", int(row["points"]))
-            column.caption(f"Posição #{row['position']}")
-    remaining = [row for row in rows if int(row["position"]) > 3]
-    if remaining:
-        st.markdown("#### Classificação geral")
-        for row in remaining:
-            with st.container(border=True):
-                left, right = st.columns([4, 1])
-                left.write(f"**#{row['position']} · {row['student']}**")
-                right.write(f"**{row['points']} pts**")
+    highlight_id = actor.id if actor is not None else None
+    markup = _podium_html(rows[:3]) + _board_html(rows, highlight_id)
+    st.markdown(markup, unsafe_allow_html=True)
+
+
+def _next_rival_panel(session, actor: User) -> None:
+    """Mostra a diferença até o próximo colocado e como fechá-la."""
+
+    rival = next_rival(session, actor.id)
+    if rival is None:
+        st.success(
+            "Você está na liderança do leaderboard. Continue enviando para manter "
+            "a distância."
+        )
+        return
+    gap = int(rival["gap"])
+    with st.container(border=True, key="next_rival_card"):
+        st.markdown(
+            f"**Faltam {gap} ponto(s)** para alcançar **{rival['student']}** "
+            f"(#{rival['position']}, {rival['points']} pontos)."
+        )
+        suggestions = activities_closing_gap(session, actor.id, gap)
+        if not suggestions:
+            st.caption("Nenhuma atividade ativa disponível no catálogo.")
+            return
+        st.caption("Atividades que fecham essa diferença:")
+        for item in suggestions:
+            if int(item["threshold"]) > 1:
+                detail = (
+                    f"{item['needed']} comprovação(ões) — "
+                    f"{item['points']} pontos a cada {item['threshold']}"
+                )
+            else:
+                detail = (
+                    f"{item['needed']} envio(s) — {item['points']} pontos cada"
+                )
+            st.markdown(f"- **{item['activity']}**: {detail}")
 
 
 def student_dashboard(session, actor: User) -> None:
@@ -955,11 +1056,33 @@ def student_dashboard(session, actor: User) -> None:
         )
         or 0
     )
-    col1, col2, col3, col4 = st.columns(4)
+    goal = get_goal_configuration(session).weekly_lesson_goal
+    done_this_week = weekly_lesson_count(session, actor.id)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Pontuação", student_total(session, actor.id))
     col2.metric("Posição", f"#{own['position']}" if own else "—")
-    col3.metric("Progresso de lições", f"{progress} de {threshold}")
-    col4.metric("Pendências", pending)
+    col3.metric("Meta da semana", f"{done_this_week} de {goal}")
+    col4.metric("Progresso de lições", f"{progress} de {threshold}")
+    col5.metric("Pendências", pending)
+    st.progress(
+        min(1.0, done_this_week / goal) if goal else 0.0,
+        text=(
+            "Meta semanal cumprida. 🎉"
+            if done_this_week >= goal
+            else f"Faltam {goal - done_this_week} lição(ões) para a meta da semana."
+        ),
+    )
+    _next_rival_panel(session, actor)
+    others = [
+        row
+        for row in pending_group_progress(session, actor.id)
+        if row["code"] != LESSON_ACTIVITY_CODE
+    ]
+    for row in others:
+        st.caption(
+            f"{row['activity']}: {row['unused']} de {row['threshold']} "
+            "unidades para o próximo grupo."
+        )
     st.caption(
         "O login identifica quem enviou, mas um print sem nome não prova de forma absoluta quem realizou a atividade."
     )
@@ -1512,7 +1635,7 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
         [
             {
                 "Nome": user.display_name,
-                "E-mail": user.email,
+                "Usuário": user.username,
                 "Papel": "Administrador" if user.role == Role.ADMIN else "Aluno",
                 "Estado": "Arquivado"
                 if user.archived_at
@@ -1535,7 +1658,10 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
     with st.expander("Criar nova conta"):
         with st.form("new_user_form", clear_on_submit=True):
             new_name = st.text_input("Nome")
-            new_email = st.text_input("E-mail")
+            new_username = st.text_input(
+                "Usuário",
+                help="Letras, números, ponto, hífen ou sublinhado. Sem espaços.",
+            )
             new_role = st.selectbox("Papel", [Role.STUDENT.value, Role.ADMIN.value])
             create_submitted = st.form_submit_button("Criar e gerar senha temporária")
         if create_submitted:
@@ -1543,7 +1669,7 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
                 _, temporary_password = create_user_account(
                     session,
                     actor=actor,
-                    email=new_email,
+                    username=new_username,
                     display_name=new_name,
                     role=new_role,
                 )
@@ -1568,7 +1694,7 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
     current = next(user for user in editable_users if user.id == selected)
     with st.form("user_form"):
         name = st.text_input("Nome", value=current.display_name)
-        email = st.text_input("E-mail", value=current.email)
+        username = st.text_input("Usuário", value=current.username)
         role = st.selectbox(
             "Papel",
             [Role.STUDENT.value, Role.ADMIN.value],
@@ -1581,7 +1707,7 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
             save_user(
                 session,
                 actor=actor,
-                email=email,
+                username=username,
                 display_name=name,
                 role=role,
                 active=active,
@@ -1623,11 +1749,13 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
             "podem ser removidas permanentemente."
         )
         with st.form("delete_user_form"):
-            confirmation = st.text_input(f'Digite "{current.email}" para confirmar')
+            confirmation = st.text_input(
+                f'Digite "{current.username}" para confirmar'
+            )
             delete_submitted = st.form_submit_button("Confirmar exclusão")
         if delete_submitted:
-            if confirmation.strip().lower() != current.email.lower():
-                st.error("A confirmação não corresponde ao e-mail da conta.")
+            if confirmation.strip().lower() != current.username.lower():
+                st.error("A confirmação não corresponde ao usuário da conta.")
             else:
                 try:
                     result = archive_or_delete_user(
@@ -1646,6 +1774,57 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
                         else "Conta excluída."
                     )
                     st.rerun()
+
+
+def _confirm_activity_delete(
+    session, actor: User, activity: Activity, settings: Settings | None
+) -> None:
+    """Pergunta antes de excluir, dizendo se o efeito será arquivar ou remover."""
+
+    references = count_activity_references(session, activity.id)
+    if references:
+        st.warning(
+            f"**{activity.name}** possui {references} registro(s) no histórico. "
+            "Ela será arquivada e sairá do catálogo, mas as submissões e os "
+            "lançamentos já pontuados permanecem intactos. Confirmar?"
+        )
+    else:
+        st.warning(
+            f"**{activity.name}** nunca foi usada e será removida "
+            "permanentemente. Esta ação não pode ser desfeita. Confirmar?"
+        )
+    actions = st.columns(2)
+    if actions[0].button(
+        "Sim, arquivar" if references else "Sim, excluir",
+        key=f"confirm_delete_activity_{activity.id}",
+        type="primary",
+        width="stretch",
+    ):
+        try:
+            result = archive_or_delete_activity(
+                session,
+                actor=actor,
+                activity_id=activity.id,
+            )
+            session.commit()
+            if settings is not None:
+                sync_google_sheets_snapshot(session, settings)
+        except Exception as error:
+            session.rollback()
+            show_operation_error("delete_activity", error)
+        else:
+            st.session_state.pop("pending_activity_delete", None)
+            st.success(
+                "Atividade arquivada." if result == "archived" else "Atividade excluída."
+            )
+            st.rerun()
+    if actions[1].button(
+        "Cancelar",
+        key=f"cancel_delete_activity_{activity.id}",
+        width="stretch",
+    ):
+        st.session_state.pop("pending_activity_delete", None)
+        st.rerun()
 
 
 def catalog_view(session, actor: User, settings: Settings | None = None) -> None:
@@ -1699,25 +1878,10 @@ def catalog_view(session, actor: User, settings: Settings | None = None) -> None
             width="stretch",
             help="A atividade principal não pode ser excluída." if protected else None,
         ):
-            try:
-                result = archive_or_delete_activity(
-                    session,
-                    actor=actor,
-                    activity_id=item.id,
-                )
-                session.commit()
-                if settings is not None:
-                    sync_google_sheets_snapshot(session, settings)
-            except Exception as error:
-                session.rollback()
-                show_operation_error("delete_activity", error)
-            else:
-                st.success(
-                    "Atividade arquivada."
-                    if result == "archived"
-                    else "Atividade excluída."
-                )
-                st.rerun()
+            st.session_state["pending_activity_delete"] = item.id
+            st.rerun()
+        if st.session_state.get("pending_activity_delete") == item.id:
+            _confirm_activity_delete(session, actor, item, settings)
     with st.expander("Criar atividade"):
         with st.form("new_activity_form", clear_on_submit=True):
             new_code = st.text_input("Código interno")
@@ -1897,7 +2061,7 @@ def reminders_view(session, actor: User, settings: Settings) -> None:
             "Modelo da mensagem",
             value=configuration.body_template,
             height=180,
-            help="Variáveis disponíveis: {name} e {email}.",
+            help="Variáveis disponíveis: {name}, {username} e {email}.",
         )
         submitted = st.form_submit_button("Salvar configuração", type="primary")
     if submitted:
@@ -2074,7 +2238,7 @@ def ledger_view(session, actor: User, settings: Settings | None = None) -> None:
                     st.success("Ajuste registrado como nova transação imutável.")
 
 
-def admin_dashboard(session) -> None:
+def admin_dashboard(session, actor: User | None = None) -> None:
     st.header("Visão geral")
     pending = (
         session.scalar(
@@ -2093,11 +2257,48 @@ def admin_dashboard(session) -> None:
         or 0
     )
     transactions = session.scalar(select(func.count(LedgerTransaction.id))) or 0
-    col1, col2, col3 = st.columns(3)
+    configuration = get_goal_configuration(session)
+    goal = configuration.weekly_lesson_goal
+    reached, total_students = students_meeting_weekly_goal(session, goal)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Fila de revisão", pending)
     col2.metric("Alunos ativos", students)
     col3.metric("Transações no ledger", transactions)
+    col4.metric("Na meta desta semana", f"{reached} de {total_students}")
+    if actor is not None:
+        _weekly_goal_form(session, actor, configuration)
     leaderboard_view(session, key_prefix="admin_dashboard")
+
+
+def _weekly_goal_form(session, actor: User, configuration) -> None:
+    with st.expander(f"Meta semanal: {configuration.weekly_lesson_goal} lições"):
+        st.caption(
+            "A meta orienta os alunos e aparece no painel deles. Ela não altera "
+            "a pontuação: o ledger continua vindo apenas das aprovações."
+        )
+        with st.form("weekly_goal_form"):
+            goal = st.number_input(
+                "Lições por semana",
+                min_value=1,
+                max_value=200,
+                value=configuration.weekly_lesson_goal,
+                step=1,
+            )
+            submitted = st.form_submit_button("Salvar meta", type="primary")
+        if submitted:
+            try:
+                save_goal_configuration(
+                    session,
+                    actor=actor,
+                    weekly_lesson_goal=int(goal),
+                )
+                session.commit()
+            except Exception as error:
+                session.rollback()
+                show_operation_error("save_goal_configuration", error)
+            else:
+                st.success("Meta semanal atualizada.")
+                st.rerun()
 
 
 def _browser_command_id() -> str | None:

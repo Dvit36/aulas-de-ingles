@@ -6,13 +6,13 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 
 ## Usuários
 
-- **Aluno:** consulta catálogo, pontuação, posição e progresso; envia comprovantes; acompanha análise e decisões.
-- **Administrador:** revisa envios, corrige unidades e gerencia contas e catálogo. O ledger continua sendo a fonte interna da pontuação.
+- **Aluno:** consulta catálogo, pontuação, posição, meta semanal e progresso; vê quanto falta para alcançar o colocado à frente e quais atividades fecham essa diferença; envia comprovantes; acompanha análise e decisões.
+- **Administrador:** revisa envios, corrige unidades, define a meta de lições por semana e gerencia contas e catálogo. O ledger continua sendo a fonte interna da pontuação.
 
 ## Fluxos principais
 
 1. Sem autenticação, a pessoa acessa diretamente a página pública **Entrar** pela navegação superior.
-2. Na página **Entrar**, o usuário informa e-mail e senha; não existe cadastro público. O modo demo permanece somente para desenvolvimento.
+2. Na página **Entrar**, a pessoa informa nome de usuário e senha; não existe cadastro público nem login por e-mail. O modo demo permanece somente para desenvolvimento.
 3. Depois da autenticação, a navegação mostra as rotas permitidas pelo papel e **Minha conta**, que concentra identidade e logout.
 4. O aluno autenticado escolhe uma atividade, informa campos exigidos e envia imagens, PDF, DOCX ou TXT pela mesma caixa.
 5. O servidor valida o arquivo, armazena-o com nome aleatório, executa OCR local e aplica regras configuráveis.
@@ -26,12 +26,15 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 - O catálogo inicial é o definido no briefing; a planilha legada não sobrescreve esse catálogo.
 - Duolingo/BeConfident: cada print de conclusão único e aprovado vale uma unidade. A cada cinco unidades ainda não usadas, são concedidos exatamente 5 pontos.
 - `combo` é apenas texto da interface: nunca define a quantidade de lições.
-- Uma unidade pertence a, no máximo, um grupo premiado.
+- Uma unidade pertence a, no máximo, um grupo premiado, e grupos nunca misturam atividades diferentes.
+- Cada atividade define quantas unidades formam um grupo premiado. Limiar `1` paga a pontuação inteira a cada aprovação; limiar maior acumula unidades e paga uma vez por grupo fechado. Duolingo/BeConfident mantém a política fixa de 5 lições por 5 pontos.
 - Atividades de pontuação direta usam a pontuação vigente no momento da aprovação. Alterações futuras no catálogo não modificam o ledger.
 - Resumos/anotações são validados apenas estruturalmente. O MVP não afirma avaliar qualidade ou veracidade e encaminha conteúdo subjetivo à revisão.
 - Reunião em inglês permanece no catálogo como atividade comum de 30 pontos.
 - Horários e datas mostrados nas imagens não são fonte confiável. O recebimento usa relógio do servidor.
 - Duplicata SHA-256 pode ser rejeitada automaticamente. Similaridade perceptual apenas sinaliza revisão.
+- A meta semanal de lições é orientativa, definida pela administração e igual para toda a equipe. Ela nunca altera pontuação nem ledger; a semana vai de segunda a domingo em UTC.
+- A diferença mostrada ao aluno é para o colocado imediatamente à frente com pontuação estritamente maior; empate não conta como estar à frente.
 - Rejeição ou cancelamento não concede pontos.
 - Toda decisão administrativa e alteração relevante gera auditoria.
 
@@ -57,9 +60,10 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 
 - Área pública com **Entrar**, autenticação local fechada, troca obrigatória de senha temporária e modo demo local opcional.
 - Papéis `student` e `admin`, allowlist e autorização também na camada de serviço.
-- Cadastro/edição de usuários e catálogo.
+- Cadastro/edição de usuários por nome de usuário e catálogo, com confirmação explícita antes de excluir ou arquivar uma atividade.
 - Submissão de imagens/documentos, extração seletiva, validações, duplicidade e fila de revisão.
 - Ledger, grupos de cinco, atividades comuns, leaderboard geral/por período e progresso individual.
+- Meta semanal de lições configurável e indicadores de distância para o próximo colocado com sugestões de atividades.
 - Histórico visual/auditoria, exportação XLSX, sincronização opcional com Google Sheets e importação idempotente da planilha legada.
 - Gestão ativa/inativa/arquivada e infraestrutura de lembretes SMTP preservada em processo separado, sem página administrativa na navegação.
 - Navegação superior: rotas públicas antes do login; para administradores, **Visão geral**, **Envios**, **Alunos**, **Catálogo** e **Minha conta**. **Relatórios** e **Lembretes** não possuem rota visível.
@@ -81,7 +85,7 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 - A planilha real foi analisada apenas localmente e permanece fora do repositório,
   sem modificações, para preservar dados pessoais.
 - Os quatro screenshots específicos citados no briefing não estavam anexados. O workspace contém 35 JPEGs alternativos (21 Duolingo e 14 BeConfident), usados para inspeção e testes representativos; nenhum contém `combo x40` ou `combo x51`.
-- E-mails iniciais e administradores serão fornecidos por variáveis de ambiente; em desenvolvimento, usuários demo são criados pelo seed.
+- O administrador inicial é fornecido por variáveis de ambiente; em desenvolvimento, usuários demo são criados pelo seed.
 
 ## Critérios de aceitação
 

@@ -17,7 +17,9 @@ def test_migrations_are_repeatable_and_recorded(tmp_path) -> None:
         versions = connection.execute(
             text("SELECT version FROM schema_migrations")
         ).scalars().all()
-    assert versions == [1]
+    assert versions == [1, 2]
+    assert "username" in user_columns
+    assert "email" not in user_columns
     engine.dispose()
 
 
@@ -99,8 +101,8 @@ def test_migration_preserves_rows_from_existing_schema(tmp_path) -> None:
     with engine.connect() as connection:
         user = connection.execute(
             text(
-                "SELECT display_name, active, password_hash, session_version "
-                "FROM users WHERE id = 'legacy-user'"
+                "SELECT display_name, active, password_hash, session_version, "
+                "username FROM users WHERE id = 'legacy-user'"
             )
         ).one()
         activity = connection.execute(
@@ -109,6 +111,7 @@ def test_migration_preserves_rows_from_existing_schema(tmp_path) -> None:
                 "WHERE id = 'legacy-activity'"
             )
         ).one()
-    assert tuple(user) == ("Usuário legado", 1, None, 1)
+    # O identificador antigo vira o nome de usuário: ninguém perde o acesso.
+    assert tuple(user) == ("Usuário legado", 1, None, 1, "legacy@example.org")
     assert tuple(activity) == ("Atividade legada", 10, None)
     engine.dispose()

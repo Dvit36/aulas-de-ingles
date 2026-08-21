@@ -32,20 +32,20 @@ def _csv_set(value: str | None, *, lower: bool = False) -> frozenset[str]:
 class Settings:
     app_env: str = "development"
     demo_auth_enabled: bool = False
-    demo_student_email: str = "aluno.demo@example.local"
-    demo_admin_email: str = "admin.demo@example.local"
+    demo_student_username: str = "aluno.demo"
+    demo_admin_username: str = "admin.demo"
     seed_fake_data: bool = True
     local_auth_enabled: bool = True
     bootstrap_admin_name: str = ""
-    bootstrap_admin_email: str = ""
+    bootstrap_admin_username: str = ""
     bootstrap_admin_password: str = ""
     session_hours: int = 12
     login_max_attempts: int = 5
     login_lock_minutes: int = 15
     database_url: str = "sqlite:///./data/app.db"
     upload_dir: Path = Path("./data/uploads")
-    allowed_emails: frozenset[str] = frozenset()
-    admin_emails: frozenset[str] = frozenset()
+    allowed_usernames: frozenset[str] = frozenset()
+    admin_usernames: frozenset[str] = frozenset()
     max_upload_bytes: int = 10 * 1024 * 1024
     max_upload_files: int = 10
     max_upload_total_bytes: int = 30 * 1024 * 1024
@@ -84,19 +84,19 @@ class Settings:
         settings = cls(
             app_env=os.getenv("APP_ENV", "development").strip().lower(),
             demo_auth_enabled=_as_bool(os.getenv("DEMO_AUTH_ENABLED")),
-            demo_student_email=os.getenv(
-                "DEMO_STUDENT_EMAIL", "aluno.demo@example.local"
+            demo_student_username=os.getenv(
+                "DEMO_STUDENT_USERNAME", "aluno.demo"
             ).strip().lower(),
-            demo_admin_email=os.getenv(
-                "DEMO_ADMIN_EMAIL", "admin.demo@example.local"
+            demo_admin_username=os.getenv(
+                "DEMO_ADMIN_USERNAME", "admin.demo"
             ).strip().lower(),
             seed_fake_data=_as_bool(os.getenv("SEED_FAKE_DATA"), default=True),
             local_auth_enabled=_as_bool(
                 os.getenv("LOCAL_AUTH_ENABLED"), default=True
             ),
             bootstrap_admin_name=os.getenv("BOOTSTRAP_ADMIN_NAME", "").strip(),
-            bootstrap_admin_email=os.getenv(
-                "BOOTSTRAP_ADMIN_EMAIL", ""
+            bootstrap_admin_username=os.getenv(
+                "BOOTSTRAP_ADMIN_USERNAME", ""
             ).strip().lower(),
             bootstrap_admin_password=os.getenv(
                 "BOOTSTRAP_ADMIN_PASSWORD", ""
@@ -106,8 +106,8 @@ class Settings:
             login_lock_minutes=int(os.getenv("LOGIN_LOCK_MINUTES", "15")),
             database_url=os.getenv("DATABASE_URL", "sqlite:///./data/app.db").strip(),
             upload_dir=Path(os.getenv("UPLOAD_DIR", "./data/uploads")),
-            allowed_emails=_csv_set(os.getenv("ALLOWED_EMAILS"), lower=True),
-            admin_emails=_csv_set(os.getenv("ADMIN_EMAILS"), lower=True),
+            allowed_usernames=_csv_set(os.getenv("ALLOWED_USERNAMES"), lower=True),
+            admin_usernames=_csv_set(os.getenv("ADMIN_USERNAMES"), lower=True),
             max_upload_bytes=int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))),
             max_upload_files=int(os.getenv("MAX_UPLOAD_FILES", "10")),
             max_upload_total_bytes=int(
@@ -178,10 +178,16 @@ class Settings:
             raise RuntimeError(
                 "DEMO_AUTH_ENABLED=true é proibido quando APP_ENV=production"
             )
-        if self.is_production and not self.local_auth_enabled and not self.allowed_emails:
-            raise RuntimeError("ALLOWED_EMAILS não pode ficar vazio em produção")
-        if not self.admin_emails.issubset(self.allowed_emails):
-            raise ValueError("ADMIN_EMAILS deve ser subconjunto de ALLOWED_EMAILS")
+        if (
+            self.is_production
+            and not self.local_auth_enabled
+            and not self.allowed_usernames
+        ):
+            raise RuntimeError("ALLOWED_USERNAMES não pode ficar vazio em produção")
+        if not self.admin_usernames.issubset(self.allowed_usernames):
+            raise ValueError(
+                "ADMIN_USERNAMES deve ser subconjunto de ALLOWED_USERNAMES"
+            )
         if not self.database_url:
             raise ValueError("DATABASE_URL não pode ficar vazio")
         if self.max_upload_bytes <= 0:
@@ -207,12 +213,12 @@ class Settings:
             raise ValueError("Limites de login inválidos")
         bootstrap_values = (
             self.bootstrap_admin_name,
-            self.bootstrap_admin_email,
+            self.bootstrap_admin_username,
             self.bootstrap_admin_password,
         )
         if any(bootstrap_values) and not all(bootstrap_values):
             raise ValueError(
-                "BOOTSTRAP_ADMIN_NAME, BOOTSTRAP_ADMIN_EMAIL e "
+                "BOOTSTRAP_ADMIN_NAME, BOOTSTRAP_ADMIN_USERNAME e "
                 "BOOTSTRAP_ADMIN_PASSWORD devem ser definidos juntos"
             )
         if self.bootstrap_admin_password and len(self.bootstrap_admin_password) < 10:

@@ -68,7 +68,7 @@ def _leaderboard(points: int = 20) -> list[dict[str, Any]]:
             "position": 1,
             "student_id": "student-1",
             "student": "Ana",
-            "email": "ana@example.test",
+            "username": "ana",
             "points": points,
         }
     ]

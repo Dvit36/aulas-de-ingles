@@ -7,8 +7,9 @@ O MVP foi desenhado para cerca de 15 alunos em uma única máquina. Não usa API
 ## O que está incluído
 
 - página pública **Entrar** em uma barra de navegação superior, sem menu lateral;
-- autenticação local fechada com Argon2, senha temporária, troca obrigatória,
-  sessões persistentes e revogáveis e bloqueio por tentativas;
+- autenticação local fechada por **nome de usuário** e senha Argon2, com senha
+  temporária, troca obrigatória, sessões persistentes e revogáveis e bloqueio
+  por tentativas;
 - modo demo local com escolha de identidade e clique explícito em **Entrar**, bloqueado em produção;
 - depois do login, rotas permitidas pelo papel e a página **Minha conta** com identidade e logout;
 - papéis `student` e `admin`, validados também na camada de serviço;
@@ -20,9 +21,16 @@ O MVP foi desenhado para cerca de 15 alunos em uma única máquina. Não usa API
 - regras conservadoras para Duolingo/BeConfident e campos estruturais;
 - fila administrativa, correção de unidades, aprovação e rejeição auditadas;
 - uma unidade por conclusão; `combo` nunca é interpretado como número de lições;
-- grupos únicos de cinco lições que geram 5 pontos;
+- grupos únicos de cinco lições que geram 5 pontos, e o mesmo agrupamento
+  disponível para qualquer atividade pelo campo **Unidades por premiação**;
+- exclusão de atividade com confirmação explícita, avisando antes se o efeito
+  será arquivar (há histórico) ou remover em definitivo;
 - Reunião em inglês tratada como atividade comum configurável, sem fluxo especial;
 - ledger, leaderboard geral/por período, XLSX e espelho opcional no Google Sheets;
+- meta de lições por semana definida pela administração, com progresso no painel
+  do aluno e contagem de quantos alunos a cumpriram;
+- indicador de quantos pontos faltam para alcançar o colocado à frente, com as
+  atividades do catálogo que fecham essa diferença em menos envios;
 - históricos visuais por aluno e administrador, gestão segura de contas/atividades
   e lembretes SMTP configuráveis em processo separado;
 - importação idempotente da planilha legada e relatório JSON;
@@ -71,7 +79,7 @@ Não existe cadastro público. Antes do primeiro `init-db`, defina no ambiente:
 ```dotenv
 LOCAL_AUTH_ENABLED=true
 BOOTSTRAP_ADMIN_NAME=Nome do administrador
-BOOTSTRAP_ADMIN_EMAIL=admin@equipe.org
+BOOTSTRAP_ADMIN_USERNAME=admin
 BOOTSTRAP_ADMIN_PASSWORD=uma-senha-forte-com-10-ou-mais-caracteres
 ```
 
@@ -80,9 +88,15 @@ existe administrador local e nunca é sobrescrita em reinicializações. No prim
 login, a troca da senha é obrigatória. Depois disso, o administrador cria as demais
 contas pela página **Alunos**; a senha temporária é mostrada uma única vez.
 
+O login usa nome de usuário, não e-mail. Um usuário aceita de 3 a 150 caracteres
+entre letras, números, ponto, hífen, sublinhado e arroba, sempre em minúsculas.
+Bancos criados antes desta mudança guardavam o identificador na coluna `email`; a
+migração 2 renomeia essa coluna para `username` sem alterar os valores, então as
+contas existentes continuam entrando com exatamente o que já usavam.
+
 As senhas usam Argon2. A sessão usa token aleatório opaco: no servidor fica apenas
 seu SHA-256 e, no navegador, o token é mantido em `localStorage` por um componente
-oficial bidirecional do Streamlit. Nenhum nome, e-mail, papel ou senha é salvo no
+oficial bidirecional do Streamlit. Nenhum nome, usuário, papel ou senha é salvo no
 navegador. A sessão expira após `SESSION_HOURS` e é revogada em logout, alteração,
 redefinição, desativação ou mudança de papel. Após `LOGIN_MAX_ATTEMPTS` falhas, a
 conta fica bloqueada por `LOGIN_LOCK_MINUTES`. A aplicação deve ser publicada atrás
@@ -99,7 +113,7 @@ APP_ENV = "production"
 DEMO_AUTH_ENABLED = false
 LOCAL_AUTH_ENABLED = true
 BOOTSTRAP_ADMIN_NAME = "Nome do administrador"
-BOOTSTRAP_ADMIN_EMAIL = "admin@equipe.org"
+BOOTSTRAP_ADMIN_USERNAME = "admin"
 BOOTSTRAP_ADMIN_PASSWORD = "uma-senha-inicial-forte-2026"
 REMINDER_DRY_RUN = true
 ```
@@ -125,7 +139,7 @@ Documentação oficial: [Secrets no Community Cloud](https://docs.streamlit.io/d
   sólidas. Os logos versionados ficam em `assets/brand/`.
 - Sem autenticação, o aplicativo abre diretamente em **Entrar**.
 - Depois da autenticação, ela mostra as páginas autorizadas para `student` ou `admin` e acrescenta **Minha conta**.
-- **Minha conta** exibe nome, e-mail, papel, troca de senha e logout.
+- **Minha conta** exibe nome, usuário, papel, troca de senha e logout.
 - Em viewport móvel de até `768px`, os layouts com várias colunas devem ser empilhados verticalmente.
 - Botões, seletores e demais controles interativos devem ter área de toque com pelo menos `44px` de altura.
 - Tabelas, imagens e formulários ocupam a largura disponível sem exigir zoom; a barra superior própria quebra seus botões em novas linhas e nunca vira uma gaveta lateral em telas estreitas.
