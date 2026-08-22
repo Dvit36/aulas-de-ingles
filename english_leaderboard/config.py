@@ -77,6 +77,11 @@ class Settings:
     auto_approve_confidence: float = 0.88
     summary_min_chars: int = 120
     google_sheets_auto_sync: bool = False
+    github_backup_enabled: bool = False
+    github_backup_repo: str = ""
+    github_backup_token: str = ""
+    github_backup_path: str = "backups/english-leaderboard.tar.gz"
+    github_backup_branch: str = "main"
     google_sheets_spreadsheet_id: str = ""
     google_sheets_leaderboard_tab: str = "Leaderboard"
     google_sheets_ledger_tab: str = "Ledger"
@@ -164,6 +169,13 @@ class Settings:
             google_sheets_auto_sync=_as_bool(
                 os.getenv("GOOGLE_SHEETS_AUTO_SYNC")
             ),
+            github_backup_enabled=_as_bool(os.getenv("GITHUB_BACKUP_ENABLED")),
+            github_backup_repo=os.getenv("GITHUB_BACKUP_REPO", "").strip(),
+            github_backup_token=os.getenv("GITHUB_BACKUP_TOKEN", "").strip(),
+            github_backup_path=os.getenv(
+                "GITHUB_BACKUP_PATH", "backups/english-leaderboard.tar.gz"
+            ).strip(),
+            github_backup_branch=os.getenv("GITHUB_BACKUP_BRANCH", "main").strip(),
             google_sheets_spreadsheet_id=os.getenv(
                 "GOOGLE_SHEETS_SPREADSHEET_ID", ""
             ).strip(),
@@ -262,6 +274,13 @@ class Settings:
             raise ValueError("AUTO_APPROVE_CONFIDENCE deve estar entre 0 e 1")
         if self.phash_distance_threshold < 0:
             raise ValueError("PHASH_DISTANCE_THRESHOLD não pode ser negativo")
+        if self.github_backup_enabled and not (
+            self.github_backup_repo and self.github_backup_token
+        ):
+            raise ValueError(
+                "GITHUB_BACKUP_REPO e GITHUB_BACKUP_TOKEN são obrigatórios quando "
+                "GITHUB_BACKUP_ENABLED=true"
+            )
         if self.google_sheets_auto_sync and not self.google_sheets_spreadsheet_id:
             raise ValueError(
                 "GOOGLE_SHEETS_SPREADSHEET_ID é obrigatório quando "

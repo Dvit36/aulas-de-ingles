@@ -183,6 +183,59 @@ Cada arquivo recebe UUID, modo `0600`, SHA-256 e registro no banco. Downloads s�
 resolvidos por ID e passam novamente pela autorização da submissão; caminhos
 internos e nomes físicos não são mostrados.
 
+## Cópia de segurança em repositório privado
+
+Hospedagens de disco efêmero — o Streamlit Community Cloud entre elas — recriam
+o contêiner a partir do git. O SQLite e os uploads **não sobrevivem** a um
+rebuild nem ao despertar depois de hibernação. Com esta opção ligada, cada
+alteração confirmada guarda um pacote com banco e uploads em um repositório
+privado do GitHub, e a aplicação repõe tudo sozinha quando sobe com banco
+vazio.
+
+### Preparação
+
+1. Crie um repositório **privado e separado** do repositório da aplicação, por
+   exemplo `sua-conta/english-leaderboard-backups`, com um commit inicial na
+   branch `main`.
+2. Gere um token fine-grained em **Settings → Developer settings → Personal
+   access tokens → Fine-grained tokens**, com acesso **apenas** a esse
+   repositório e permissão de **Contents: Read and write**.
+3. Configure o ambiente (ou os Secrets do Streamlit Cloud):
+
+```dotenv
+GITHUB_BACKUP_ENABLED=true
+GITHUB_BACKUP_REPO=sua-conta/english-leaderboard-backups
+GITHUB_BACKUP_TOKEN=github_pat_...
+GITHUB_BACKUP_PATH=backups/english-leaderboard.tar.gz
+GITHUB_BACKUP_BRANCH=main
+```
+
+O repositório de backup **precisa ser diferente** do repositório da aplicação.
+Gravar no próprio repo dispara um rebuild no Cloud, que apaga os dados, que são
+restaurados e regravados — um laço que destrói o que deveria proteger. A
+aplicação detecta esse caso e recusa a configuração.
+
+### Uso manual
+
+```bash
+english-leaderboard backup-push
+```
+
+```bash
+english-leaderboard backup-restore
+```
+
+O pacote é determinístico: sem alteração nos dados, ele sai byte a byte igual e
+não gera commit novo. O limite adotado é de 40 MB por pacote — para quinze
+alunos numa temporada, o arquivo fica na casa de poucos MB.
+
+### O que isso não resolve
+
+Os comprovantes são prints enviados pelos alunos. Guardá-los em um repositório
+privado move esse material para o histórico do git, que é trabalhoso de expurgar
+depois. Para uso prolongado com dados de menores, a hospedagem própria descrita
+em **Docker e VPS** continua sendo a opção mais adequada.
+
 ## Lembretes por e-mail
 
 Lembretes começam desativados e `REMINDER_DRY_RUN=true`. A infraestrutura e os

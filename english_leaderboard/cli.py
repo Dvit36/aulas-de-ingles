@@ -117,6 +117,62 @@ def command_verify_backup(args: argparse.Namespace) -> int:
     return 0 if valid else 1
 
 
+def _github_backup_gateway(settings: Settings):
+    from .github_backup import GitHubApiGateway
+
+    if not settings.github_backup_repo or not settings.github_backup_token:
+        raise SystemExit(
+            "Defina GITHUB_BACKUP_REPO e GITHUB_BACKUP_TOKEN antes de usar este comando"
+        )
+    return GitHubApiGateway(settings.github_backup_token)
+
+
+def command_backup_push(args: argparse.Namespace) -> int:
+    from .github_backup import push_backup
+
+    settings = Settings.from_env()
+    result = push_backup(
+        gateway=_github_backup_gateway(settings),
+        repo=settings.github_backup_repo,
+        path=settings.github_backup_path,
+        branch=settings.github_backup_branch,
+        database_url=settings.database_url,
+        upload_dir=settings.upload_dir,
+        workdir=args.workdir,
+    )
+    print(
+        json.dumps(
+            {
+                "path": result.path,
+                "size_bytes": result.size_bytes,
+                "created": result.created,
+                "commit_sha": result.commit_sha,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def command_backup_restore(args: argparse.Namespace) -> int:
+    from .github_backup import restore_backup
+
+    settings = Settings.from_env()
+    settings.ensure_directories()
+    result = restore_backup(
+        gateway=_github_backup_gateway(settings),
+        repo=settings.github_backup_repo,
+        path=settings.github_backup_path,
+        branch=settings.github_backup_branch,
+        database_url=settings.database_url,
+        upload_dir=settings.upload_dir,
+        workdir=args.workdir,
+    )
+    print(result.reason)
+    return 0 if result.restored else 1
+
+
 def command_analyze_image(args: argparse.Namespace) -> int:
     from .image_processing import ImagePolicy, analyze_image_bytes
     from .ocr import create_ocr_engine, extract_text
@@ -219,6 +275,18 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser = commands.add_parser("verify-backup", help="Valida checksums")
     verify_parser.add_argument("manifest")
     verify_parser.set_defaults(func=command_verify_backup)
+
+    push_parser = commands.add_parser(
+        "backup-push", help="Envia a cópia para o repositório privado do GitHub"
+    )
+    push_parser.add_argument("--workdir", default="tmp/github-backup")
+    push_parser.set_defaults(func=command_backup_push)
+
+    restore_parser = commands.add_parser(
+        "backup-restore", help="Restaura a cópia guardada no GitHub"
+    )
+    restore_parser.add_argument("--workdir", default="tmp/github-backup")
+    restore_parser.set_defaults(func=command_backup_restore)
 
     image_parser = commands.add_parser("analyze-image", help="Executa OCR/regras em uma imagem")
     image_parser.add_argument("image")

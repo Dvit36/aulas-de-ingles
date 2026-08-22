@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -34,6 +35,12 @@ from english_leaderboard.database import (
 from english_leaderboard.exporter import (
     leaderboard_to_xlsx,
     ledger_to_xlsx,
+)
+from english_leaderboard.github_backup import (
+    BackupRestoreResult,
+    GitHubApiGateway,
+    push_backup,
+    restore_backup,
 )
 from english_leaderboard.google_sheets import sync_leaderboard_and_ledger
 from english_leaderboard.local_auth import (
@@ -191,6 +198,93 @@ def sync_google_sheets_snapshot(
     return True
 
 
+def persist_committed_changes(session, settings: Settings, *, notify: bool = True) -> None:
+    """Roda os destinos externos depois de um commit bem-sucedido.
+
+    Espelho no Sheets e cópia no GitHub são independentes: a falha de um não
+    impede o outro, e nenhum dos dois desfaz o que já está no banco.
+    """
+
+    sync_google_sheets_snapshot(session, settings, notify=notify)
+    push_github_backup(settings, notify=notify)
+
+
+def _backup_workdir() -> Path:
+    workdir = Path(tempfile.gettempdir()) / "english-leaderboard-backup"
+    workdir.mkdir(parents=True, exist_ok=True)
+    return workdir
+
+
+def push_github_backup(settings: Settings, *, notify: bool = False) -> bool:
+    """Guarda banco e uploads no repositório privado após uma alteração.
+
+    Falha externa nunca desfaz o que já foi gravado localmente: o commit no
+    banco é a verdade e a cópia é reconciliada na próxima alteração.
+    """
+
+    if not settings.github_backup_enabled:
+        return False
+    try:
+        result = push_backup(
+            gateway=GitHubApiGateway(settings.github_backup_token),
+            repo=settings.github_backup_repo,
+            path=settings.github_backup_path,
+            branch=settings.github_backup_branch,
+            database_url=settings.database_url,
+            upload_dir=settings.upload_dir,
+            workdir=_backup_workdir(),
+        )
+    except Exception:
+        reference = uuid4().hex[:10]
+        LOGGER.exception("github_backup_push [ref=%s]", reference)
+        if notify:
+            st.warning(
+                "Os dados foram salvos no sistema, mas a cópia de segurança no "
+                f"GitHub falhou. Referência: {reference}."
+            )
+        return False
+    if notify:
+        st.toast(f"Cópia de segurança atualizada ({result.size_bytes // 1024} KB).", icon="🗄️")
+    return True
+
+
+def restore_github_backup_if_empty(settings: Settings, factory) -> BackupRestoreResult:
+    """Repõe os dados quando a aplicação sobe com um banco vazio.
+
+    É o que fecha o ciclo no Streamlit Cloud: o rebuild recria o disco a partir
+    do git, e sem isso cada reconstrução apagaria contas, envios e ledger.
+    """
+
+    vazio = BackupRestoreResult(False, "banco já contém dados")
+    if not settings.github_backup_enabled:
+        return BackupRestoreResult(False, "cópia de segurança desativada")
+    with session_scope(factory) as session:
+        povoado = bool(
+            session.scalar(
+                select(func.count(Submission.id))
+            )
+            or session.scalar(
+                select(func.count(User.id)).where(User.role == Role.STUDENT)
+            )
+        )
+    if povoado:
+        return vazio
+    try:
+        return restore_backup(
+            gateway=GitHubApiGateway(settings.github_backup_token),
+            repo=settings.github_backup_repo,
+            path=settings.github_backup_path,
+            branch=settings.github_backup_branch,
+            database_url=settings.database_url,
+            upload_dir=settings.upload_dir,
+            workdir=_backup_workdir(),
+        )
+    except Exception:
+        reference = uuid4().hex[:10]
+        LOGGER.exception("github_backup_restore [ref=%s]", reference)
+        return BackupRestoreResult(False, f"falha ao restaurar (ref {reference})")
+
+
 def _schema_fingerprint() -> str:
     """Identidade do conjunto de tabelas que este código espera encontrar.
 
@@ -214,6 +308,15 @@ def runtime(schema_fingerprint: str):
     engine = create_database_engine(settings.database_url)
     initialize_database(engine)
     factory = create_session_factory(engine)
+    # A restauração vem antes do seed: um banco recriado pelo rebuild do Cloud
+    # precisa recuperar contas e envios antes de qualquer semeadura.
+    resultado = restore_github_backup_if_empty(settings, factory)
+    if resultado.restored:
+        engine.dispose()
+        engine = create_database_engine(settings.database_url)
+        initialize_database(engine)
+        factory = create_session_factory(engine)
+        LOGGER.info("github_backup_restore: %s", resultado.reason)
     with session_scope(factory) as session:
         seed_database(session, settings)
     return settings, factory
@@ -1317,7 +1420,7 @@ def submission_form(session, actor: User, settings: Settings) -> None:
                 summary=summary,
             )
             session.commit()
-            sync_google_sheets_snapshot(session, settings)
+            persist_committed_changes(session, settings)
         except Exception as error:
             session.rollback()
             show_operation_error("submission_processing", error)
@@ -1677,7 +1780,7 @@ def _render_submission_cards(
                             )
                             session.commit()
                             if settings is not None:
-                                sync_google_sheets_snapshot(session, settings)
+                                persist_committed_changes(session, settings)
                         except Exception as error:
                             session.rollback()
                             show_operation_error("review_submission", error)
@@ -1856,7 +1959,7 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
             )
             session.commit()
             if settings is not None:
-                sync_google_sheets_snapshot(session, settings)
+                persist_committed_changes(session, settings)
             st.success("Usuário salvo.")
         except Exception as error:
             session.rollback()
@@ -1949,7 +2052,7 @@ def _confirm_activity_delete(
             )
             session.commit()
             if settings is not None:
-                sync_google_sheets_snapshot(session, settings)
+                persist_committed_changes(session, settings)
         except Exception as error:
             session.rollback()
             show_operation_error("delete_activity", error)
@@ -2005,7 +2108,7 @@ def catalog_view(session, actor: User, settings: Settings | None = None) -> None
                 )
                 session.commit()
                 if settings is not None:
-                    sync_google_sheets_snapshot(session, settings)
+                    persist_committed_changes(session, settings)
             except Exception as error:
                 session.rollback()
                 show_operation_error("set_activity_active", error)
@@ -2129,7 +2232,7 @@ def catalog_view(session, actor: User, settings: Settings | None = None) -> None
             )
             session.commit()
             if settings is not None:
-                sync_google_sheets_snapshot(session, settings)
+                persist_committed_changes(session, settings)
             st.success(
                 "Catálogo atualizado. Transações históricas permaneceram intactas."
             )
@@ -2279,7 +2382,7 @@ def ledger_view(session, actor: User, settings: Settings | None = None) -> None:
             "ao Google Sheets."
         )
         if sync_action.button("Sincronizar agora", width="stretch"):
-            sync_google_sheets_snapshot(session, settings)
+            persist_committed_changes(session, settings)
         open_action.link_button("Abrir planilha", sheet_url, width="stretch")
     else:
         st.info(
@@ -2371,7 +2474,7 @@ def ledger_view(session, actor: User, settings: Settings | None = None) -> None:
                     )
                     session.commit()
                     if settings is not None:
-                        sync_google_sheets_snapshot(session, settings)
+                        persist_committed_changes(session, settings)
                 except Exception as error:
                     session.rollback()
                     show_operation_error("points_adjustment", error)

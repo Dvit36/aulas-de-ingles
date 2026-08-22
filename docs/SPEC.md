@@ -106,6 +106,16 @@ Toda transição é validada por máquina de estados e auditada. Operações de 
 - CORS/XSRF permanecem habilitados. Logs não incluem bytes nem OCR/imagem completos.
 - A aplicação deve ficar atrás de HTTPS em proxy reverso ou acessível por VPN/Tailscale; isso protege o token opaco e as credenciais em trânsito.
 
+## Cópia de segurança no GitHub
+
+- Hospedagens com disco efêmero, como o Streamlit Community Cloud, recriam o contêiner a partir do git: o SQLite e os uploads não sobrevivem a um rebuild nem ao despertar após hibernação.
+- Com `GITHUB_BACKUP_ENABLED=true`, cada alteração confirmada gera um pacote `tar.gz` com o snapshot consistente do banco e os uploads, gravado por API em um repositório privado.
+- O pacote é determinístico: gzip sem carimbo de tempo e metadados fixos. Conteúdo inalterado produz bytes idênticos e não vira commit novo.
+- Na subida, se o banco não tiver alunos nem envios, o pacote é baixado e reposto antes do seed. É o que fecha o ciclo do rebuild.
+- O destino precisa ser um repositório **separado** do repositório da aplicação. Gravar no próprio repo dispararia um rebuild que apaga os dados, que seriam restaurados e regravados, em laço. A aplicação detecta o caso pelo `.git/config` do checkout e recusa.
+- Falha externa nunca desfaz o commit local: o banco continua sendo a verdade e a cópia é reconciliada na alteração seguinte.
+- O download usa o media type `.raw`, obrigatório acima de 1 MB na API de conteúdo. O limite prático adotado é de 40 MB por pacote.
+
 ## Persistência e backup
 
 - SQLite em `/data/app.db` e uploads em `/data/uploads`, ambos volumes persistentes no Compose.
