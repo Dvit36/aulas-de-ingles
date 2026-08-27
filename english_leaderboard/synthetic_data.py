@@ -9,7 +9,7 @@ from uuid import UUID, uuid5
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .models import Activity, Role, Submission, SubmissionStatus, User, utcnow
+from .schema import Activity, Role, Submission, SubmissionStatus, User, utcnow
 from .scoring import award_approved_submission
 
 _SEED_VERSION = "fake_students_v1"

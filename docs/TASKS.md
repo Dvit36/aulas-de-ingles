@@ -1,5 +1,9 @@
 # TASKS — Plano verificável
 
+> As seções 1–7 registram a implementação do MVP legado. A arquitetura oficial
+> mudou em 26 de agosto de 2026; produção só será aderente após concluir a seção
+> 8. Consulte [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## 1. Descoberta e documentação
 
 - [x] Inventariar workspace e preservar materiais originais.
@@ -58,3 +62,41 @@
 - [x] Executar suite offline, corrigir falhas e validar startup/health check.
 - [x] Testar criação, atualização e no-op do espelho Sheets com gateway local falso.
 - [x] Validar navegação, formulários, tabelas e ações em `768px`, `390px` e desktop, incluindo ausência de overflow horizontal.
+
+## 8. Migração para Supabase e Supabase Storage
+
+- [x] Registrar a decisão oficial em `AGENTS.md`, `ARCHITECTURE.md`, PRD, SPEC e README.
+- [x] Implementar o carregamento e a validação das variáveis/Secrets reservadas
+  para Supabase (Auth, PostgreSQL e Storage), mantendo apenas exemplos sem credenciais no Git.
+- [x] Criar migrações PostgreSQL para perfis, domínio, ledger e metadados de
+  arquivos, usando UUID de `auth.users.id` como identidade.
+- [x] Habilitar e testar RLS em toda tabela pertencente a usuário, incluindo
+  políticas administrativas separadas.
+- [x] Substituir cadastro, login, logout, recuperação e sessão locais por
+  Supabase Auth; remover hashes e tokens próprios do schema ativo.
+- [x] Implementar adaptador privado do Supabase Storage com upload, download,
+  exclusão compensatória e URL presigned de curta duração.
+- [x] Alterar submissões para processar em memória/temporário, limpar em caso de
+  sucesso ou erro, enviar o binário ao Storage e gravar apenas metadados/`storage_key`.
+- [x] Alterar leituras e downloads para resolver o registro sob autorização/RLS
+  antes de acessar a `storage_key`; rejeitar chaves arbitrárias vindas da interface.
+- [x] Implementar idempotência e reconciliação de objetos órfãos sem duplicar
+  arquivos.
+- [x] Criar migração verificável de usuários, SQLite e uploads existentes para
+  Supabase, com relatório, checksums, dry-run e estratégia de rollback.
+- [x] Desativar `GITHUB_BACKUP_*` e remover os comandos/acionamentos que enviavam
+  banco ou uploads ao GitHub.
+- [x] Remover o módulo e os testes históricos de GitHub backup depois de usar o
+  que for necessário na migração controlada dos arquivos antigos.
+- [x] Atualizar Google Sheets, scheduler e exports para usar PostgreSQL sem
+  depender de volumes locais.
+- [x] Adicionar testes de isolamento entre alunos, RLS, presigned URLs,
+  compensação no Storage e limpeza de temporários.
+- [ ] Executar ensaio completo de deploy/redeploy no Streamlit Cloud e comprovar
+  que dados e arquivos permanecem disponíveis sem filesystem local.
+  *(Pendente: verificado localmente contra os serviços reais — runtime sobe no
+  PostgreSQL, RLS 9/9, Storage 10/10, ciclo de conta ponta a ponta —, falta o
+  redeploy real no Cloud.)*
+- [ ] Configurar e testar backup/restauração de Supabase (Auth, PostgreSQL e Storage) fora do GitHub.
+- [x] Remover da documentação operacional os passos legados após a migração.
+- [ ] Declarar produção aderente somente depois do ensaio de deploy acima.

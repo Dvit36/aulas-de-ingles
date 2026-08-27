@@ -22,10 +22,12 @@ LOGGER = logging.getLogger("english_leaderboard.scheduler")
 def run_once(settings: Settings | None = None) -> int:
     settings = settings or Settings.from_env()
     settings.ensure_directories()
-    engine = create_database_engine(settings.database_url)
+    engine = create_database_engine(
+        settings.supabase_db_url or settings.database_url
+    )
     initialize_database(engine)
     factory = create_session_factory(engine)
-    with session_scope(factory) as session:
+    with session_scope(factory, servico=True) as session:
         seed_database(session, settings)
         attempts = run_due_reminders(session, settings)
         return len(attempts)

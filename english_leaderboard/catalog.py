@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import Settings
-from .models import Activity, ReminderConfiguration, Resource, Role, User
+from .schema import Activity, ReminderConfiguration, Resource, Role, User, new_id
 
 CATALOG_SEED: tuple[dict[str, object], ...] = (
     {
@@ -202,7 +202,11 @@ def seed_demo_users(session: Session, settings: Settings) -> list[User]:
         user = session.scalar(select(User).where(User.username == username))
         if user is None:
             user = User(
-                username=username, display_name=name, role=role, active=True
+                id=new_id(),
+                username=username,
+                display_name=name,
+                role=role,
+                active=True,
             )
             session.add(user)
             created.append(user)
@@ -210,13 +214,19 @@ def seed_demo_users(session: Session, settings: Settings) -> list[User]:
     return created
 
 
-def seed_database(session: Session, settings: Settings) -> None:
+def seed_database(session: Session, settings: Settings, contas=None) -> None:
+    """Semeia catálogo, recursos e o administrador inicial.
+
+    ``contas`` é a fachada do Supabase Auth. Sem ela o administrador nasce
+    apenas como perfil, sem acesso — o caminho de desenvolvimento.
+    """
+
     seed_catalog(session)
     seed_resources(session)
     seed_demo_users(session, settings)
-    from .local_auth import bootstrap_initial_admin
+    from .contas import bootstrap_admin
 
-    bootstrap_initial_admin(session, settings)
+    bootstrap_admin(session, settings, contas)
     if settings.seed_fake_data:
         from .synthetic_data import seed_fake_students
 

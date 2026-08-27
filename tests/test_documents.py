@@ -13,13 +13,14 @@ from english_leaderboard.document_processing import (
     DocumentValidationError,
     process_document_bytes,
 )
-from english_leaderboard.models import (
+from english_leaderboard.schema import (
     Activity,
     Role,
     Submission,
     SubmissionFile,
     SubmissionStatus,
     User,
+    new_id,
 )
 from english_leaderboard.services import (
     UploadPayload,
@@ -102,7 +103,7 @@ def test_docx_expansion_and_pdf_render_budgets_are_enforced(settings) -> None:
 
 
 def test_txt_submission_skips_ocr_and_download_is_owner_protected(
-    session, users, settings, monkeypatch
+    session, users, settings, gateway, monkeypatch
 ) -> None:
     activity = session.scalar(
         select(Activity).where(Activity.code == "impact_summary")
@@ -119,6 +120,7 @@ def test_txt_submission_skips_ocr_and_download_is_owner_protected(
     )
     result = submit_evidence(
         session,
+        gateway=gateway,
         actor=users[Role.STUDENT],
         activity_id=activity.id,
         uploads=[UploadPayload("evidencia.txt", b"conteudo textual seguro")],
@@ -132,8 +134,7 @@ def test_txt_submission_skips_ocr_and_download_is_owner_protected(
         select(SubmissionFile).where(SubmissionFile.submission_id == result.submission_id)
     )
     assert stored_file.file_kind == "txt"
-    other = User(
-        username="other-student",
+    other = User(id=new_id(), username="other-student",
         display_name="Other",
         role=Role.STUDENT,
     )
@@ -145,10 +146,12 @@ def test_txt_submission_skips_ocr_and_download_is_owner_protected(
             actor=other,
             file_id=stored_file.id,
             settings=settings,
+            gateway=gateway,
         )
 
 
 def test_submission_enforces_file_count_and_aggregate_budget(
+    gateway,
     session, users, settings
 ) -> None:
     activity = session.scalar(
@@ -163,6 +166,7 @@ def test_submission_enforces_file_count_and_aggregate_budget(
     with pytest.raises(ValueError, match="no máximo 1"):
         submit_evidence(
             session,
+            gateway=gateway,
             actor=users[Role.STUDENT],
             activity_id=activity.id,
             uploads=[UploadPayload("a.txt", b"a"), UploadPayload("b.txt", b"b")],
@@ -171,6 +175,7 @@ def test_submission_enforces_file_count_and_aggregate_budget(
     with pytest.raises(ValueError, match="limite total"):
         submit_evidence(
             session,
+            gateway=gateway,
             actor=users[Role.STUDENT],
             activity_id=activity.id,
             uploads=[UploadPayload("a.txt", b"123456789")],

@@ -5,7 +5,7 @@ from dataclasses import replace
 from sqlalchemy import func, select
 
 import streamlit_app
-from english_leaderboard.models import LedgerKind, LedgerTransaction, Role
+from english_leaderboard.schema import LedgerKind, LedgerTransaction, Role
 
 
 def test_google_failure_does_not_rollback_committed_ledger(

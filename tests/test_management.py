@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 from inspect import signature
 
 import pytest
 from sqlalchemy import select
 
-from english_leaderboard.models import Activity, Role, Submission, SubmissionStatus
+from english_leaderboard.schema import Activity, Role, Submission, SubmissionStatus
 from english_leaderboard.services import (
     archive_or_delete_activity,
     archive_or_delete_user,
@@ -36,17 +38,49 @@ def test_administrative_operations_do_not_accept_reason_parameters() -> None:
         assert "reason" not in signature(operation).parameters
 
 
+class ContasFalsas:
+    """Duplo do Supabase Auth: registra o que foi pedido, sem rede."""
+
+    def __init__(self) -> None:
+        self.criadas: dict[str, str] = {}
+        self.desativadas: list[str] = []
+        self.removidas: list[str] = []
+        self.senhas_redefinidas: list[str] = []
+
+    def criar(self, *, username: str, display_name: str) -> tuple[str, str]:
+        identificador = str(uuid4())
+        self.criadas[identificador] = username
+        return identificador, "senha-temporaria-16x"
+
+    def redefinir_senha(self, user_id: str) -> str:
+        self.senhas_redefinidas.append(user_id)
+        return "outra-senha-temporaria"
+
+    def desativar(self, user_id: str) -> None:
+        self.desativadas.append(user_id)
+
+    def remover(self, user_id: str) -> None:
+        self.removidas.append(user_id)
+
+
 def test_user_create_disable_reactivate_and_delete(session, users) -> None:
     admin = users[Role.ADMIN]
+    contas = ContasFalsas()
     account, temporary_password = create_user_account(
         session,
         actor=admin,
+        contas=contas,
         username="new.student",
         display_name="New Student",
     )
     session.commit()
-    assert account.must_change_password is True
-    assert account.password_hash and temporary_password not in account.password_hash
+
+    # O id do perfil é o da conta no Auth: é o que amarra os dois lados.
+    assert account.id in contas.criadas
+    assert contas.criadas[account.id] == "new.student"
+    assert temporary_password == "senha-temporaria-16x"
+    # A aplicação não guarda senha nem hash: essa autoridade é do Auth.
+    assert not hasattr(account, "password_hash")
 
     save_user(
         session,
@@ -56,8 +90,12 @@ def test_user_create_disable_reactivate_and_delete(session, users) -> None:
         role=Role.STUDENT,
         active=False,
         user_id=account.id,
+        contas=contas,
     )
     assert account.active is False
+    # Desativar só o perfil deixaria a sessão em curso válida até expirar.
+    assert contas.desativadas == [account.id]
+
     save_user(
         session,
         actor=admin,
@@ -66,6 +104,7 @@ def test_user_create_disable_reactivate_and_delete(session, users) -> None:
         role=Role.STUDENT,
         active=True,
         user_id=account.id,
+        contas=contas,
     )
     assert account.active is True
     assert (
@@ -73,9 +112,12 @@ def test_user_create_disable_reactivate_and_delete(session, users) -> None:
             session,
             actor=admin,
             user_id=account.id,
+            contas=contas,
         )
         == "deleted"
     )
+    # Sem conta removida no Auth, o usuário continuaria conseguindo entrar.
+    assert contas.removidas == [account.id]
 
 
 def test_activity_delete_is_logical_when_history_exists(session, users) -> None:
@@ -210,7 +252,7 @@ def test_activity_reference_count_drives_the_delete_confirmation(
 
 def test_weekly_goal_is_admin_only_validated_and_audited(session, users) -> None:
     from english_leaderboard.authz import AuthorizationError
-    from english_leaderboard.models import AuditLog
+    from english_leaderboard.schema import AuditLog
     from english_leaderboard.services import (
         get_goal_configuration,
         save_goal_configuration,
@@ -302,7 +344,7 @@ def test_resources_reject_dangerous_links_and_keep_admin_order(session, users) -
 
 
 def test_replacing_resources_is_a_full_rewrite(session, users) -> None:
-    from english_leaderboard.models import AuditLog
+    from english_leaderboard.schema import AuditLog
     from english_leaderboard.services import list_resources, replace_resources
 
     admin = users[Role.ADMIN]

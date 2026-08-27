@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -26,7 +25,6 @@ from english_leaderboard.browser_session import (
 from english_leaderboard.catalog import seed_database
 from english_leaderboard.config import Settings
 from english_leaderboard.database import (
-    Base,
     create_database_engine,
     create_session_factory,
     initialize_database,
@@ -36,22 +34,23 @@ from english_leaderboard.exporter import (
     leaderboard_to_xlsx,
     ledger_to_xlsx,
 )
-from english_leaderboard.github_backup import (
-    BackupRestoreResult,
-    GitHubApiGateway,
-    push_backup,
-    restore_backup,
-)
 from english_leaderboard.google_sheets import sync_leaderboard_and_ledger
-from english_leaderboard.local_auth import (
-    AuthenticationError,
-    change_password,
-    create_auth_session,
-    login_with_password,
-    resolve_auth_session,
-    revoke_session,
+from english_leaderboard.contas import contas_de
+from english_leaderboard.storage import (
+    StorageError,
+    SupabaseStorageGateway,
+    criar_cliente,
 )
-from english_leaderboard.models import (
+from english_leaderboard.supabase_auth import (
+    AuthError,
+    HttpAuthGateway,
+    Sessao,
+    entrar,
+    renovar,
+    sair,
+    trocar_senha,
+)
+from english_leaderboard.schema import (
     Activity,
     AuditLog,
     DuplicateMatch,
@@ -59,7 +58,7 @@ from english_leaderboard.models import (
     Resource,
     Role,
     Submission,
-    SubmissionImage,
+    SubmissionFile,
     SubmissionStatus,
     User,
     utcnow,
@@ -99,7 +98,6 @@ from english_leaderboard.services import (
     list_submissions,
     replace_resources,
     reset_user_password,
-    resolve_oidc_user,
     review_submission,
     save_activity_changes,
     save_goal_configuration,
@@ -139,9 +137,7 @@ class PageRoute:
 class AuthenticationState:
     actor: User | None
     error: str | None = None
-    oidc_logged_in: bool = False
-    oidc_available: bool = True
-    local_token: str | None = None
+    sessao: Sessao | None = None
     restoring_session: bool = False
     browser_storage_available: bool = True
 
@@ -199,90 +195,9 @@ def sync_google_sheets_snapshot(
 
 
 def persist_committed_changes(session, settings: Settings, *, notify: bool = True) -> None:
-    """Roda os destinos externos depois de um commit bem-sucedido.
-
-    Espelho no Sheets e cópia no GitHub são independentes: a falha de um não
-    impede o outro, e nenhum dos dois desfaz o que já está no banco.
-    """
+    """Atualiza o espelho opcional depois de um commit bem-sucedido."""
 
     sync_google_sheets_snapshot(session, settings, notify=notify)
-    push_github_backup(settings, notify=notify)
-
-
-def _backup_workdir() -> Path:
-    workdir = Path(tempfile.gettempdir()) / "english-leaderboard-backup"
-    workdir.mkdir(parents=True, exist_ok=True)
-    return workdir
-
-
-def push_github_backup(settings: Settings, *, notify: bool = False) -> bool:
-    """Guarda banco e uploads no repositório privado após uma alteração.
-
-    Falha externa nunca desfaz o que já foi gravado localmente: o commit no
-    banco é a verdade e a cópia é reconciliada na próxima alteração.
-    """
-
-    if not settings.github_backup_enabled:
-        return False
-    try:
-        result = push_backup(
-            gateway=GitHubApiGateway(settings.github_backup_token),
-            repo=settings.github_backup_repo,
-            path=settings.github_backup_path,
-            branch=settings.github_backup_branch,
-            database_url=settings.database_url,
-            upload_dir=settings.upload_dir,
-            workdir=_backup_workdir(),
-        )
-    except Exception:
-        reference = uuid4().hex[:10]
-        LOGGER.exception("github_backup_push [ref=%s]", reference)
-        if notify:
-            st.warning(
-                "Os dados foram salvos no sistema, mas a cópia de segurança no "
-                f"GitHub falhou. Referência: {reference}."
-            )
-        return False
-    if notify:
-        st.toast(f"Cópia de segurança atualizada ({result.size_bytes // 1024} KB).", icon="🗄️")
-    return True
-
-
-def restore_github_backup_if_empty(settings: Settings, factory) -> BackupRestoreResult:
-    """Repõe os dados quando a aplicação sobe com um banco vazio.
-
-    É o que fecha o ciclo no Streamlit Cloud: o rebuild recria o disco a partir
-    do git, e sem isso cada reconstrução apagaria contas, envios e ledger.
-    """
-
-    vazio = BackupRestoreResult(False, "banco já contém dados")
-    if not settings.github_backup_enabled:
-        return BackupRestoreResult(False, "cópia de segurança desativada")
-    with session_scope(factory) as session:
-        povoado = bool(
-            session.scalar(
-                select(func.count(Submission.id))
-            )
-            or session.scalar(
-                select(func.count(User.id)).where(User.role == Role.STUDENT)
-            )
-        )
-    if povoado:
-        return vazio
-    try:
-        return restore_backup(
-            gateway=GitHubApiGateway(settings.github_backup_token),
-            repo=settings.github_backup_repo,
-            path=settings.github_backup_path,
-            branch=settings.github_backup_branch,
-            database_url=settings.database_url,
-            upload_dir=settings.upload_dir,
-            workdir=_backup_workdir(),
-        )
-    except Exception:
-        reference = uuid4().hex[:10]
-        LOGGER.exception("github_backup_restore [ref=%s]", reference)
-        return BackupRestoreResult(False, f"falha ao restaurar (ref {reference})")
 
 
 def _schema_fingerprint() -> str:
@@ -295,30 +210,35 @@ def _schema_fingerprint() -> str:
     não existiria.
     """
 
-    from english_leaderboard import models  # noqa: F401 - registra as tabelas
+    from english_leaderboard.schema import SchemaBase
 
-    names = ",".join(sorted(Base.metadata.tables))
+    names = ",".join(sorted(SchemaBase.metadata.tables))
     return sha256(names.encode("utf-8")).hexdigest()[:16]
 
 
 @st.cache_resource
 def runtime(schema_fingerprint: str):
+    """Configuração e fábrica de sessões, uma vez por processo.
+
+    O banco é o PostgreSQL do Supabase sempre que estiver configurado; o SQLite
+    fica só para desenvolvimento local, onde não há Supabase à mão.
+    """
+
     settings = Settings.from_env()
     settings.ensure_directories()
-    engine = create_database_engine(settings.database_url)
+    engine = create_database_engine(
+        settings.supabase_db_url or settings.database_url
+    )
     initialize_database(engine)
     factory = create_session_factory(engine)
-    # A restauração vem antes do seed: um banco recriado pelo rebuild do Cloud
-    # precisa recuperar contas e envios antes de qualquer semeadura.
-    resultado = restore_github_backup_if_empty(settings, factory)
-    if resultado.restored:
-        engine.dispose()
-        engine = create_database_engine(settings.database_url)
-        initialize_database(engine)
-        factory = create_session_factory(engine)
-        LOGGER.info("github_backup_restore: %s", resultado.reason)
-    with session_scope(factory) as session:
-        seed_database(session, settings)
+    with session_scope(factory, servico=True) as session:
+        # Semear catálogo e administrador inicial é manutenção, não operação
+        # de aluno: roda como dono do banco, de forma explícita.
+        seed_database(
+            session,
+            settings,
+            contas_de(settings) if settings.supabase_ready else None,
+        )
     return settings, factory
 
 
@@ -329,34 +249,93 @@ def cached_ocr_engine():
     return create_ocr_engine()
 
 
-def _oidc_value(name: str) -> str | None:
-    try:
-        value = getattr(st.user, name, None)
-    except Exception:
-        value = None
-    if value is None:
-        try:
-            value = st.user.get(name)
-        except Exception:
+SESSAO_KEY = "supabase_sessao"
+
+
+def _storage_gateway(settings: Settings) -> SupabaseStorageGateway:
+    """Bucket autenticado com o token do próprio usuário.
+
+    É o que faz as políticas de ``storage.objects`` valerem: sem o token, a
+    operação correria como anônima e o bucket privado recusaria. A chave
+    privilegiada nunca aparece aqui — ela ignoraria a RLS e poderia criar
+    objeto sem dono.
+    """
+
+    sessao = st.session_state.get(SESSAO_KEY)
+    if sessao is None:
+        raise StorageError("Sessão ausente: operação de arquivo não autorizada")
+    cliente = criar_cliente(
+        settings.supabase_url,
+        settings.supabase_publishable_key,
+        sessao.access_token,
+    )
+    return SupabaseStorageGateway(cliente, settings.storage_bucket)
+
+
+@st.cache_resource
+def _auth_gateway(base_url: str):
+    """Um cliente HTTP por processo, reaproveitado entre reruns."""
+
+    return HttpAuthGateway(base_url)
+
+
+def _esquecer_sessao() -> None:
+    st.session_state.pop(SESSAO_KEY, None)
+    forget_token(st)
+
+
+def _guardar_sessao(sessao: Sessao) -> None:
+    """Mantém a sessão viva no rerun e o refresh token no navegador.
+
+    O que vai para o navegador é o *refresh* token, nunca o de acesso: ele é
+    o único que precisa sobreviver ao fechamento da aba, e trocá-lo por um
+    acesso novo exige falar com o Supabase.
+    """
+
+    st.session_state[SESSAO_KEY] = sessao
+    if sessao.refresh_token:
+        queue_token_write(st, sessao.refresh_token, sessao.expires_at)
+
+
+def _sessao_viva(settings: Settings) -> Sessao | None:
+    """Devolve a sessão do Supabase Auth, renovando quando está perto do fim.
+
+    Duas origens: a sessão em memória (rerun normal) e o refresh token que o
+    navegador guardou (aba reaberta). Em qualquer caso a renovação acontece
+    antes do vencimento, para o token não expirar no meio de uma requisição.
+    """
+
+    gateway = _auth_gateway(settings.supabase_url)
+    sessao = st.session_state.get(SESSAO_KEY)
+
+    if sessao is None:
+        token = request_token(st)
+        if not token:
             return None
-    return str(value) if value else None
-
-
-def _oidc_login_state() -> bool | None:
-    """Return the Streamlit login state, or ``None`` when OIDC is absent."""
-
-    try:
-        value = getattr(st.user, "is_logged_in")
-    except (AttributeError, KeyError):
         try:
-            value = st.user.get("is_logged_in")
-        except Exception:
+            sessao = renovar(
+                gateway,
+                refresh_token=token,
+                chave_publica=settings.supabase_publishable_key,
+            )
+        except AuthError:
+            _esquecer_sessao()
             return None
-    except Exception:
-        return None
-    if value is None:
-        return None
-    return bool(value)
+        _guardar_sessao(sessao)
+        return sessao
+
+    if sessao.precisa_renovar():
+        try:
+            sessao = renovar(
+                gateway,
+                refresh_token=sessao.refresh_token,
+                chave_publica=settings.supabase_publishable_key,
+            )
+        except AuthError:
+            _esquecer_sessao()
+            return None
+        _guardar_sessao(sessao)
+    return sessao
 
 
 def authenticate(
@@ -366,122 +345,51 @@ def authenticate(
     browser_session_ready: bool = True,
     browser_storage_available: bool = True,
 ) -> AuthenticationState:
-    """Resolve an existing session without implicitly logging anyone in."""
+    """Resolve a sessão existente. Nunca autentica ninguém implicitamente."""
 
     command = st.session_state.get(COMMAND_KEY)
-    clearing_browser_session = (
-        isinstance(command, dict) and command.get("op") == "clear"
-    )
-    saving_browser_session = isinstance(command, dict) and command.get("op") == "write"
-    token = None if clearing_browser_session else request_token(st)
-    uses_browser_session = settings.demo_auth_enabled or settings.local_auth_enabled
-    if uses_browser_session and saving_browser_session and browser_storage_available:
+    limpando = isinstance(command, dict) and command.get("op") == "clear"
+    salvando = isinstance(command, dict) and command.get("op") == "write"
+
+    if limpando:
+        return AuthenticationState(
+            actor=None, browser_storage_available=browser_storage_available
+        )
+    if salvando and browser_storage_available:
         return AuthenticationState(
             actor=None,
             restoring_session=True,
             browser_storage_available=True,
         )
-    if uses_browser_session and token is None and not browser_session_ready:
+    # Sem o componente pronto ainda não dá para saber se há sessão guardada;
+    # renderizar o login aqui faria a tela piscar para quem já está logado.
+    if st.session_state.get(SESSAO_KEY) is None and not browser_session_ready:
         return AuthenticationState(
             actor=None,
             restoring_session=True,
             browser_storage_available=browser_storage_available,
         )
 
-    if settings.demo_auth_enabled:
-        if token:
-            actor = resolve_auth_session(session, token, audience="demo")
-            if actor is not None and actor.active:
-                st.session_state["demo_user_id"] = actor.id
-                remember_token(st, token)
-                return AuthenticationState(
-                    actor=actor,
-                    local_token=token,
-                    browser_storage_available=browser_storage_available,
-                )
-            forget_token(st)
-        demo_user_id = st.session_state.get("demo_user_id")
-        if not demo_user_id:
-            return AuthenticationState(
-                actor=None,
-                browser_storage_available=browser_storage_available,
-            )
-        actor = session.get(User, str(demo_user_id))
-        if actor is None or not actor.active:
-            st.session_state.pop("demo_user_id", None)
-            return AuthenticationState(
-                actor=None,
-                error="A identidade demo selecionada não está mais disponível.",
-                browser_storage_available=browser_storage_available,
-            )
-        result = create_auth_session(session, actor, settings, audience="demo")
-        session.commit()
-        queue_token_write(st, result.token, result.expires_at)
+    sessao = _sessao_viva(settings)
+    if sessao is None:
         return AuthenticationState(
-            actor=actor,
-            local_token=result.token,
+            actor=None, browser_storage_available=browser_storage_available
+        )
+
+    actor = session.get(User, sessao.user_id)
+    if actor is None or not actor.active or actor.archived_at is not None:
+        # A conta foi desativada ou removida enquanto a sessão vivia.
+        _esquecer_sessao()
+        return AuthenticationState(
+            actor=None,
+            error="Sua conta não está mais ativa. Procure o administrador.",
             browser_storage_available=browser_storage_available,
         )
-
-    if settings.local_auth_enabled:
-        if clearing_browser_session:
-            return AuthenticationState(
-                actor=None,
-                browser_storage_available=browser_storage_available,
-            )
-        actor = resolve_auth_session(session, token)
-        if actor is None:
-            if token:
-                forget_token(st)
-            return AuthenticationState(
-                actor=None,
-                browser_storage_available=browser_storage_available,
-            )
-        remember_token(st, token or "")
-        return AuthenticationState(
-            actor=actor,
-            local_token=token,
-            browser_storage_available=browser_storage_available,
-        )
-
-    oidc_login_state = _oidc_login_state()
-    if oidc_login_state is None:
-        return AuthenticationState(
-            actor=None,
-            error="Login indisponível: autenticação Google não configurada.",
-            oidc_available=False,
-        )
-    if not oidc_login_state:
-        return AuthenticationState(actor=None)
-
-    email = _oidc_value("email")
-    name = _oidc_value("name") or _oidc_value("given_name")
-    issuer = _oidc_value("iss")
-    subject = _oidc_value("sub")
-    email_verified = (_oidc_value("email_verified") or "").lower() == "true"
-    if not email:
-        return AuthenticationState(
-            actor=None,
-            error="O provedor OIDC não retornou um e-mail.",
-            oidc_logged_in=True,
-        )
-    try:
-        user = resolve_oidc_user(
-            session,
-            email=email,
-            display_name=name,
-            settings=settings,
-            issuer=issuer,
-            subject=subject,
-            email_verified=email_verified,
-        )
-    except AuthorizationError as error:
-        return AuthenticationState(
-            actor=None,
-            error=str(error),
-            oidc_logged_in=True,
-        )
-    return AuthenticationState(actor=user, oidc_logged_in=True)
+    return AuthenticationState(
+        actor=actor,
+        sessao=sessao,
+        browser_storage_available=browser_storage_available,
+    )
 
 
 def login_view(
@@ -489,8 +397,6 @@ def login_view(
     settings: Settings,
     *,
     auth_error: str | None = None,
-    oidc_logged_in: bool = False,
-    oidc_available: bool = True,
     browser_storage_available: bool = True,
 ) -> None:
     st.header("Entrar")
@@ -511,103 +417,33 @@ def login_view(
                 "O navegador bloqueou o armazenamento da sessão. Abra o app "
                 "diretamente, fora de uma incorporação, e permita os dados do site."
             )
-
-        if settings.demo_auth_enabled:
-            st.warning("Modo demo local ativo")
-            users = list(
-                session.scalars(
-                    select(User)
-                    .where(User.active.is_(True))
-                    .order_by(User.display_name)
-                ).all()
-            )
-            if not users:
-                st.error("Nenhum usuário demo foi criado.")
-                return
-            with st.form("demo_login_form"):
-                selected_id = st.selectbox(
-                    "Entrar como",
-                    [user.id for user in users],
-                    format_func=lambda value: next(
-                        f"{user.display_name} ({user.role.value})"
-                        for user in users
-                        if user.id == value
-                    ),
-                    key="demo_login_user_selection",
-                )
-                submitted = st.form_submit_button("Entrar", type="primary")
-            if submitted:
-                selected_actor = session.get(User, selected_id)
-                if selected_actor is None or not selected_actor.active:
-                    st.error("A identidade demo selecionada não está disponível.")
-                else:
-                    result = create_auth_session(
-                        session,
-                        selected_actor,
-                        settings,
-                        audience="demo",
-                    )
-                    session.commit()
-                    st.session_state["demo_user_id"] = selected_id
-                    queue_token_write(st, result.token, result.expires_at)
-                    st.rerun()
-            return
-
-        if settings.local_auth_enabled:
-            admin_exists = bool(
-                session.scalar(
-                    select(func.count(User.id)).where(
-                        User.role == Role.ADMIN,
-                        User.password_hash.is_not(None),
-                    )
-                )
-            )
-            if not admin_exists:
-                st.error(
-                    "Nenhum administrador inicial foi configurado. Defina "
-                    "BOOTSTRAP_ADMIN_NAME, BOOTSTRAP_ADMIN_USERNAME e "
-                    "BOOTSTRAP_ADMIN_PASSWORD e reinicie a aplicação."
-                )
-                return
-            with st.form("local_login_form"):
-                username = st.text_input("Usuário", autocomplete="username")
-                password = st.text_input(
-                    "Senha", type="password", autocomplete="current-password"
-                )
-                submitted = st.form_submit_button("Entrar", type="primary")
-            if submitted:
-                try:
-                    result = login_with_password(
-                        session,
-                        username=username,
-                        password=password,
-                        settings=settings,
-                    )
-                    session.commit()
-                except AuthenticationError as error:
-                    session.commit()
-                    st.error(str(error))
-                else:
-                    queue_token_write(st, result.token, result.expires_at)
-                    st.rerun()
-            return
-
-        if not oidc_available:
-            st.info(
-                "O administrador deve configurar o provedor Google ou ativar "
-                "explicitamente o modo demo em um ambiente não produtivo."
+        if not settings.supabase_ready:
+            st.error(
+                "Autenticação não configurada. Defina SUPABASE_URL, "
+                "SUPABASE_PUBLISHABLE_KEY e SUPABASE_DB_URL nos Secrets."
             )
             return
 
-        if oidc_logged_in:
-            st.write("A sessão atual não pôde ser autorizada.")
-            if st.button("Sair e tentar novamente", type="primary"):
-                st.logout()
-            return
-
-        st.write("Entre com uma conta Google autorizada pela equipe.")
-        if st.button("Entrar com Google", type="primary"):
-            st.login("google")
+        with st.form("login_form"):
+            username = st.text_input("Usuário", autocomplete="username")
+            password = st.text_input(
+                "Senha", type="password", autocomplete="current-password"
+            )
+            submitted = st.form_submit_button("Entrar", type="primary")
+        if submitted:
+            try:
+                sessao = entrar(
+                    _auth_gateway(settings.supabase_url),
+                    username=username,
+                    password=password,
+                    chave_publica=settings.supabase_publishable_key,
+                    dominio=settings.supabase_username_domain,
+                )
+            except (AuthError, ValueError) as error:
+                st.error(str(error))
+            else:
+                _guardar_sessao(sessao)
+                st.rerun()
 
 
 def account_view(session, actor: User, settings: Settings) -> None:
@@ -620,111 +456,50 @@ def account_view(session, actor: User, settings: Settings) -> None:
         if actor.last_login_at:
             st.write(f"**Último acesso:** {actor.last_login_at:%d/%m/%Y %H:%M}")
 
-        if settings.demo_auth_enabled:
-            st.caption("Sessão local de demonstração")
-            if st.button("Sair do modo demo", type="primary"):
-                revoke_session(session, request_token(st), audience="demo")
-                session.commit()
-                st.session_state.pop("demo_user_id", None)
-                st.session_state.pop("demo_login_user_selection", None)
-                forget_token(st)
-                st.rerun()
-            return
-
-        if settings.local_auth_enabled:
-            with st.expander("Alterar minha senha"):
-                with st.form("account_password_change"):
-                    current_password = st.text_input(
-                        "Senha atual", type="password", key="account_current_password"
-                    )
-                    new_password = st.text_input(
-                        "Nova senha", type="password", key="account_new_password"
-                    )
-                    confirmation = st.text_input(
-                        "Confirmar nova senha",
-                        type="password",
-                        key="account_password_confirmation",
-                    )
-                    password_submitted = st.form_submit_button("Alterar senha")
-                if password_submitted:
-                    if new_password != confirmation:
-                        st.error("As novas senhas não coincidem.")
+        sessao = st.session_state.get(SESSAO_KEY)
+        with st.expander("Alterar minha senha"):
+            with st.form("account_password_change"):
+                new_password = st.text_input(
+                    "Nova senha", type="password", key="account_new_password"
+                )
+                confirmation = st.text_input(
+                    "Confirmar nova senha",
+                    type="password",
+                    key="account_password_confirmation",
+                )
+                password_submitted = st.form_submit_button("Alterar senha")
+            if password_submitted:
+                if new_password != confirmation:
+                    st.error("As novas senhas não coincidem.")
+                elif sessao is None:
+                    st.error("Sessão expirada. Entre novamente.")
+                else:
+                    try:
+                        # A troca usa o token do próprio usuário: a aplicação
+                        # nunca precisa da chave privilegiada para isso.
+                        trocar_senha(
+                            _auth_gateway(settings.supabase_url),
+                            access_token=sessao.access_token,
+                            nova_senha=new_password,
+                        )
+                    except (AuthError, ValueError) as error:
+                        st.error(str(error))
                     else:
-                        try:
-                            change_password(
-                                session,
-                                user=actor,
-                                current_password=current_password,
-                                new_password=new_password,
-                            )
-                            session.commit()
-                        except Exception as error:
-                            session.rollback()
-                            show_operation_error("change_password", error)
-                        else:
-                            forget_token(st)
-                            st.session_state["login_notice"] = (
-                                "Senha alterada. Entre novamente."
-                            )
-                            st.rerun()
-            if st.button("Sair", type="primary"):
-                revoke_session(session, request_token(st))
-                session.commit()
-                forget_token(st)
-                st.rerun()
-            return
+                        _esquecer_sessao()
+                        st.session_state["login_notice"] = (
+                            "Senha alterada. Entre novamente."
+                        )
+                        st.rerun()
 
         if st.button("Sair", type="primary"):
-            st.logout()
-
-
-def forced_password_change_view(session, actor: User, settings: Settings) -> None:
-    st.header("Crie sua nova senha")
-    st.warning("A senha temporária deve ser substituída antes de continuar.")
-    with st.container(border=True, key="account_card"):
-        with st.form("forced_password_change"):
-            current_password = st.text_input(
-                "Senha temporária", type="password", autocomplete="current-password"
-            )
-            new_password = st.text_input(
-                "Nova senha", type="password", autocomplete="new-password"
-            )
-            confirmation = st.text_input(
-                "Confirme a nova senha", type="password", autocomplete="new-password"
-            )
-            submitted = st.form_submit_button("Alterar senha", type="primary")
-        if submitted:
-            if new_password != confirmation:
-                st.error("As novas senhas não coincidem.")
-                return
-            try:
-                change_password(
-                    session,
-                    user=actor,
-                    current_password=current_password,
-                    new_password=new_password,
+            if sessao is not None:
+                sair(
+                    _auth_gateway(settings.supabase_url),
+                    access_token=sessao.access_token,
+                    chave_publica=settings.supabase_publishable_key,
                 )
-                session.commit()
-            except Exception as error:
-                session.rollback()
-                show_operation_error("change_password", error)
-                return
-            forget_token(st)
-            st.session_state["login_notice"] = (
-                "Senha alterada. Entre novamente com a nova senha."
-            )
+            _esquecer_sessao()
             st.rerun()
-
-
-def _password_change_route(
-    session, actor: User | None, settings: Settings
-) -> PageRoute:
-    return PageRoute(
-        "Trocar senha",
-        "change-password",
-        ":material/password:",
-        lambda: forced_password_change_view(session, actor, settings),
-    )
 
 
 def _run_navigation(
@@ -803,8 +578,6 @@ def _public_routes(
                 session,
                 settings,
                 auth_error=auth_state.error,
-                oidc_logged_in=auth_state.oidc_logged_in,
-                oidc_available=auth_state.oidc_available,
             ),
         ),
     ]
@@ -906,8 +679,6 @@ def _render_login_state(
         session,
         settings,
         auth_error=auth_state.error,
-        oidc_logged_in=auth_state.oidc_logged_in,
-        oidc_available=auth_state.oidc_available,
         browser_storage_available=auth_state.browser_storage_available,
     )
 
@@ -920,8 +691,6 @@ def _root_view(
     actor = auth_state.actor
     if actor is None:
         _render_login_state(session, settings, auth_state)
-    elif settings.local_auth_enabled and actor.must_change_password:
-        forced_password_change_view(session, actor, settings)
     elif actor.role == Role.ADMIN:
         admin_dashboard(session, actor)
     else:
@@ -940,9 +709,6 @@ def _guarded_route(
         actor = auth_state.actor
         if actor is None:
             _render_login_state(session, settings, auth_state)
-            return
-        if settings.local_auth_enabled and actor.must_change_password:
-            forced_password_change_view(session, actor, settings)
             return
         if actor.role not in allowed_roles:
             st.error("Você não tem acesso a esta página.")
@@ -964,7 +730,6 @@ def _registered_routes(
     admin_routes = _admin_routes(session, actor, settings)
     student_routes = _student_routes(session, actor, settings)
     account_route = _account_route(session, actor, settings)
-    password_route = _password_change_route(session, actor, settings)
     root_route = PageRoute(
         "English Activities",
         "root",
@@ -1006,23 +771,6 @@ def _registered_routes(
             )
         )
 
-    def render_password_page() -> None:
-        current_actor = auth_state.actor
-        if current_actor is None:
-            _render_login_state(session, settings, auth_state)
-        elif settings.local_auth_enabled and current_actor.must_change_password:
-            forced_password_change_view(session, current_actor, settings)
-        else:
-            account_view(session, current_actor, settings)
-
-    registered.append(
-        PageRoute(
-            password_route.label,
-            password_route.url_path,
-            password_route.icon,
-            render_password_page,
-        )
-    )
     return registered
 
 
@@ -1036,15 +784,6 @@ def _visible_routes(
         return []
     if actor is None:
         return _public_routes(session, settings, auth_state)
-    if settings.local_auth_enabled and actor.must_change_password:
-        return [
-            PageRoute(
-                "Trocar senha",
-                "root",
-                ":material/password:",
-                lambda: forced_password_change_view(session, actor, settings),
-            )
-        ]
     routes = (
         _admin_routes(session, actor, settings)
         if actor.role == Role.ADMIN
@@ -1410,6 +1149,7 @@ def submission_form(session, actor: User, settings: Settings) -> None:
             )
             result = submit_evidence(
                 session,
+                gateway=_storage_gateway(settings),
                 actor=actor,
                 activity_id=activity.id,
                 uploads=payloads,
@@ -1561,41 +1301,37 @@ def _render_submission_files(
         file_count = len(submission.files) or len(submission.images)
         st.caption(f"📎 {file_count} arquivo(s) enviado(s)")
         return
-    if submission.files:
-        for index, stored_file in enumerate(submission.files, start=1):
-            icon = {"image": "🖼️", "pdf": "📕", "docx": "📘", "txt": "📄"}.get(
-                stored_file.file_kind, "📎"
-            )
-            label = stored_file.client_filename or f"Arquivo {index}"
-            try:
-                authorized_file, path = get_submission_file_for_user(
-                    session,
-                    actor=actor,
-                    file_id=stored_file.id,
-                    settings=settings,
-                )
-            except LookupError:
-                st.warning(f"{icon} {label} não está disponível no armazenamento.")
-                continue
-            if authorized_file.file_kind == "image":
-                st.image(str(path), caption=label, width="stretch")
-            st.download_button(
-                f"{icon} Abrir/baixar {label}",
-                data=path.read_bytes(),
-                file_name=label,
-                mime=authorized_file.mime_type,
-                key=f"download_{submission.id}_{stored_file.id}",
-            )
+    if not submission.files:
+        st.caption("Nenhum arquivo anexado.")
         return
-    # Compatibility with images created before the generic file migration.
-    for image in submission.images:
-        path = settings.upload_dir / image.storage_key
-        if path.is_file():
-            st.image(
-                str(path),
-                caption=image.client_filename or "Imagem enviada",
-                width="stretch",
+    for index, stored_file in enumerate(submission.files, start=1):
+        icon = {"image": "🖼️", "pdf": "📕", "docx": "📘", "txt": "📄"}.get(
+            stored_file.file_kind, "📎"
+        )
+        label = stored_file.filename or f"Arquivo {index}"
+        try:
+            authorized_file, dados = get_submission_file_for_user(
+                session,
+                actor=actor,
+                file_id=stored_file.id,
+                settings=settings,
+                gateway=_storage_gateway(settings),
             )
+        except (LookupError, StorageError):
+            st.warning(f"{icon} {label} não está disponível no armazenamento.")
+            continue
+        except AuthorizationError:
+            st.warning(f"{icon} {label}: sem permissão para abrir.")
+            continue
+        if authorized_file.file_kind == "image":
+            st.image(dados, caption=label, width="stretch")
+        st.download_button(
+            f"{icon} Abrir/baixar {label}",
+            data=dados,
+            file_name=label,
+            mime=authorized_file.content_type,
+            key=f"download_{submission.id}_{stored_file.id}",
+        )
 
 
 def _render_submission_timeline(submission: Submission) -> None:
@@ -1623,8 +1359,8 @@ def _render_duplicate_matches(
     st.warning(f"{len(matches)} possível(is) duplicidade(s) encontrada(s).")
     st.markdown("**Comparação de evidências**")
     for index, match in enumerate(matches, start=1):
-        current_image = session.get(SubmissionImage, match.image_id)
-        matched_image = session.get(SubmissionImage, match.matched_image_id)
+        current_image = session.get(SubmissionFile, match.file_id)
+        matched_image = session.get(SubmissionFile, match.matched_file_id)
         if current_image is None or matched_image is None:
             st.warning(f"Correspondência {index}: imagem não disponível.")
             continue
@@ -1913,6 +1649,7 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
                 _, temporary_password = create_user_account(
                     session,
                     actor=actor,
+                    contas=contas_de(settings),
                     username=new_username,
                     display_name=new_name,
                     role=new_role,
@@ -1951,6 +1688,7 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
             save_user(
                 session,
                 actor=actor,
+                contas=contas_de(settings),
                 username=username,
                 display_name=name,
                 role=role,
@@ -1977,6 +1715,7 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
                     temporary_password = reset_user_password(
                         session,
                         actor=actor,
+                        contas=contas_de(settings),
                         user_id=current.id,
                     )
                     session.commit()
@@ -2005,6 +1744,7 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
                     result = archive_or_delete_user(
                         session,
                         actor=actor,
+                        contas=contas_de(settings),
                         user_id=current.id,
                     )
                     session.commit()
@@ -2543,32 +2283,7 @@ def _browser_command_id() -> str | None:
 
 
 def _mount_persistent_browser_session(settings: Settings) -> BrowserSessionSnapshot:
-    if not (settings.demo_auth_enabled or settings.local_auth_enabled):
-        return BrowserSessionSnapshot(ready=True)
-
-    # Migrate pending state from the previous cookie-based release.
-    if st.session_state.pop("clear_local_auth_cookie", False):
-        forget_token(st)
-    legacy_expiry = st.session_state.pop("local_auth_expires_at", None)
-    had_state_token = bool(st.session_state.get("local_auth_token"))
-    existing_token = request_token(st)
-    if (
-        existing_token
-        and _browser_command_id() is None
-        and (legacy_expiry is not None or not had_state_token)
-    ):
-        if legacy_expiry:
-            try:
-                expires_at = datetime.fromisoformat(str(legacy_expiry))
-            except ValueError:
-                expires_at = datetime.now(timezone.utc) + timedelta(
-                    hours=settings.session_hours
-                )
-        else:
-            expires_at = datetime.now(timezone.utc) + timedelta(
-                hours=settings.session_hours
-            )
-        queue_token_write(st, existing_token, expires_at)
+    """Monta o componente que guarda o refresh token entre visitas."""
 
     snapshot = mount_browser_session(st)
     # A component can return its previous payload for one run while a new
@@ -2585,9 +2300,28 @@ def main() -> None:
     except Exception as error:
         st.error(f"Configuração inválida: {error}")
         st.stop()
-    with session_scope(factory) as session:
-        browser_session = _mount_persistent_browser_session(settings)
-        command_before_auth = _browser_command_id()
+
+    browser_session = _mount_persistent_browser_session(settings)
+    command_before_auth = _browser_command_id()
+
+    # A identidade é resolvida antes de abrir a sessão de banco: é ela que diz
+    # sob qual usuário as consultas vão rodar. Fazer o contrário obrigaria a
+    # abrir a transação como dono do banco — que ignora RLS — e só depois
+    # descobrir de quem é a vez.
+    sessao = None
+    if not (
+        st.session_state.get(SESSAO_KEY) is None and not browser_session.ready
+    ):
+        sessao = _sessao_viva(settings)
+
+    if sessao is not None:
+        escopo = session_scope(factory, user_id=sessao.user_id)
+    else:
+        # Sem sessão só a tela de login é renderizada, e ela não consulta o
+        # domínio. O papel de serviço aqui não expõe dado de ninguém.
+        escopo = session_scope(factory, servico=True)
+
+    with escopo as session:
         auth_state = authenticate(
             session,
             settings,

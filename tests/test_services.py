@@ -5,13 +5,14 @@ from conftest import FakeDuolingoOCR, make_png
 from sqlalchemy import func, select
 
 from english_leaderboard.authz import AuthorizationError
-from english_leaderboard.models import (
+from english_leaderboard.schema import (
     Activity,
     DuplicateKind,
     DuplicateMatch,
     Role,
     SubmissionStatus,
     User,
+    new_id,
 )
 from english_leaderboard.scoring import leaderboard_rows, student_total
 from english_leaderboard.services import (
@@ -35,12 +36,13 @@ def _portuguese_summary(seed: str) -> str:
     )
 
 
-def test_exact_duplicate_is_auto_rejected_and_never_scores(session, users, settings):
+def test_exact_duplicate_is_auto_rejected_and_never_scores(session, gateway, users, settings):
     student = users[Role.STUDENT]
     activity = _activity(session, "duolingo_beconfident")
     payload = make_png(10)
     first = submit_evidence(
         session,
+        gateway=gateway,
         actor=student,
         activity_id=activity.id,
         uploads=[UploadPayload("first.png", payload)],
@@ -50,6 +52,7 @@ def test_exact_duplicate_is_auto_rejected_and_never_scores(session, users, setti
     session.commit()
     second = submit_evidence(
         session,
+        gateway=gateway,
         actor=student,
         activity_id=activity.id,
         uploads=[UploadPayload("again.png", payload)],
@@ -62,13 +65,14 @@ def test_exact_duplicate_is_auto_rejected_and_never_scores(session, users, setti
     assert student_total(session, student.id) == 0
 
 
-def test_phash_only_match_goes_to_review(session, users, settings):
+def test_phash_only_match_goes_to_review(session, gateway, users, settings):
     student = users[Role.STUDENT]
     activity = _activity(session, "duolingo_beconfident")
     first_bytes = make_png(11, metadata="one")
     second_bytes = make_png(11, metadata="two")
     submit_evidence(
         session,
+        gateway=gateway,
         actor=student,
         activity_id=activity.id,
         uploads=[UploadPayload("one.png", first_bytes)],
@@ -78,6 +82,7 @@ def test_phash_only_match_goes_to_review(session, users, settings):
     session.commit()
     result = submit_evidence(
         session,
+        gateway=gateway,
         actor=student,
         activity_id=activity.id,
         uploads=[UploadPayload("two.png", second_bytes)],
@@ -104,15 +109,16 @@ def test_phash_only_match_goes_to_review(session, users, settings):
         )
 
 
-def test_exact_duplicate_is_compared_across_students(session, users, settings):
+def test_exact_duplicate_is_compared_across_students(session, gateway, users, settings):
     first_student = users[Role.STUDENT]
-    other = User(username="other", display_name="Other", role=Role.STUDENT)
+    other = User(id=new_id(), username="other", display_name="Other", role=Role.STUDENT)
     session.add(other)
     session.commit()
     activity = _activity(session, "duolingo_beconfident")
     payload = make_png(15)
     submit_evidence(
         session,
+        gateway=gateway,
         actor=first_student,
         activity_id=activity.id,
         uploads=[UploadPayload("one.png", payload)],
@@ -122,6 +128,7 @@ def test_exact_duplicate_is_compared_across_students(session, users, settings):
     session.commit()
     result = submit_evidence(
         session,
+        gateway=gateway,
         actor=other,
         activity_id=activity.id,
         uploads=[UploadPayload("copy.png", payload)],
@@ -139,6 +146,7 @@ def test_exact_duplicate_is_compared_across_students(session, users, settings):
 
 
 def test_manual_approval_updates_leaderboard_and_rejection_does_not(
+    gateway,
     session, users, settings
 ):
     student = users[Role.STUDENT]
@@ -146,6 +154,7 @@ def test_manual_approval_updates_leaderboard_and_rejection_does_not(
     activity = _activity(session, "impact_summary")
     pending = submit_evidence(
         session,
+        gateway=gateway,
         actor=student,
         activity_id=activity.id,
         uploads=[UploadPayload("proof.png", make_png(21))],
@@ -167,6 +176,7 @@ def test_manual_approval_updates_leaderboard_and_rejection_does_not(
 
     second = submit_evidence(
         session,
+        gateway=gateway,
         actor=student,
         activity_id=activity.id,
         uploads=[UploadPayload("proof-2.png", make_png(44))],
@@ -185,7 +195,7 @@ def test_manual_approval_updates_leaderboard_and_rejection_does_not(
     assert student_total(session, student.id) == 10
 
 
-def test_admin_queries_are_guarded_in_service_layer(session, users):
+def test_admin_queries_are_guarded_in_service_layer(session, gateway, users):
     with pytest.raises(AuthorizationError):
         list_review_queue(session, actor=users[Role.STUDENT])
     with pytest.raises(AuthorizationError):

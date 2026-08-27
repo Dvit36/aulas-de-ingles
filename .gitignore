@@ -37,3 +37,6 @@ inputs/
 .codex-audit-*/
 frontend-atual/
 frontend-atual.zip
+
+# Relatórios gerados pelas ferramentas de migração
+migration-report.json
