@@ -103,15 +103,25 @@ def test_google_sheets_enabled_requires_spreadsheet_id(monkeypatch):
         Settings.from_env(env_file=None)
 
 
-def test_github_backup_is_refused_by_the_official_architecture():
-    settings = Settings(
-        github_backup_enabled=True,
-        github_backup_repo="equipe/backups",
-        github_backup_token="token-legado",
-    )
+def test_github_backup_is_refused_by_the_official_architecture(monkeypatch):
+    """Os campos saíram de Settings; a recusa continua, na leitura do ambiente.
+
+    Um `.env` antigo restaurado de cópia traria a flag de volta. Ignorá-la em
+    silêncio faria alguém acreditar que existe um backup.
+    """
+
+    monkeypatch.setenv("GITHUB_BACKUP_ENABLED", "true")
 
     with pytest.raises(RuntimeError, match="Supabase Storage"):
-        settings.validate()
+        Settings.from_env(env_file=None)
+
+
+def test_github_backup_absent_or_false_does_not_block_startup(monkeypatch):
+    monkeypatch.delenv("GITHUB_BACKUP_ENABLED", raising=False)
+    Settings.from_env(env_file=None)
+
+    monkeypatch.setenv("GITHUB_BACKUP_ENABLED", "false")
+    Settings.from_env(env_file=None)
 
 
 def test_google_sheets_settings_are_loaded_and_validated(monkeypatch):

@@ -64,19 +64,10 @@ LIDAS, ALIASES_LEGADOS = _variaveis_de_config()
 # Documentá-las convidaria a usá-las. O motivo fica registrado aqui porque é a
 # única coisa que impede alguém de "consertar" a ausência mais tarde.
 NAO_DOCUMENTADAS = {
-    "LOGIN_MAX_ATTEMPTS": (
-        "Resto do bloqueio por tentativas da autenticação local. Ainda é "
-        "validada no startup, mas nenhum código a consome."
-    ),
-    "LOGIN_LOCK_MINUTES": "Idem LOGIN_MAX_ATTEMPTS.",
     "GITHUB_BACKUP_ENABLED": (
-        "Descontinuada: o startup recusa o valor true. Documentar seria "
-        "sugerir que ainda existe backup no GitHub."
+        "Descontinuada e sem campo em Settings. from_env() ainda recusa o "
+        "valor true; documentar a variável sugeriria que há backup no GitHub."
     ),
-    "GITHUB_BACKUP_REPO": "Idem GITHUB_BACKUP_ENABLED.",
-    "GITHUB_BACKUP_TOKEN": "Idem GITHUB_BACKUP_ENABLED.",
-    "GITHUB_BACKUP_PATH": "Idem GITHUB_BACKUP_ENABLED.",
-    "GITHUB_BACKUP_BRANCH": "Idem GITHUB_BACKUP_ENABLED.",
 }
 
 # Chaves que aparecem nos exemplos e que `Settings.from_env()` nunca lê porque

@@ -26,9 +26,9 @@ autenticação ou uploads.
 Na implementação legada atual, preservada enquanto a migração é feita:
 
 - página pública **Entrar** em uma barra de navegação superior, sem menu lateral;
-- autenticação local fechada por **nome de usuário** e senha Argon2, com senha
-  temporária, troca obrigatória, sessões persistentes e revogáveis e bloqueio
-  por tentativas;
+- autenticação por **nome de usuário** no Supabase Auth, com senha temporária
+  entregue pela administração e sessão persistente pelo refresh token; o
+  controle de tentativas de login é o do próprio Supabase Auth;
 - depois do login, rotas permitidas pelo papel e a página **Minha conta** com identidade e logout;
 - papéis `student` e `admin`, validados também na camada de serviço;
 - catálogo configurável com pontuação histórica preservada;

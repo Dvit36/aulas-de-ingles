@@ -40,6 +40,24 @@ def _env_with_legacy(name: str, legacy_name: str, default: str = "") -> str:
     return default
 
 
+def _recusar_backup_no_github() -> None:
+    """Barra GITHUB_BACKUP_ENABLED=true, que já não configura nada.
+
+    Os campos correspondentes saíram de ``Settings``: o backup no GitHub foi
+    removido do código. A recusa fica, e fica aqui, na fronteira que lê o
+    ambiente — um ``.env`` antigo restaurado de cópia traria a flag de volta, e
+    ignorá-la em silêncio faria alguém acreditar que existe um backup.
+    """
+
+    if _as_bool(os.getenv("GITHUB_BACKUP_ENABLED")):
+        raise RuntimeError(
+            "GITHUB_BACKUP_ENABLED foi descontinuado: dados e arquivos de "
+            "alunos não podem ser armazenados no GitHub. Use Supabase "
+            "PostgreSQL para dados/metadados e Supabase Storage para binários. "
+            "Remova a variável do ambiente."
+        )
+
+
 def _csv_set(value: str | None, *, lower: bool = False) -> frozenset[str]:
     items = {item.strip() for item in (value or "").split(",") if item.strip()}
     return frozenset(item.lower() for item in items) if lower else frozenset(items)
@@ -52,8 +70,6 @@ class Settings:
     bootstrap_admin_name: str = ""
     bootstrap_admin_username: str = ""
     bootstrap_admin_password: str = ""
-    login_max_attempts: int = 5
-    login_lock_minutes: int = 15
     database_url: str = "sqlite:///./data/app.db"
     upload_dir: Path = Path("./data/uploads")
     max_upload_bytes: int = 10 * 1024 * 1024
@@ -82,11 +98,6 @@ class Settings:
     storage_max_total_bytes: int = 500 * 1024 * 1024
     storage_max_monthly_egress_bytes: int = 2 * 1024 * 1024 * 1024
     google_sheets_auto_sync: bool = False
-    github_backup_enabled: bool = False
-    github_backup_repo: str = ""
-    github_backup_token: str = ""
-    github_backup_path: str = "backups/english-leaderboard.tar.gz"
-    github_backup_branch: str = "main"
     google_sheets_spreadsheet_id: str = ""
     google_sheets_leaderboard_tab: str = "Leaderboard"
     google_sheets_ledger_tab: str = "Ledger"
@@ -150,6 +161,7 @@ class Settings:
     def from_env(cls, *, env_file: str | Path | None = ".env") -> Settings:
         if load_dotenv is not None and env_file:
             load_dotenv(dotenv_path=env_file, override=False)
+        _recusar_backup_no_github()
         settings = cls(
             app_env=os.getenv("APP_ENV", "development").strip().lower(),
             seed_fake_data=_as_bool(os.getenv("SEED_FAKE_DATA"), default=True),
@@ -160,8 +172,6 @@ class Settings:
             bootstrap_admin_password=os.getenv(
                 "BOOTSTRAP_ADMIN_PASSWORD", ""
             ),
-            login_max_attempts=int(os.getenv("LOGIN_MAX_ATTEMPTS", "5")),
-            login_lock_minutes=int(os.getenv("LOGIN_LOCK_MINUTES", "15")),
             database_url=os.getenv("DATABASE_URL", "sqlite:///./data/app.db").strip(),
             upload_dir=Path(os.getenv("UPLOAD_DIR", "./data/uploads")),
             max_upload_bytes=int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))),
@@ -217,13 +227,6 @@ class Settings:
             google_sheets_auto_sync=_as_bool(
                 os.getenv("GOOGLE_SHEETS_AUTO_SYNC")
             ),
-            github_backup_enabled=_as_bool(os.getenv("GITHUB_BACKUP_ENABLED")),
-            github_backup_repo=os.getenv("GITHUB_BACKUP_REPO", "").strip(),
-            github_backup_token=os.getenv("GITHUB_BACKUP_TOKEN", "").strip(),
-            github_backup_path=os.getenv(
-                "GITHUB_BACKUP_PATH", "backups/english-leaderboard.tar.gz"
-            ).strip(),
-            github_backup_branch=os.getenv("GITHUB_BACKUP_BRANCH", "main").strip(),
             google_sheets_spreadsheet_id=os.getenv(
                 "GOOGLE_SHEETS_SPREADSHEET_ID", ""
             ).strip(),
@@ -274,8 +277,6 @@ class Settings:
             )
         if self.max_pdf_render_pixels <= 0:
             raise ValueError("MAX_PDF_RENDER_PIXELS deve ser positivo")
-        if self.login_max_attempts < 2 or self.login_lock_minutes <= 0:
-            raise ValueError("Limites de login inválidos")
         bootstrap_values = (
             self.bootstrap_admin_name,
             self.bootstrap_admin_username,
@@ -306,12 +307,6 @@ class Settings:
             raise ValueError("AUTO_APPROVE_CONFIDENCE deve estar entre 0 e 1")
         if self.phash_distance_threshold < 0:
             raise ValueError("PHASH_DISTANCE_THRESHOLD não pode ser negativo")
-        if self.github_backup_enabled:
-            raise RuntimeError(
-                "GITHUB_BACKUP_ENABLED foi descontinuado: dados e arquivos de "
-                "alunos não podem ser armazenados no GitHub. Use Supabase "
-                "PostgreSQL para dados/metadados e Supabase Storage para binários."
-            )
         if self.supabase_url and not self.supabase_url.startswith("https://"):
             raise ValueError("SUPABASE_URL deve começar com https://")
         if self.supabase_publishable_key and self.supabase_publishable_key.startswith(
