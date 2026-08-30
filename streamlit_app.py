@@ -41,6 +41,7 @@ from english_leaderboard.storage import (
     SupabaseStorageGateway,
     criar_cliente,
 )
+from english_leaderboard.storage_budget import StorageBudgetExceeded
 from english_leaderboard.supabase_auth import (
     AuthError,
     HttpAuthGateway,
@@ -143,6 +144,34 @@ class AuthenticationState:
 
 
 def show_operation_error(context: str, error: Exception) -> None:
+    """Mostra o erro de um jeito que diga ao usuário o que fazer a seguir.
+
+    A ordem importa: ``StorageBudgetExceeded`` e ``StorageError`` são
+    ``RuntimeError`` e cairiam no genérico "consulte o log", que é a resposta
+    errada para as duas. Quem estourou a cota precisa saber que o espaço
+    acabou — é uma informação sobre o sistema, não um defeito a investigar —, e
+    quem topou com o Storage fora do ar precisa saber que o problema não é o
+    que ele digitou.
+    """
+
+    if isinstance(error, StorageBudgetExceeded):
+        # A mensagem já traz os números do período; repeti-los aqui só
+        # afastaria o texto da fonte.
+        LOGGER.warning("%s: orçamento de storage esgotado (%s)", context, error)
+        st.error(
+            f"{error} Fale com a administração: o limite é do mês inteiro e "
+            "não se recupera sozinho antes da virada."
+        )
+        return
+    if isinstance(error, StorageError):
+        reference = uuid4().hex[:10]
+        LOGGER.exception("%s [ref=%s]", context, reference)
+        st.error(
+            "O armazenamento de arquivos não respondeu. Os dados já salvos "
+            "estão a salvo; tente de novo em alguns instantes. Referência "
+            f"{reference}."
+        )
+        return
     if isinstance(error, (ValueError, LookupError, AuthorizationError)):
         st.error(str(error))
         return
