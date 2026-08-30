@@ -55,7 +55,6 @@ from .storage import URL_EXPIRA_SEGUNDOS, StorageGateway
 from .storage_service import (
     ArquivoNaoAutorizado,
     ArquivoRegistrado,
-    baixar_arquivo,
     salvar_arquivo,
     url_temporaria,
 )
@@ -616,42 +615,6 @@ def get_submission_for_user(
         raise LookupError("Submissão não encontrada")
     require_submission_access(actor, submission)
     return submission
-
-
-def get_submission_file_for_user(
-    session: Session,
-    *,
-    actor: User,
-    file_id: str,
-    settings: Settings,
-    gateway: StorageGateway,
-) -> tuple[SubmissionFile, bytes]:
-    """Entrega os bytes do arquivo depois de conferir quem pode vê-lo.
-
-    A chave nunca vem da interface: o identificador é resolvido em um registro,
-    a propriedade é conferida contra a sessão e só então o objeto é buscado.
-    O consumo de egress é contabilizado, porque é o que a conta gratuita cobra.
-    """
-
-    stored_file = session.get(SubmissionFile, file_id)
-    if stored_file is None:
-        raise LookupError("Arquivo não encontrado")
-    submission = session.get(Submission, stored_file.submission_id)
-    if submission is None:
-        raise LookupError("Submissão não encontrada")
-    require_submission_access(actor, submission)
-    try:
-        dados = baixar_arquivo(
-            session.connection(),
-            gateway,
-            file_id=stored_file.id,
-            student_id=actor.id,
-            is_admin=actor.role == Role.ADMIN,
-            limites=limites_de(settings),
-        )
-    except ArquivoNaoAutorizado as erro:
-        raise AuthorizationError(str(erro)) from erro
-    return stored_file, dados
 
 
 def get_submission_file_url_for_user(
@@ -1639,7 +1602,6 @@ __all__ = [
     "create_points_adjustment",
     "create_user_account",
     "get_goal_configuration",
-    "get_submission_file_for_user",
     "get_submission_file_url_for_user",
     "get_submission_for_user",
     "list_resources",

@@ -8,7 +8,6 @@ from docx import Document
 from pypdf import PdfWriter
 from sqlalchemy import select
 
-from english_leaderboard.authz import AuthorizationError
 from english_leaderboard.document_processing import (
     DocumentValidationError,
     process_document_bytes,
@@ -19,12 +18,9 @@ from english_leaderboard.schema import (
     Submission,
     SubmissionFile,
     SubmissionStatus,
-    User,
-    new_id,
 )
 from english_leaderboard.services import (
     UploadPayload,
-    get_submission_file_for_user,
     submit_evidence,
 )
 
@@ -102,9 +98,17 @@ def test_docx_expansion_and_pdf_render_budgets_are_enforced(settings) -> None:
         )
 
 
-def test_txt_submission_skips_ocr_and_download_is_owner_protected(
+def test_txt_submission_skips_ocr(
     session, users, settings, gateway, monkeypatch
 ) -> None:
+    """TXT já vem com texto: carregar o motor de OCR seria desperdício puro.
+
+    A metade deste teste que conferia a proteção do download saiu junto com
+    ``get_submission_file_for_user``. A mesma garantia, para o caminho que a
+    interface usa hoje, está em
+    ``test_submission_files_view.py::test_a_autorizacao_vem_antes_da_assinatura``.
+    """
+
     activity = session.scalar(
         select(Activity).where(Activity.code == "impact_summary")
     )
@@ -134,20 +138,6 @@ def test_txt_submission_skips_ocr_and_download_is_owner_protected(
         select(SubmissionFile).where(SubmissionFile.submission_id == result.submission_id)
     )
     assert stored_file.file_kind == "txt"
-    other = User(id=new_id(), username="other-student",
-        display_name="Other",
-        role=Role.STUDENT,
-    )
-    session.add(other)
-    session.commit()
-    with pytest.raises(AuthorizationError):
-        get_submission_file_for_user(
-            session,
-            actor=other,
-            file_id=stored_file.id,
-            settings=settings,
-            gateway=gateway,
-        )
 
 
 def test_submission_enforces_file_count_and_aggregate_budget(
