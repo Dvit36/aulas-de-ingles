@@ -56,7 +56,6 @@ from english_leaderboard.schema import (
     Activity,
     AuditLog,
     DuplicateMatch,
-    EmailAttempt,
     Resource,
     Role,
     Submission,
@@ -66,12 +65,6 @@ from english_leaderboard.schema import (
     utcnow,
 )
 from english_leaderboard.ocr import create_ocr_engine
-from english_leaderboard.reminders import (
-    get_reminder_configuration,
-    render_reminder,
-    save_reminder_configuration,
-    send_test_reminder,
-)
 from english_leaderboard.scoring import (
     LESSON_ACTIVITY_CODE,
     activities_closing_gap,
@@ -2133,134 +2126,6 @@ def catalog_view(session, actor: User, settings: Settings | None = None) -> None
         except Exception as error:
             session.rollback()
             show_operation_error("save_activity", error)
-
-
-def reminders_view(session, actor: User, settings: Settings) -> None:
-    st.header("Lembretes por e-mail")
-    configuration = get_reminder_configuration(session)
-    mode_label = (
-        "Dry-run: nenhum e-mail será enviado"
-        if settings.reminder_dry_run
-        else "Envio SMTP real habilitado"
-    )
-    st.info(mode_label)
-    weekdays = [
-        "Segunda-feira",
-        "Terça-feira",
-        "Quarta-feira",
-        "Quinta-feira",
-        "Sexta-feira",
-        "Sábado",
-        "Domingo",
-    ]
-    with st.form("reminder_configuration_form"):
-        enabled = st.checkbox("Ativar lembretes", value=configuration.enabled)
-        frequency = st.selectbox(
-            "Frequência",
-            ["daily", "weekly"],
-            index=0 if configuration.frequency == "daily" else 1,
-            format_func=lambda value: "Diária" if value == "daily" else "Semanal",
-        )
-        weekday = st.selectbox(
-            "Dia da semana",
-            list(range(7)),
-            index=configuration.weekday,
-            format_func=lambda value: weekdays[value],
-            disabled=frequency == "daily",
-        )
-        send_hour = st.number_input(
-            "Horário (hora cheia)",
-            min_value=0,
-            max_value=23,
-            value=configuration.send_hour,
-        )
-        timezone_name = st.text_input("Fuso horário", value=configuration.timezone_name)
-        inactive_days = st.number_input(
-            "Dias sem atividade aprovada",
-            min_value=1,
-            max_value=365,
-            value=configuration.inactive_days,
-        )
-        audiences = {
-            "inactive_students": "Todos os alunos inativos no período",
-            "never_approved": "Alunos que nunca tiveram atividade aprovada",
-            "previously_active": "Alunos que já participaram e ficaram inativos",
-        }
-        audience = st.selectbox(
-            "Público-alvo",
-            list(audiences),
-            index=list(audiences).index(configuration.audience)
-            if configuration.audience in audiences
-            else 0,
-            format_func=audiences.get,
-        )
-        subject = st.text_input("Assunto", value=configuration.subject_template)
-        body = st.text_area(
-            "Modelo da mensagem",
-            value=configuration.body_template,
-            height=180,
-            help="Variáveis disponíveis: {name}, {username} e {email}.",
-        )
-        submitted = st.form_submit_button("Salvar configuração", type="primary")
-    if submitted:
-        try:
-            save_reminder_configuration(
-                session,
-                actor=actor,
-                enabled=enabled,
-                frequency=frequency,
-                weekday=int(weekday),
-                send_hour=int(send_hour),
-                timezone_name=timezone_name,
-                inactive_days=int(inactive_days),
-                subject_template=subject,
-                body_template=body,
-                audience=audience,
-            )
-            session.commit()
-        except Exception as error:
-            session.rollback()
-            show_operation_error("save_reminders", error)
-        else:
-            st.success("Configuração de lembretes salva.")
-
-    with st.expander("Pré-visualização"):
-        preview_subject, preview_body = render_reminder(configuration, actor)
-        st.write(f"**Assunto:** {preview_subject}")
-        st.text(preview_body)
-        if st.button("Gerar envio de teste para mim"):
-            try:
-                attempt = send_test_reminder(session, actor=actor, settings=settings)
-                session.commit()
-            except Exception as error:
-                session.rollback()
-                show_operation_error("test_reminder", error)
-            else:
-                st.success(f"Teste registrado com estado: {attempt.status.value}.")
-
-    attempts = list(
-        session.scalars(
-            select(EmailAttempt).order_by(EmailAttempt.created_at.desc()).limit(50)
-        ).all()
-    )
-    st.subheader("Últimas tentativas")
-    if not attempts:
-        st.info("Nenhuma tentativa registrada.")
-    else:
-        st.dataframe(
-            [
-                {
-                    "Data": attempt.created_at,
-                    "Destinatário": attempt.recipient_email,
-                    "Estado": attempt.status.value,
-                    "Dry-run": attempt.dry_run,
-                    "Tentativas": attempt.attempt_count,
-                }
-                for attempt in attempts
-            ],
-            width="stretch",
-            hide_index=True,
-        )
 
 
 def ledger_view(session, actor: User, settings: Settings | None = None) -> None:

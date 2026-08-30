@@ -108,8 +108,6 @@ class Settings:
     smtp_from_email: str = ""
     smtp_from_name: str = "English Activities"
     smtp_use_tls: bool = True
-    reminder_dry_run: bool = True
-    reminder_scheduler_interval_seconds: int = 300
 
     @property
     def supabase_ready(self) -> bool:
@@ -245,12 +243,6 @@ class Settings:
                 "SMTP_FROM_NAME", "English Activities"
             ).strip(),
             smtp_use_tls=_as_bool(os.getenv("SMTP_USE_TLS"), default=True),
-            reminder_dry_run=_as_bool(
-                os.getenv("REMINDER_DRY_RUN"), default=True
-            ),
-            reminder_scheduler_interval_seconds=int(
-                os.getenv("REMINDER_SCHEDULER_INTERVAL_SECONDS", "300")
-            ),
         )
         settings.validate()
         return settings

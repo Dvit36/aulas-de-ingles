@@ -126,10 +126,18 @@ SECRETS = _chaves_do_secrets(SECRETS_EXAMPLE)
 
 
 def test_a_extracao_encontrou_a_configuracao() -> None:
-    """Guarda contra o próprio teste passar por não ter lido nada."""
+    """Guarda contra o próprio teste passar por não ter lido nada.
 
-    assert len(LIDAS) > 40, "a leitura da AST de config.py não encontrou as variáveis"
-    assert "SUPABASE_DB_URL" in LIDAS
+    O piso é frouxo de propósito: ele existe para pegar uma extração vazia ou
+    quebrada, não para congelar a quantidade de variáveis. Quem confere de
+    verdade são os nomes logo abaixo, que não mudam quando a configuração
+    encolhe — e ela vem encolhendo: saíram as de demo, de bloqueio de login,
+    de backup no GitHub e de lembretes.
+    """
+
+    assert len(LIDAS) > 20, "a leitura da AST de config.py não encontrou as variáveis"
+    for obrigatoria in ("SUPABASE_URL", "SUPABASE_DB_URL", "APP_ENV", "STORAGE_BUCKET"):
+        assert obrigatoria in LIDAS
     assert ENV and SECRETS
 
 
