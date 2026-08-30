@@ -200,7 +200,7 @@ def test_os_exemplos_nao_usam_os_nomes_antigos() -> None:
 def test_padroes_do_setup_secrets_sao_lidos_pela_aplicacao() -> None:
     """O script gera o secrets.toml local; um nome morto ali não faz nada."""
 
-    import tools.setup_secrets as setup_secrets
+    from tools import setup_secrets
 
     desconhecidas = set(setup_secrets.PADROES) - LIDAS
     assert not desconhecidas, (

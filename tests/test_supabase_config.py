@@ -39,6 +39,7 @@ def producao(**extras) -> Settings:
         "app_env": "production",
         "supabase_url": "https://ref.supabase.co",
         "supabase_publishable_key": "sb_publishable_x",
+        "supabase_secret_key": "sb_secret_x",
         "supabase_db_url": POOLER,
     }
     return Settings(**{**base, **extras})
@@ -111,9 +112,21 @@ def test_production_requires_the_whole_supabase_configuration() -> None:
     completa só adiaria a falha para a primeira tela do aluno.
     """
 
-    for ausente in ("supabase_url", "supabase_publishable_key", "supabase_db_url"):
-        with pytest.raises(RuntimeError, match="obrigatório configurar"):
-            producao(**{ausente: ""}).validate()
+    faltantes = {
+        "supabase_url": "SUPABASE_URL",
+        "supabase_publishable_key": "SUPABASE_PUBLISHABLE_KEY",
+        "supabase_secret_key": "SUPABASE_SECRET_KEY",
+        "supabase_db_url": "SUPABASE_DB_URL",
+    }
+    for campo, variavel in faltantes.items():
+        with pytest.raises(RuntimeError, match=variavel):
+            producao(**{campo: ""}).validate()
+
+    # O erro nomeia todas as que faltam de uma vez, e não só a primeira: quem
+    # está colando Secrets no painel do Cloud precisa da lista inteira.
+    with pytest.raises(RuntimeError) as erro:
+        Settings(app_env="production").validate()
+    assert all(variavel in str(erro.value) for variavel in faltantes.values())
 
 
 def test_non_postgres_database_url_is_refused() -> None:

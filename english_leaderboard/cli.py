@@ -10,6 +10,7 @@ from typing import Sequence
 from sqlalchemy import text
 
 from .catalog import seed_database
+from .contas import contas_disponiveis
 from .config import Settings
 from .database import (
     create_database_engine,
@@ -57,7 +58,7 @@ def _sync_google_sheets(settings: Settings, factory: object):
 def command_init(_: argparse.Namespace) -> int:
     settings, factory = _runtime()
     with session_scope(factory, servico=True) as session:
-        seed_database(session, settings)
+        seed_database(session, settings, contas_disponiveis(settings))
     print("Banco inicializado e seed aplicado.")
     return 0
 
@@ -73,7 +74,7 @@ def command_import(args: argparse.Namespace) -> int:
         f"{source.stem}-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.json"
     )
     with session_scope(factory, servico=True) as session:
-        seed_database(session, settings)
+        seed_database(session, settings, contas_disponiveis(settings))
         report = import_legacy_workbook(
             session,
             source,
@@ -164,7 +165,7 @@ def command_run_reminders(args: argparse.Namespace) -> int:
 
     settings, factory = _runtime()
     with session_scope(factory, servico=True) as session:
-        seed_database(session, settings)
+        seed_database(session, settings, contas_disponiveis(settings))
         attempts = run_due_reminders(session, settings, force=bool(args.force))
         payload = [
             {

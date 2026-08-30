@@ -114,6 +114,17 @@ class Settings:
         )
 
     @property
+    def contas_administraveis(self) -> bool:
+        """Há credencial privilegiada para criar conta e redefinir senha.
+
+        Existe como propriedade para quem só precisa *saber* se a operação é
+        possível não ter de tocar na chave. ``admin_secret_key()`` continua
+        sendo o único caminho até o valor.
+        """
+
+        return bool(self.supabase_ready and self.supabase_secret_key)
+
+    @property
     def storage_ready(self) -> bool:
         """O Storage usa as mesmas credenciais do Supabase, mais o bucket."""
 
@@ -342,12 +353,29 @@ class Settings:
                     "Em produção use o Session pooler do Supabase: a conexão "
                     "direta é IPv6 e o Streamlit Cloud não a alcança"
                 )
-        if self.is_production and not self.supabase_ready:
-            raise RuntimeError(
-                "Em produção é obrigatório configurar SUPABASE_URL, "
-                "SUPABASE_PUBLISHABLE_KEY e SUPABASE_DB_URL: a autenticação e "
-                "os dados vivem no Supabase."
-            )
+        if self.is_production:
+            # Nomear o que falta, e não só dizer que falta algo. Sem isto o
+            # deploy quebrava tarde, dentro de runtime(), e a interface
+            # mostrava apenas "Configuração inválida".
+            faltando = [
+                nome
+                for nome, valor in (
+                    ("SUPABASE_URL", self.supabase_url),
+                    ("SUPABASE_PUBLISHABLE_KEY", self.supabase_publishable_key),
+                    ("SUPABASE_SECRET_KEY", self.supabase_secret_key),
+                    ("SUPABASE_DB_URL", self.supabase_db_url),
+                )
+                if not valor
+            ]
+            if faltando:
+                raise RuntimeError(
+                    "Configuração de produção incompleta. Defina nos Secrets: "
+                    f"{', '.join(faltando)}. A identidade, os dados e os "
+                    "arquivos vivem no Supabase. SUPABASE_SECRET_KEY é a chave "
+                    "privilegiada que cria a conta do primeiro administrador e "
+                    "redefine senha: sem ela o startup falharia adiante, ao "
+                    "semear o banco, em vez de aqui."
+                )
         if "@" in self.supabase_username_domain:
             raise ValueError("SUPABASE_USERNAME_DOMAIN deve ser só o domínio")
         for rotulo, valor in (

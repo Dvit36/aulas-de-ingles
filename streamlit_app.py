@@ -35,7 +35,7 @@ from english_leaderboard.exporter import (
     ledger_to_xlsx,
 )
 from english_leaderboard.google_sheets import sync_leaderboard_and_ledger
-from english_leaderboard.contas import contas_de
+from english_leaderboard.contas import contas_de, contas_disponiveis
 from english_leaderboard.storage import (
     StorageError,
     SupabaseStorageGateway,
@@ -234,11 +234,7 @@ def runtime(schema_fingerprint: str):
     with session_scope(factory, servico=True) as session:
         # Semear catálogo e administrador inicial é manutenção, não operação
         # de aluno: roda como dono do banco, de forma explícita.
-        seed_database(
-            session,
-            settings,
-            contas_de(settings) if settings.supabase_ready else None,
-        )
+        seed_database(session, settings, contas_disponiveis(settings))
     return settings, factory
 
 

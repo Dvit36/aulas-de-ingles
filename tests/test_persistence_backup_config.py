@@ -230,6 +230,7 @@ def test_legacy_email_variables_still_configure_the_new_username_settings(
     # nome das variáveis antigas continuar valendo.
     monkeypatch.setenv("SUPABASE_URL", "https://ref.supabase.co")
     monkeypatch.setenv("SUPABASE_PUBLISHABLE_KEY", "sb_publishable_x")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "sb_secret_x")
     monkeypatch.setenv(
         "SUPABASE_DB_URL",
         "postgresql+psycopg://postgres.ref:senha"

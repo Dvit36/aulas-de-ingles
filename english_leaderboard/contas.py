@@ -93,6 +93,97 @@ def contas_de(settings: Settings) -> ContasSupabase:
     )
 
 
+def contas_disponiveis(settings: Settings) -> ContasSupabase | None:
+    """A fachada do Auth, quando há credencial privilegiada para usá-la.
+
+    Devolver ``None`` em vez de levantar deixa a decisão com quem for criar o
+    perfil: em SQLite o perfil solto é legítimo, e em PostgreSQL a recusa vem
+    de ``_identidade_para_perfil`` com a mensagem que nomeia a variável que
+    falta. Chamar ``contas_de`` direto levantaria um ``ValueError`` genérico
+    sobre a chave secreta mesmo onde nenhuma conta precisaria ser criada.
+    """
+
+    if not settings.contas_administraveis:
+        return None
+    return contas_de(settings)
+
+
+class ContaObrigatoria(RuntimeError):
+    """Perfil sem conta no Auth em um banco que exige ``auth.users``."""
+
+
+def exige_conta_no_auth(session) -> bool:
+    """O banco desta sessão amarra ``profiles.id`` a ``auth.users(id)``?
+
+    No PostgreSQL do Supabase, sim: é a chave estrangeira declarada em
+    ``0001_schema_inicial.sql``. No SQLite de desenvolvimento e da suíte não
+    existe schema ``auth`` nenhum, e o perfil solto é legítimo — é o que
+    permite exercitar catálogo e pontuação sem serviço de autenticação.
+
+    Essa diferença é exatamente por que a suíte não pegava o problema: em
+    SQLite o insert passa, em PostgreSQL ele viola a chave estrangeira.
+    """
+
+    return session.get_bind().dialect.name == "postgresql"
+
+
+def conta_existe_no_auth(session, user_id: str) -> bool:
+    """Confirma no banco que o UUID veio mesmo do Supabase Auth.
+
+    Chamado antes de gravar o perfil. Um identificador que a Admin API não
+    reconheceu — resposta inesperada, projeto trocado no meio do caminho —
+    vira uma mensagem clara aqui, em vez de uma violação de chave estrangeira
+    solta no meio do startup.
+    """
+
+    from sqlalchemy import text
+
+    encontrado = session.execute(
+        text("select 1 from auth.users where id = :id"), {"id": str(user_id)}
+    ).first()
+    return encontrado is not None
+
+
+def _identidade_para_perfil(
+    session,
+    contas: Contas | None,
+    *,
+    username: str,
+    display_name: str,
+) -> str:
+    """Devolve o UUID que o perfil vai usar, ou explica por que não há um.
+
+    Com ``contas``, a conta nasce no Supabase Auth e o id vem de lá — é assim
+    que os dois lados ficam amarrados. Sem ``contas``, só um banco sem
+    ``auth.users`` aceita um perfil solto.
+    """
+
+    from .schema import new_id
+
+    if contas is None:
+        if exige_conta_no_auth(session):
+            raise ContaObrigatoria(
+                f"Não é possível criar o perfil {username!r} sem uma conta no "
+                "Supabase Auth: profiles.id referencia auth.users(id) e o "
+                "insert violaria a chave estrangeira. Defina SUPABASE_SECRET_KEY "
+                "nos Secrets — é a chave privilegiada que cria a conta pela "
+                "Admin API."
+            )
+        return new_id()
+
+    identificador, _ = contas.criar(username=username, display_name=display_name)
+    if exige_conta_no_auth(session) and not conta_existe_no_auth(
+        session, identificador
+    ):
+        raise ContaObrigatoria(
+            f"O Supabase Auth devolveu o id {identificador!r} para {username!r}, "
+            "mas ele não está em auth.users. Gravar o perfil violaria a chave "
+            "estrangeira. Confira se SUPABASE_URL e SUPABASE_SECRET_KEY apontam "
+            "para o mesmo projeto de SUPABASE_DB_URL."
+        )
+    return identificador
+
+
 
 
 def bootstrap_admin(
@@ -107,12 +198,14 @@ def bootstrap_admin(
 
     Sem ``contas`` (desenvolvimento e testes, onde não há serviço de
     autenticação) o perfil é criado sozinho, sem acesso: é o suficiente para
-    o catálogo e a pontuação, e não finge que existe login.
+    o catálogo e a pontuação, e não finge que existe login. Isso vale só onde
+    o banco não tem ``auth.users``; em PostgreSQL a criação é recusada com a
+    variável que falta, em vez de violar a chave estrangeira.
     """
 
     from sqlalchemy import select
 
-    from .schema import Role, User, new_id
+    from .schema import Role, User
     from .supabase_auth import normalize_username
 
     existente = session.scalar(
@@ -141,13 +234,12 @@ def bootstrap_admin(
         session.flush()
         return admin
 
-    if contas is None:
-        identificador = new_id()
-    else:
-        identificador, _ = contas.criar(
-            username=username,
-            display_name=settings.bootstrap_admin_name.strip(),
-        )
+    identificador = _identidade_para_perfil(
+        session,
+        contas,
+        username=username,
+        display_name=settings.bootstrap_admin_name.strip(),
+    )
     admin = User(
         id=identificador,
         username=username,
@@ -160,4 +252,13 @@ def bootstrap_admin(
     return admin
 
 
-__all__ = ["Contas", "ContasSupabase", "bootstrap_admin", "contas_de"]
+__all__ = [
+    "ContaObrigatoria",
+    "Contas",
+    "ContasSupabase",
+    "bootstrap_admin",
+    "conta_existe_no_auth",
+    "contas_de",
+    "contas_disponiveis",
+    "exige_conta_no_auth",
+]

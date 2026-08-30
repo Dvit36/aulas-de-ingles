@@ -6,6 +6,7 @@ import logging
 import time
 
 from .catalog import seed_database
+from .contas import contas_disponiveis
 from .config import Settings
 from .database import (
     create_database_engine,
@@ -28,7 +29,7 @@ def run_once(settings: Settings | None = None) -> int:
     initialize_database(engine)
     factory = create_session_factory(engine)
     with session_scope(factory, servico=True) as session:
-        seed_database(session, settings)
+        seed_database(session, settings, contas_disponiveis(settings))
         attempts = run_due_reminders(session, settings)
         return len(attempts)
 
