@@ -84,9 +84,7 @@ NAO_DOCUMENTADAS = {
 TERCEIROS_PERMITIDOS = {
     "STREAMLIT_SERVER_MAX_UPLOAD_SIZE": "lida pelo próprio Streamlit",
     "STREAMLIT_BROWSER_GATHER_USAGE_STATS": "lida pelo próprio Streamlit",
-    "STREAMLIT_SECRETS_FILE": "usada pelo docker-compose para montar o arquivo",
     "GOOGLE_APPLICATION_CREDENTIALS": "lida pela biblioteca de auth do Google",
-    "GOOGLE_SERVICE_ACCOUNT_FILE": "usada pelo overlay docker-compose.google.yml",
 }
 
 # Sem estas a aplicação recusa subir em produção. Precisam estar no modelo de

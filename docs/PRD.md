@@ -121,7 +121,9 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
     independentemente de reinício, hibernação ou deploy do Streamlit.
 12. Importar novamente a mesma planilha não duplica transações.
 13. Testes automatizados obrigatórios passam sem internet ou API externa.
-14. O README contém o caminho completo da execução local e por Docker/VPS.
+14. O README contém o caminho completo da execução local e do deploy no
+    Streamlit Cloud. Docker e VPS deixaram de ser suportados em 29 de agosto
+    de 2026: a implantação oficial é Streamlit Cloud + Supabase.
 15. Com a integração habilitada, um commit atualiza o snapshot do Sheets; uma falha da API preserva o dado local e pode ser reconciliada sem duplicação.
 16. Usuário deslogado vê apenas **Entrar** na navegação superior; após login, vê as rotas do seu papel e **Minha conta**.
 17. Refresh preserva uma sessão válida do Supabase; logout, expiração ou

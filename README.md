@@ -69,8 +69,7 @@ locais. Veja [docs/PRD.md](docs/PRD.md) e [docs/SPEC.md](docs/SPEC.md).
 
 - Python 3.11 ou 3.12 (RapidOCR legado não suporta Python 3.13+);
 - Streamlit 1.61.1 ou superior, com o extra de autenticação;
-- aproximadamente 2–4 CPUs, 8 GB de RAM e SSD;
-- Docker + Docker Compose, se optar por containers.
+- aproximadamente 2–4 CPUs, 8 GB de RAM e SSD.
 
 O núcleo legado, OCR e testes locais funcionam sem API externa. A arquitetura
 oficial de produção exige conectividade com Supabase e Supabase Storage.
@@ -228,8 +227,7 @@ Para manter o processo independente do Streamlit:
 english-leaderboard scheduler
 ```
 
-O `docker-compose.yml` já contém `reminder_scheduler`. Cada destinatário/período
-tem chave única, impedindo duplicidade; falhas transitórias recebem no máximo três
+Cada destinatário/período tem chave única, impedindo duplicidade; falhas transitórias recebem no máximo três
 tentativas. Testes e configuração inicial nunca enviam e-mail real.
 
 ## Migrações
@@ -325,59 +323,6 @@ Ao criar a aplicação no Community Cloud, selecione **Python 3.12** em
 **Advanced settings**. O arquivo `packages.txt` instala as bibliotecas nativas
 de OpenCV/ONNX (`libgl1`, `libglib2.0-0t64` e `libgomp1`) exigidas pelo
 RapidOCR no ambiente Linux.
-
-Os volumes Docker abaixo servem ao desenvolvimento local. Em produção a
-persistência é inteiramente do Supabase.
-
-## Docker Compose
-
-```bash
-cp .env.example .env
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-mkdir -p backups
-docker compose up --build -d
-docker compose ps
-curl --fail http://localhost:8501/_stcore/health
-```
-
-Com uma chave JSON para Google Sheets, use o overlay que monta a credencial como secret somente leitura:
-
-```bash
-mkdir -p secrets
-chmod 700 secrets
-chmod 600 secrets/google-service-account.json
-docker compose -f docker-compose.yml -f docker-compose.google.yml up --build -d
-```
-
-Defina `GOOGLE_SERVICE_ACCOUNT_FILE` se o arquivo no host tiver outro caminho. O `.env` ainda precisa de `GOOGLE_SHEETS_AUTO_SYNC=true` e do ID da planilha; o overlay define o caminho correto da credencial dentro do container.
-
-Para o primeiro teste local via Docker, mantenha `APP_ENV=development` e
-`DEMO_AUTH_ENABLED=true`. Este Compose representa o ambiente legado de
-desenvolvimento, não a topologia oficial de produção.
-
-Volumes:
-
-- `app_db` → `/data/db/app.db`;
-- `app_uploads` → `/data/uploads`;
-- `./backups` → `/backups`.
-
-Recriar o container não apaga os volumes. `docker compose down -v` apaga os volumes e, portanto, é destrutivo.
-
-## Implantação legada em VPS
-
-Esta seção documenta somente operação/migração da versão atual. A implantação
-oficial nova permanece no Streamlit Cloud com Supabase (Auth, PostgreSQL e Storage).
-
-1. Instale Docker Engine/Compose e copie apenas o projeto, `.env` e `secrets.toml` preenchidos.
-2. Restrinja a porta 8501 ao host/rede privada; não a exponha diretamente à internet.
-3. Prefira uma destas opções:
-   - Tailscale/VPN, mantendo o serviço privado; ou
-   - Caddy/Nginx como proxy reverso com certificado HTTPS e redirecionamento HTTP→HTTPS.
-4. Configure DNS e HTTPS com o hostname definitivo.
-5. Rode `docker compose up --build -d` e valide `/_stcore/health`.
-6. Agende backups, copie-os para outro disco/host e teste restauração.
-
-O endpoint e o padrão de health check seguem a [documentação oficial do Streamlit para Docker](https://docs.streamlit.io/deploy/tutorials/docker). TLS deve terminar no proxy reverso ou VPN, não no servidor de desenvolvimento do Streamlit.
 
 ## Durabilidade e cópias
 

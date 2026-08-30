@@ -165,5 +165,6 @@ O importador nunca salva no arquivo fonte.
 - Supabase fornece Auth e PostgreSQL; Supabase Storage fornece storage de objetos.
 - Configuração por variáveis de ambiente/`st.secrets`; chave de serviço do
   Supabase e credenciais do Supabase são exclusivamente server-side.
-- Docker/SQLite/autenticação local podem existir durante desenvolvimento e
-  migração, mas não definem a implantação oficial.
+- O SQLite existe para desenvolvimento e para a suíte de testes, sobre os
+  mesmos modelos, mas não define a implantação oficial. Docker, Compose e a
+  implantação em VPS foram descontinuados em 29 de agosto de 2026.
