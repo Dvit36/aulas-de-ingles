@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import Engine, create_engine, event, inspect, text
@@ -152,24 +151,6 @@ def _assumir_identidade(session: Session, _transaction: Any, connection: Any) ->
             "Sessão PostgreSQL sem identidade. Use session_scope(..., user_id=...) "
             "para operação de usuário ou servico=True para manutenção."
         )
-
-
-def _cleanup_pending_uploads(session: Session) -> None:
-    for path in session.info.pop("created_upload_paths", []):
-        try:
-            Path(path).unlink(missing_ok=True)
-        except OSError:
-            pass
-
-
-@event.listens_for(Session, "after_rollback")
-def _remove_uploads_after_rollback(session: Session) -> None:
-    _cleanup_pending_uploads(session)
-
-
-@event.listens_for(Session, "after_commit")
-def _forget_uploads_after_commit(session: Session) -> None:
-    session.info.pop("created_upload_paths", None)
 
 
 @contextmanager

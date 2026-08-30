@@ -193,9 +193,10 @@ Além do limite individual, cada submissão respeita `MAX_UPLOAD_FILES` e
 PDF digitalizado possui orçamento agregado de pixels antes da renderização. Esses
 limites evitam que um usuário autenticado esgote memória ou CPU do servidor.
 
-Cada arquivo recebe UUID, modo `0600`, SHA-256 e registro no banco. Downloads são
-resolvidos por ID e passam novamente pela autorização da submissão; caminhos
-internos e nomes físicos não são mostrados.
+Cada arquivo recebe UUID, SHA-256 e registro no banco; o binário vai para o
+bucket privado e o banco guarda a `storage_key`. Downloads são resolvidos por ID
+e passam novamente pela autorização da submissão; a chave do Storage nunca vem
+da interface, e caminhos internos e nomes físicos não são mostrados.
 
 ## Persistência de arquivos
 

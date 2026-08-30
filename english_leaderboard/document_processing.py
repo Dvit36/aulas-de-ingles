@@ -6,9 +6,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from io import BytesIO
 from math import ceil, isfinite
-import os
 from pathlib import Path
-from uuid import uuid4
 from zipfile import BadZipFile, ZipFile
 
 
@@ -247,31 +245,10 @@ def process_document_bytes(
     )
 
 
-def persist_document(document: ProcessedDocument, upload_directory: Path) -> tuple[str, Path]:
-    upload_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
-        upload_directory.chmod(0o700)
-    except OSError:
-        pass
-    storage_key = f"{uuid4().hex}{document.extension}"
-    path = upload_directory / storage_key
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(document.original_bytes)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except Exception:
-        path.unlink(missing_ok=True)
-        raise
-    return storage_key, path
-
-
 __all__ = [
     "DOCUMENT_EXTENSIONS",
     "SUPPORTED_EXTENSIONS",
     "DocumentValidationError",
     "ProcessedDocument",
-    "persist_document",
     "process_document_bytes",
 ]
