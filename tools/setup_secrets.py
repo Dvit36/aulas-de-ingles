@@ -22,11 +22,14 @@ DESTINO = Path(".streamlit/secrets.toml")
 
 # Valores públicos do projeto. O Project URL e a publishable key são feitos
 # para ficar visíveis; senha do banco e secret key jamais entram aqui.
+#
+# Toda chave aqui precisa ser lida por Settings.from_env(): escrever um nome
+# que a aplicação ignora produz um secrets.toml que parece configurado e não
+# configura nada. Era o caso de LOCAL_AUTH_ENABLED, resto da autenticação
+# local. O teste tests/test_config_examples.py cobre este dicionário.
 PADROES = {
     "APP_ENV": "development",
-    "DEMO_AUTH_ENABLED": "false",
     "SEED_FAKE_DATA": "false",
-    "LOCAL_AUTH_ENABLED": "true",
     "SUPABASE_USERNAME_DOMAIN": "robonaticos7565.invalid",
 }
 
