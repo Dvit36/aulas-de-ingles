@@ -2,3 +2,6 @@
 setuptools>=69
 pytest>=8,<10
 pytest-cov>=5,<8
+# Preso à minor: o ruff muda o conjunto de regras entre versões, e o número de
+# achados só serve de linha de base se a versão não escorregar sozinha.
+ruff>=0.16,<0.17
