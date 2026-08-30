@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from .models import Submission, SubmissionStatus
+from .schema import Submission, SubmissionStatus
 
 
 class InvalidStateTransition(ValueError):

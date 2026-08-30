@@ -595,7 +595,7 @@ def _first_column(model: type[Any], names: Iterable[str]) -> str | None:
 def _enum_value(model: type[Any], column_name: str | None, value: str) -> Any:
     if column_name is None:
         return value
-    column = getattr(model, "__table__").columns[column_name]
+    column = model.__table__.columns[column_name]
     enum_class = getattr(column.type, "enum_class", None)
     if enum_class is None:
         return value
@@ -615,20 +615,20 @@ def _legacy_username(normalized_name: str) -> str:
 
 
 def _load_models() -> tuple[type[Any], type[Any], type[Any] | None, type[Any] | None]:
-    from . import models
+    from . import schema
 
     try:
-        user_model = models.User
-        ledger_model = models.LedgerTransaction
+        user_model = schema.User
+        ledger_model = schema.LedgerTransaction
     except AttributeError as exc:  # pragma: no cover - configuration error
         raise LegacyImportError(
-            "models.py must define User and LedgerTransaction"
+            "schema.py must define User and LedgerTransaction"
         ) from exc
     return (
         user_model,
         ledger_model,
-        getattr(models, "ImportRun", None),
-        getattr(models, "ImportRecord", None),
+        getattr(schema, "ImportRun", None),
+        getattr(schema, "ImportRecord", None),
     )
 
 
@@ -728,6 +728,13 @@ def _resolve_student(
         name_column: entry.student_name,
         username_column: _legacy_username(entry.normalized_student),
     }
+    # O perfil não tem id automático: ele espelha a conta de autenticação. O
+    # aluno importado da planilha ainda não tem conta, então recebe um id
+    # próprio e o administrador cria o acesso depois.
+    if "id" in _model_columns(user_model):
+        from uuid import uuid4
+
+        kwargs["id"] = str(uuid4())
     if role_column:
         kwargs[role_column] = _enum_value(user_model, role_column, "student")
     if active_column:

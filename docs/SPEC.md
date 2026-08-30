@@ -1,28 +1,44 @@
-# SPEC — Arquitetura do MVP
+# SPEC — Produto e arquitetura
+
+> A arquitetura oficial está em [ARCHITECTURE.md](ARCHITECTURE.md) e prevalece
+> sobre descrições legadas. Itens ainda não migrados estão explicitamente
+> registrados em [TASKS.md](TASKS.md).
 
 ## Arquitetura
 
-Aplicação monolítica Streamlit em Python, dividida em módulos de domínio. A interface chama serviços transacionais; serviços usam SQLAlchemy; OCR/regras e armazenamento não dependem da UI. O processamento é síncrono, adequado ao baixo volume.
+Aplicação Streamlit em Python, dividida em módulos de domínio. A interface chama
+serviços; OCR e regras não dependem da UI. O processamento continua síncrono para
+o volume atual, mas persistência e identidade ficam fora do processo Streamlit.
 
 ```text
-Streamlit UI -> Auth/Services -> Rules + OCR + Scoring
-                         |               |
-                         +-> SQLAlchemy <-+
-                         +-> uploads persistentes
-                         +-> Google Sheets (espelho pós-commit, opcional)
+GitHub -> Streamlit UI/Services -> Rules + OCR + Scoring
+                    |                 |
+                    +-> Supabase Auth |
+                    +-> PostgreSQL <--+
+                    +-> Supabase Storage
+                    +-> Google Sheets (espelho opcional)
 ```
 
-`DATABASE_URL` seleciona SQLite hoje e permite um dialeto Postgres no futuro sem alterar regras de domínio. Para SQLite são habilitados foreign keys, busy timeout e WAL.
+Supabase PostgreSQL é a fonte de verdade para dados estruturados. Supabase Storage
+é a fonte de verdade para binários persistentes. O filesystem do Streamlit é
+temporário e nunca participa da recuperação de estado após reinício.
 
-O engine e a criação do schema ficam em um `st.cache_resource` cuja chave inclui a impressão das tabelas registradas em `Base.metadata`. O Streamlit Community Cloud troca o código sem reiniciar o processo, e sem essa chave o recurso cacheado pela versão anterior sobreviveria: `create_all` não rodaria de novo e uma tabela recém-adicionada nunca seria criada.
+Migrações de schema devem ser explícitas e compatíveis com PostgreSQL. SQLite,
+`create_all` no startup e volumes locais permanecem somente durante a transição e
+nos testes que ainda não foram portados.
 
 A navegação usa um registro estável de `st.Page` com `st.navigation(position="hidden")` como roteador e uma barra própria de `st.page_link`; o projeto requer Streamlit `>=1.61.1` com o extra `auth`. O registro fixo preserva o hash e a URL no login, logout e refresh, enquanto guards impedem o acesso a rotas não autorizadas. A barra mostra as rotas do papel mais **Recursos** e **Minha conta**, sem controles na sidebar ou gaveta móvel. **Recursos** é registrada uma única vez e liberada para os dois papéis, como **Minha conta**: o registro concatena as listas de administrador e de aluno, e uma mesma URL nas duas viraria entrada duplicada.
 
 ## Interface e responsividade
 
-- A página pública **Entrar** valida senha Argon2 no servidor. Não há política de complexidade: a senha escolhida só não pode ser vazia. A senha temporária gerada pelo sistema continua com 16 caracteres aleatórios. O primeiro administrador é criado idempotentemente por variáveis `BOOTSTRAP_ADMIN_*`; não há cadastro público.
-- Sessões usam token opaco aleatório, hash SHA-256 no banco, expiração e versão revogável. Um componente v2 bidirecional mantém somente o token e sua validade em `localStorage`, com handshake e confirmação antes de liberar a área privada; papel, usuário e senha nunca ficam no navegador. O banco continua sendo a autoridade para validade e revogação.
-- **Minha conta** mostra identidade, troca de senha e logout. Senha temporária bloqueia todas as outras rotas até a troca.
+- A página pública **Entrar**, cadastro, recuperação, logout e sessões usam
+  Supabase Auth. A aplicação nunca recebe hashes nem grava senhas em tabelas
+  próprias.
+- O UUID de `auth.users.id` identifica o usuário em todos os dados pertencentes
+  a ele. A sessão autenticada, e não um ID fornecido por widget/query string,
+  determina o ator.
+- **Minha conta** mostra a identidade obtida do Supabase e permite logout e os
+  fluxos de conta suportados pelo Auth.
 - O breakpoint móvel de referência é `max-width: 768px`.
 - Nesse breakpoint, grupos de colunas da interface são apresentados em uma única coluna, na ordem de leitura.
 - Botões, inputs, seletores, links de ação e controles equivalentes têm alvo de toque com altura mínima de `44px`.
@@ -30,7 +46,8 @@ A navegação usa um registro estável de `st.Page` com `st.navigation(position=
 
 ## Google Sheets
 
-- SQLite/ledger é a fonte de verdade; Sheets é somente um espelho unidirecional.
+- PostgreSQL/ledger é a fonte de verdade; Sheets é somente um espelho
+  unidirecional.
 - A sincronização materializa leaderboard e ledger, encerra a transação de leitura e só então chama a API externa.
 - Cria abas ausentes, sobrescreve snapshots e compara o conteúdo antes de escrever; reexecução idêntica é no-op.
 - Alterações confirmadas disparam uma tentativa imediata. Falha externa não reverte o commit e pode ser reconciliada por `sync-google-sheets`/agendador.
@@ -41,10 +58,12 @@ A navegação usa um registro estável de `st.Page` com `st.navigation(position=
 
 ## Modelo de dados
 
-- `users`: nome de usuário único, nome, papel, ativo. Bancos anteriores tinham a coluna `email`; a migração 2 a renomeia para `username` preservando os valores, então contas migradas continuam entrando com o identificador que já usavam.
+- `profiles`: UUID igual a `auth.users.id`, nome, turma, papel e estado. Não
+  contém senha, hash ou token de sessão.
 - `activities`: código único, nome, pontos atuais, limiar de unidades, requisitos e configuração JSON, ativo. O limiar vale para qualquer atividade: `1` pontua a cada aprovação, acima de `1` acumula unidades até fechar um grupo.
 - `submissions`: aluno, atividade, recebimento no servidor, campos textuais, OCR consolidado, plataforma, confiança, unidades, estado, observação administrativa histórica opcional e snapshot da regra. Novas decisões não exigem observação textual.
-- `submission_images`: chave aleatória, MIME real, dimensões, tamanho, SHA-256 e pHash.
+- `submission_images`: metadados, `storage_key` única, MIME real, dimensões, tamanho,
+  SHA-256 e pHash; nunca contém os bytes da imagem.
 - `rule_checks`: resultado individual, obrigatoriedade, score e detalhes.
 - `duplicate_matches`: imagem comparada, tipo (`exact`/`similar`) e distância perceptual.
 - `approved_evidence`: claim SHA-256 único criado atomicamente antes da pontuação; fecha corridas concorrentes de reenvio exato.
@@ -53,8 +72,9 @@ A navegação usa um registro estável de `st.Page` com `st.navigation(position=
 - `lesson_batches` e `lesson_batch_units`: grupos de cinco; restrição única em `unit_id` impede reutilização.
 - `ledger_transactions`: pontos assinados e imutáveis, tipo, origem e `source_key` única.
 - `meetings`: preservada somente para registros históricos anteriores à remoção do fluxo especial.
-- `submission_files`: metadados e texto extraído de imagens/PDF/DOCX/TXT.
-- `auth_sessions`: sessões opacas, expiração e revogação.
+- `submission_files`: metadados, `storage_key` e texto extraído de
+  imagens/PDF/DOCX/TXT; nunca contém binário ou URL presigned persistida.
+- Sessões pertencem ao Supabase Auth e não são duplicadas em `auth_sessions`.
 - `resources`: título, link, descrição, posição e ativo. Conteúdo puro, sem referência de submissões ou ledger, então a lista é reescrita inteira a cada salvamento. Apenas `http`/`https` são aceitos, porque a lista é renderizada como HTML.
 - `goal_configuration`: linha única com a meta de lições por semana e o autor da última alteração. Só orienta a interface; nenhuma pontuação depende dela.
 - `reminder_configuration` e `email_attempts`: configuração, deduplicação e auditoria de e-mail.
@@ -99,29 +119,30 @@ Toda transição é validada por máquina de estados e auditada. Operações de 
 
 ## Segurança
 
-- Produção usa autenticação local fechada e HTTPS; hashes Argon2 e tokens de sessão nunca são registrados em logs.
-- Modo demo exige `DEMO_AUTH_ENABLED=true`, confirmação explícita na página **Entrar** e falha no startup se combinado com `APP_ENV=production`.
-- A camada de serviço repete a autorização; ocultar controles na UI não é considerado proteção suficiente.
-- Upload é limitado por arquivo, quantidade, bytes agregados, páginas e formatos reais JPEG/PNG/WEBP/PDF/DOCX/TXT. DOCX tem limites de membros/expansão/compressão e PDF tem orçamento de pixels antes da renderização; tudo é validado antes de persistir e gravado com UUID e modo `0600`.
-- CORS/XSRF permanecem habilitados. Logs não incluem bytes nem OCR/imagem completos.
-- A aplicação deve ficar atrás de HTTPS em proxy reverso ou acessível por VPN/Tailscale; isso protege o token opaco e as credenciais em trânsito.
-
-## Cópia de segurança no GitHub
-
-- Hospedagens com disco efêmero, como o Streamlit Community Cloud, recriam o contêiner a partir do git: o SQLite e os uploads não sobrevivem a um rebuild nem ao despertar após hibernação.
-- Com `GITHUB_BACKUP_ENABLED=true`, cada alteração confirmada gera um pacote `tar.gz` com o snapshot consistente do banco e os uploads, gravado por API em um repositório privado.
-- O pacote é determinístico: gzip sem carimbo de tempo e metadados fixos. Conteúdo inalterado produz bytes idênticos e não vira commit novo.
-- Na subida, se o banco não tiver alunos nem envios, o pacote é baixado e reposto antes do seed. É o que fecha o ciclo do rebuild.
-- O destino precisa ser um repositório **separado** do repositório da aplicação. Gravar no próprio repo dispararia um rebuild que apaga os dados, que seriam restaurados e regravados, em laço. A aplicação detecta o caso pelo `.git/config` do checkout e recusa.
-- Falha externa nunca desfaz o commit local: o banco continua sendo a verdade e a cópia é reconciliada na alteração seguinte.
-- O download usa o media type `.raw`, obrigatório acima de 1 MB na API de conteúdo. O limite prático adotado é de 40 MB por pacote.
+- Produção usa Supabase Auth e HTTPS. Senhas nunca passam por tabelas ou hashes
+  mantidos pela aplicação.
+- A camada de serviço repete a autorização e o Supabase aplica RLS; ocultar
+  controles na UI não é proteção suficiente.
+- Toda entidade de aluno tem `student_id`/`user_id` derivado de `auth.uid()`.
+  Antes de leitura, mudança, exclusão ou URL assinada, a propriedade é validada.
+- Upload é limitado por arquivo, quantidade, bytes agregados, páginas e formatos
+  reais JPEG/PNG/WEBP/PDF/DOCX/TXT. DOCX tem limites de expansão/compressão e PDF
+  tem orçamento de pixels antes da renderização.
+- Buckets do Storage são privados. Access Keys e chaves de serviço ficam apenas no
+  servidor em `st.secrets`/ambiente. O frontend recebe, quando necessário,
+  somente URL presigned curta.
+- CORS/XSRF permanecem habilitados. Logs não incluem segredos, bytes nem OCR ou
+  imagem completos.
 
 ## Persistência e backup
 
-- SQLite em `/data/app.db` e uploads em `/data/uploads`, ambos volumes persistentes no Compose.
-- Escritas usam sessões curtas; WAL melhora concorrência de leitura.
-- Backup consistente: pausar brevemente novas escritas, executar backup online do SQLite, copiar uploads e registrar data/checksums; testar restauração periodicamente.
-- Arquivos temporários ficam fora do código e são removidos após processamento.
+- PostgreSQL armazena dados estruturados, OCR textual e metadados de arquivo.
+- Supabase Storage armazena imagens, PDFs, documentos e demais binários.
+- GitHub nunca recebe banco, uploads, exports ou backups com dados de alunos.
+- Arquivos temporários ficam em memória ou diretório temporário e são removidos
+  em `finally`/context manager.
+- Backups, retenção e restauração de PostgreSQL e Storage devem ser configurados e
+  ensaiados sem transformar o repositório Git em storage.
 
 ## Importação da planilha
 
@@ -139,8 +160,11 @@ O importador nunca salva no arquivo fonte.
 
 ## Implantação
 
-- Imagem Python 3.12 slim, Streamlit `>=1.61.1` com Authlib, dependências locais e health check em `/_stcore/health`.
-- Compose com aplicação e scheduler independente, porta 8501 e volumes compartilhados de banco/uploads.
-- Configuração por `.env`; senhas do administrador inicial e SMTP ficam somente no ambiente/secret manager. As variáveis de identidade foram renomeadas de `*_EMAIL` para `*_USERNAME`; os nomes antigos continuam sendo lidos como reserva, com precedência para os atuais.
-- Máquina alvo: 2–4 CPUs, 8 GB RAM e SSD. Sem workers distribuídos.
-- Em VPS: firewall, proxy Caddy/Nginx com TLS ou Tailscale/VPN, backups externos e atualização controlada da imagem.
+- Produção executa no Streamlit Cloud com Python 3.12, Streamlit `>=1.61.1`,
+  dependências nativas para OCR e secrets configurados fora do Git.
+- Supabase fornece Auth e PostgreSQL; Supabase Storage fornece storage de objetos.
+- Configuração por variáveis de ambiente/`st.secrets`; chave de serviço do
+  Supabase e credenciais do Supabase são exclusivamente server-side.
+- O SQLite existe para desenvolvimento e para a suíte de testes, sobre os
+  mesmos modelos, mas não define a implantação oficial. Docker, Compose e a
+  implantação em VPS foram descontinuados em 29 de agosto de 2026.

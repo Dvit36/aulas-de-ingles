@@ -14,14 +14,14 @@ from english_leaderboard.database import (
     create_session_factory,
     initialize_database,
 )
-from english_leaderboard.models import Role, User
+from english_leaderboard.schema import Role, User, new_id
+from english_leaderboard.storage import StorageError
 
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return Settings(
         app_env="test",
-        demo_auth_enabled=False,
         seed_fake_data=False,
         database_url="sqlite+pysqlite:///:memory:",
         upload_dir=tmp_path / "uploads",
@@ -42,13 +42,16 @@ def session(settings: Settings):
     factory = create_session_factory(engine)
     db = factory()
     seed_catalog(db)
+    # O id do perfil é o UUID de auth.users: não há default, ele vem de fora.
     admin = User(
+        id=new_id(),
         username="admin",
         display_name="Admin",
         role=Role.ADMIN,
         active=True,
     )
     student = User(
+        id=new_id(),
         username="student",
         display_name="Student",
         role=Role.STUDENT,
@@ -111,3 +114,42 @@ def make_png(seed: int = 1, *, metadata: str | None = None) -> bytes:
         pnginfo.add_text("variant", metadata)
     image.save(output, format="PNG", pnginfo=pnginfo)
     return output.getvalue()
+
+
+class GatewayFalso:
+    """Bucket em memória: exercita o fluxo real de Storage sem rede.
+
+    Os testes precisam do caminho completo — enviar, registrar metadados,
+    compensar em caso de falha —, e um duplo é o que permite isso sem uma
+    conta do Supabase.
+    """
+
+    def __init__(self) -> None:
+        self.objetos: dict[str, bytes] = {}
+        self.falhar_em: set[str] = set()
+
+    def upload(self, key: str, data: bytes, content_type: str) -> None:
+        if "upload" in self.falhar_em:
+            raise StorageError("falha simulada no envio")
+        self.objetos[key] = data
+
+    def download(self, key: str) -> bytes:
+        if key not in self.objetos:
+            raise StorageError(f"objeto ausente: {key}")
+        return self.objetos[key]
+
+    def remove(self, key: str) -> None:
+        if "remove" in self.falhar_em:
+            raise StorageError("falha simulada na remoção")
+        self.objetos.pop(key, None)
+
+    def exists(self, key: str) -> bool:
+        return key in self.objetos
+
+    def signed_url(self, key: str, expires_in: int) -> str:
+        return f"https://exemplo.invalid/{key}?expira={expires_in}"
+
+
+@pytest.fixture
+def gateway() -> GatewayFalso:
+    return GatewayFalso()

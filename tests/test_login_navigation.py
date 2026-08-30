@@ -1,32 +1,85 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
 import streamlit_app
-from english_leaderboard.models import Role
+from english_leaderboard.schema import Role
 
 
-def test_demo_authentication_requires_explicit_session_state(
+class GatewayFalso:
+    """Duplo do Supabase Auth: devolve sessão sem tocar na rede."""
+
+    def __init__(self, user_id: str) -> None:
+        self.user_id = user_id
+        self.chamadas: list[str] = []
+
+    def post(self, caminho: str, corpo: dict, *, chave: str) -> dict:
+        self.chamadas.append(caminho)
+        return {
+            "access_token": "acesso",
+            "refresh_token": "renovacao",
+            "expires_in": 3600,
+            "user": {"id": self.user_id},
+        }
+
+    def delete(self, caminho: str, *, chave: str) -> dict:
+        self.chamadas.append(caminho)
+        return {}
+
+
+def _sessao_de_teste(user_id: str):
+    return streamlit_app.Sessao(
+        user_id=user_id,
+        access_token="acesso",
+        refresh_token="renovacao",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+
+def test_authentication_requires_a_supabase_session(
     session,
     settings,
     users,
     monkeypatch,
 ) -> None:
+    """Sem sessão do Supabase Auth ninguém entra, mesmo com perfil no banco."""
+
     state: dict[str, object] = {}
     monkeypatch.setattr(streamlit_app.st, "session_state", state)
-    demo_settings = replace(settings, demo_auth_enabled=True)
 
-    logged_out = streamlit_app.authenticate(session, demo_settings)
+    deslogado = streamlit_app.authenticate(session, settings)
+    assert deslogado.actor is None
 
-    assert logged_out.actor is None
-    state["demo_user_id"] = users[Role.STUDENT].id
-    logged_in = streamlit_app.authenticate(session, demo_settings)
-    assert logged_in.actor is users[Role.STUDENT]
-    assert logged_in.local_token is not None
-    assert state["browser_session_command"]["op"] == "write"
+    aluno = users[Role.STUDENT]
+    state[streamlit_app.SESSAO_KEY] = _sessao_de_teste(aluno.id)
+    logado = streamlit_app.authenticate(session, settings)
+    assert logado.actor is aluno
+    assert logado.sessao is not None
+
+
+def test_a_deactivated_account_loses_a_live_session(
+    session,
+    settings,
+    users,
+    monkeypatch,
+) -> None:
+    """Desativar o perfil precisa derrubar quem já estava dentro."""
+
+    aluno = users[Role.STUDENT]
+    state: dict[str, object] = {streamlit_app.SESSAO_KEY: _sessao_de_teste(aluno.id)}
+    monkeypatch.setattr(streamlit_app.st, "session_state", state)
+
+    aluno.active = False
+    session.flush()
+
+    resultado = streamlit_app.authenticate(session, settings)
+
+    assert resultado.actor is None
+    assert "não está mais ativa" in (resultado.error or "")
+    assert streamlit_app.SESSAO_KEY not in state
 
 
 def test_pending_browser_write_holds_private_ui_until_ack(
@@ -81,41 +134,6 @@ def test_stale_component_snapshot_cannot_replace_pending_login_token(
 
     assert state["local_auth_token"] == new_token
     assert state["browser_session_command"]["op"] == "write"
-
-
-def test_missing_oidc_configuration_does_not_crash(
-    session,
-    settings,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(streamlit_app.st, "user", {})
-
-    state = streamlit_app.authenticate(
-        session, replace(settings, local_auth_enabled=False)
-    )
-
-    assert state.actor is None
-    assert state.oidc_available is False
-    assert state.oidc_logged_in is False
-    assert "não configurada" in (state.error or "")
-
-
-def test_logged_out_oidc_configuration_remains_available(
-    session,
-    settings,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(
-        streamlit_app.st,
-        "user",
-        SimpleNamespace(is_logged_in=False),
-    )
-
-    state = streamlit_app.authenticate(session, settings)
-
-    assert state.actor is None
-    assert state.oidc_available is True
-    assert state.error is None
 
 
 def test_public_and_authenticated_navigation_expose_account_routes(
@@ -208,7 +226,6 @@ def test_registered_navigation_is_stable_across_authentication_states(
         "leaderboard",
         "resources",
         "account",
-        "change-password",
     ]
     assert snapshots[0][0][0] == "English Activities"
 
@@ -320,40 +337,6 @@ def test_private_admin_route_does_not_run_for_student(
     guarded.render()
 
     assert calls == ["error", "root"]
-
-
-def test_private_route_forces_required_password_change(
-    session,
-    settings,
-    users,
-    monkeypatch,
-) -> None:
-    calls: list[str] = []
-    actor = users[Role.ADMIN]
-    actor.must_change_password = True
-    auth_state = streamlit_app.AuthenticationState(actor=actor)
-    protected = streamlit_app.PageRoute(
-        "Catálogo",
-        "catalog",
-        ":material/menu_book:",
-        lambda: calls.append("protected"),
-    )
-    guarded = streamlit_app._guarded_route(
-        protected,
-        session=session,
-        settings=settings,
-        auth_state=auth_state,
-        allowed_roles=frozenset({Role.ADMIN}),
-    )
-    monkeypatch.setattr(
-        streamlit_app,
-        "forced_password_change_view",
-        lambda *_args: calls.append("password"),
-    )
-
-    guarded.render()
-
-    assert calls == ["password"]
 
 
 def test_navigation_uses_hidden_router_and_visible_page_links(monkeypatch) -> None:
@@ -514,7 +497,7 @@ def test_leaderboard_initials_ignore_demo_markers_and_escape_names() -> None:
 
 
 def test_resource_cards_escape_content_and_open_links_safely() -> None:
-    from english_leaderboard.models import Resource
+    from english_leaderboard.schema import Resource
 
     resources = [
         Resource(
@@ -561,16 +544,16 @@ def test_runtime_cache_is_keyed_by_the_expected_schema() -> None:
     import inspect as inspect_module
     from hashlib import sha256
 
-    from english_leaderboard.database import Base
+    from english_leaderboard.schema import SchemaBase
 
     esperado = sha256(
-        ",".join(sorted(Base.metadata.tables)).encode("utf-8")
+        ",".join(sorted(SchemaBase.metadata.tables)).encode("utf-8")
     ).hexdigest()[:16]
     assert streamlit_app._schema_fingerprint() == esperado
 
     # A impressão precisa cobrir toda tabela mapeada, não uma lista fixa.
-    assert "resources" in Base.metadata.tables
-    assert "goal_configuration" in Base.metadata.tables
+    assert "resources" in SchemaBase.metadata.tables
+    assert "goal_configuration" in SchemaBase.metadata.tables
 
     # E o runtime precisa mesmo receber a impressão, senão o cache não muda.
     assert "schema_fingerprint" in inspect_module.signature(

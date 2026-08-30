@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import Settings
-from .models import Activity, ReminderConfiguration, Resource, Role, User
+from .schema import Activity, ReminderConfiguration, Resource
 
 CATALOG_SEED: tuple[dict[str, object], ...] = (
     {
@@ -190,33 +188,18 @@ def seed_catalog(session: Session) -> list[Activity]:
     return created
 
 
-def seed_demo_users(session: Session, settings: Settings) -> list[User]:
-    if not settings.demo_auth_enabled:
-        return []
-    definitions: Iterable[tuple[str, str, Role]] = (
-        (settings.demo_student_username, "Aluno Demo", Role.STUDENT),
-        (settings.demo_admin_username, "Administrador Demo", Role.ADMIN),
-    )
-    created: list[User] = []
-    for username, name, role in definitions:
-        user = session.scalar(select(User).where(User.username == username))
-        if user is None:
-            user = User(
-                username=username, display_name=name, role=role, active=True
-            )
-            session.add(user)
-            created.append(user)
-    session.flush()
-    return created
+def seed_database(session: Session, settings: Settings, contas=None) -> None:
+    """Semeia catálogo, recursos e o administrador inicial.
 
+    ``contas`` é a fachada do Supabase Auth. Sem ela o administrador nasce
+    apenas como perfil, sem acesso — o caminho de desenvolvimento.
+    """
 
-def seed_database(session: Session, settings: Settings) -> None:
     seed_catalog(session)
     seed_resources(session)
-    seed_demo_users(session, settings)
-    from .local_auth import bootstrap_initial_admin
+    from .contas import bootstrap_admin
 
-    bootstrap_initial_admin(session, settings)
+    bootstrap_admin(session, settings, contas)
     if settings.seed_fake_data:
         from .synthetic_data import seed_fake_students
 

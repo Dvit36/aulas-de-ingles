@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any, Iterable, Sequence
 
-from .models import CheckOutcome, SubmissionStatus
+from .schema import CheckOutcome, SubmissionStatus
 
 
 @dataclass(frozen=True)

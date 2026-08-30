@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -10,8 +9,8 @@ from typing import Sequence
 
 from sqlalchemy import text
 
-from .backup import create_backup, verify_backup
 from .catalog import seed_database
+from .contas import contas_disponiveis
 from .config import Settings
 from .database import (
     create_database_engine,
@@ -22,9 +21,17 @@ from .database import (
 
 
 def _runtime() -> tuple[Settings, object]:
+    """Engine e fábrica de sessões para as operações de linha de comando.
+
+    Tudo aqui é manutenção do administrador, então as sessões abrem como
+    serviço: sem RLS, porque não há aluno na ponta.
+    """
+
     settings = Settings.from_env()
     settings.ensure_directories()
-    engine = create_database_engine(settings.database_url)
+    engine = create_database_engine(
+        settings.supabase_db_url or settings.database_url
+    )
     initialize_database(engine)
     factory = create_session_factory(engine)
     return settings, factory
@@ -36,7 +43,7 @@ def _sync_google_sheets(settings: Settings, factory: object):
 
     if not settings.google_sheets_spreadsheet_id:
         raise ValueError("GOOGLE_SHEETS_SPREADSHEET_ID não foi configurado")
-    with session_scope(factory) as session:
+    with session_scope(factory, servico=True) as session:
         board = leaderboard_rows(session)
         ledger = ledger_rows(session)
     return sync_leaderboard_and_ledger(
@@ -50,8 +57,8 @@ def _sync_google_sheets(settings: Settings, factory: object):
 
 def command_init(_: argparse.Namespace) -> int:
     settings, factory = _runtime()
-    with session_scope(factory) as session:
-        seed_database(session, settings)
+    with session_scope(factory, servico=True) as session:
+        seed_database(session, settings, contas_disponiveis(settings))
     print("Banco inicializado e seed aplicado.")
     return 0
 
@@ -66,8 +73,8 @@ def command_import(args: argparse.Namespace) -> int:
     report_path = Path(args.report) if args.report else Path("import-reports") / (
         f"{source.stem}-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.json"
     )
-    with session_scope(factory) as session:
-        seed_database(session, settings)
+    with session_scope(factory, servico=True) as session:
+        seed_database(session, settings, contas_disponiveis(settings))
         report = import_legacy_workbook(
             session,
             source,
@@ -99,78 +106,6 @@ def command_sync_google_sheets(_: argparse.Namespace) -> int:
     result = _sync_google_sheets(settings, factory)
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
     return 0
-
-
-def command_backup(args: argparse.Namespace) -> int:
-    settings = Settings.from_env()
-    manifest, manifest_path = create_backup(
-        settings.database_url, settings.upload_dir, args.destination
-    )
-    print(json.dumps(asdict(manifest), ensure_ascii=False, indent=2))
-    print(f"Manifesto: {manifest_path}")
-    return 0
-
-
-def command_verify_backup(args: argparse.Namespace) -> int:
-    valid = verify_backup(args.manifest)
-    print("Backup íntegro." if valid else "Backup inválido ou incompleto.")
-    return 0 if valid else 1
-
-
-def _github_backup_gateway(settings: Settings):
-    from .github_backup import GitHubApiGateway
-
-    if not settings.github_backup_repo or not settings.github_backup_token:
-        raise SystemExit(
-            "Defina GITHUB_BACKUP_REPO e GITHUB_BACKUP_TOKEN antes de usar este comando"
-        )
-    return GitHubApiGateway(settings.github_backup_token)
-
-
-def command_backup_push(args: argparse.Namespace) -> int:
-    from .github_backup import push_backup
-
-    settings = Settings.from_env()
-    result = push_backup(
-        gateway=_github_backup_gateway(settings),
-        repo=settings.github_backup_repo,
-        path=settings.github_backup_path,
-        branch=settings.github_backup_branch,
-        database_url=settings.database_url,
-        upload_dir=settings.upload_dir,
-        workdir=args.workdir,
-    )
-    print(
-        json.dumps(
-            {
-                "path": result.path,
-                "size_bytes": result.size_bytes,
-                "created": result.created,
-                "commit_sha": result.commit_sha,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
-    return 0
-
-
-def command_backup_restore(args: argparse.Namespace) -> int:
-    from .github_backup import restore_backup
-
-    settings = Settings.from_env()
-    settings.ensure_directories()
-    result = restore_backup(
-        gateway=_github_backup_gateway(settings),
-        repo=settings.github_backup_repo,
-        path=settings.github_backup_path,
-        branch=settings.github_backup_branch,
-        database_url=settings.database_url,
-        upload_dir=settings.upload_dir,
-        workdir=args.workdir,
-    )
-    print(result.reason)
-    return 0 if result.restored else 1
 
 
 def command_analyze_image(args: argparse.Namespace) -> int:
@@ -219,7 +154,7 @@ def command_analyze_image(args: argparse.Namespace) -> int:
 
 def command_health(_: argparse.Namespace) -> int:
     _, factory = _runtime()
-    with session_scope(factory) as session:
+    with session_scope(factory, servico=True) as session:
         session.execute(text("SELECT 1"))
     print("ok")
     return 0
@@ -229,8 +164,8 @@ def command_run_reminders(args: argparse.Namespace) -> int:
     from .reminders import run_due_reminders
 
     settings, factory = _runtime()
-    with session_scope(factory) as session:
-        seed_database(session, settings)
+    with session_scope(factory, servico=True) as session:
+        seed_database(session, settings, contas_disponiveis(settings))
         attempts = run_due_reminders(session, settings, force=bool(args.force))
         payload = [
             {
@@ -267,26 +202,6 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument("--sheet", default="Página1")
     import_parser.add_argument("--report")
     import_parser.set_defaults(func=command_import)
-
-    backup_parser = commands.add_parser("backup", help="Copia SQLite e uploads")
-    backup_parser.add_argument("--destination", default="backups")
-    backup_parser.set_defaults(func=command_backup)
-
-    verify_parser = commands.add_parser("verify-backup", help="Valida checksums")
-    verify_parser.add_argument("manifest")
-    verify_parser.set_defaults(func=command_verify_backup)
-
-    push_parser = commands.add_parser(
-        "backup-push", help="Envia a cópia para o repositório privado do GitHub"
-    )
-    push_parser.add_argument("--workdir", default="tmp/github-backup")
-    push_parser.set_defaults(func=command_backup_push)
-
-    restore_parser = commands.add_parser(
-        "backup-restore", help="Restaura a cópia guardada no GitHub"
-    )
-    restore_parser.add_argument("--workdir", default="tmp/github-backup")
-    restore_parser.set_defaults(func=command_backup_restore)
 
     image_parser = commands.add_parser("analyze-image", help="Executa OCR/regras em uma imagem")
     image_parser.add_argument("image")

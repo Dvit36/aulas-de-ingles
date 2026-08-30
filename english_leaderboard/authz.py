@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .models import Role, Submission, User
+from .schema import Role, Submission, User
 
 
 class AuthorizationError(PermissionError):

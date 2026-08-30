@@ -6,7 +6,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
-from .models import (
+from .schema import (
     Activity,
     LedgerKind,
     LedgerTransaction,

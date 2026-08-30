@@ -40,6 +40,24 @@ def _env_with_legacy(name: str, legacy_name: str, default: str = "") -> str:
     return default
 
 
+def _recusar_backup_no_github() -> None:
+    """Barra GITHUB_BACKUP_ENABLED=true, que já não configura nada.
+
+    Os campos correspondentes saíram de ``Settings``: o backup no GitHub foi
+    removido do código. A recusa fica, e fica aqui, na fronteira que lê o
+    ambiente — um ``.env`` antigo restaurado de cópia traria a flag de volta, e
+    ignorá-la em silêncio faria alguém acreditar que existe um backup.
+    """
+
+    if _as_bool(os.getenv("GITHUB_BACKUP_ENABLED")):
+        raise RuntimeError(
+            "GITHUB_BACKUP_ENABLED foi descontinuado: dados e arquivos de "
+            "alunos não podem ser armazenados no GitHub. Use Supabase "
+            "PostgreSQL para dados/metadados e Supabase Storage para binários. "
+            "Remova a variável do ambiente."
+        )
+
+
 def _csv_set(value: str | None, *, lower: bool = False) -> frozenset[str]:
     items = {item.strip() for item in (value or "").split(",") if item.strip()}
     return frozenset(item.lower() for item in items) if lower else frozenset(items)
@@ -48,21 +66,12 @@ def _csv_set(value: str | None, *, lower: bool = False) -> frozenset[str]:
 @dataclass(frozen=True)
 class Settings:
     app_env: str = "development"
-    demo_auth_enabled: bool = False
-    demo_student_username: str = "aluno.demo"
-    demo_admin_username: str = "admin.demo"
     seed_fake_data: bool = True
-    local_auth_enabled: bool = True
     bootstrap_admin_name: str = ""
     bootstrap_admin_username: str = ""
     bootstrap_admin_password: str = ""
-    session_hours: int = 12
-    login_max_attempts: int = 5
-    login_lock_minutes: int = 15
     database_url: str = "sqlite:///./data/app.db"
     upload_dir: Path = Path("./data/uploads")
-    allowed_usernames: frozenset[str] = frozenset()
-    admin_usernames: frozenset[str] = frozenset()
     max_upload_bytes: int = 10 * 1024 * 1024
     max_upload_files: int = 10
     max_upload_total_bytes: int = 30 * 1024 * 1024
@@ -76,12 +85,19 @@ class Settings:
     phash_distance_threshold: int = 6
     auto_approve_confidence: float = 0.88
     summary_min_chars: int = 120
+    supabase_url: str = ""
+    supabase_publishable_key: str = ""
+    supabase_secret_key: str = ""
+    supabase_db_url: str = ""
+    supabase_username_domain: str = "robonaticos7565.invalid"
+    storage_bucket: str = "student-files"
+    # Não existe teto de gasto no Supabase. Os limites abaixo são a única
+    # barreira real contra cobrança por excedente. O padrão deixa 10x de folga
+    # sobre o uso previsto (~48 MB por temporada) e fica na metade da franquia
+    # gratuita, que é de 1 GB de espaço e 10 GB de egress por mês.
+    storage_max_total_bytes: int = 500 * 1024 * 1024
+    storage_max_monthly_egress_bytes: int = 2 * 1024 * 1024 * 1024
     google_sheets_auto_sync: bool = False
-    github_backup_enabled: bool = False
-    github_backup_repo: str = ""
-    github_backup_token: str = ""
-    github_backup_path: str = "backups/english-leaderboard.tar.gz"
-    github_backup_branch: str = "main"
     google_sheets_spreadsheet_id: str = ""
     google_sheets_leaderboard_tab: str = "Leaderboard"
     google_sheets_ledger_tab: str = "Ledger"
@@ -96,6 +112,48 @@ class Settings:
     reminder_scheduler_interval_seconds: int = 300
 
     @property
+    def supabase_ready(self) -> bool:
+        """Há o mínimo para autenticar e consultar dados no Supabase."""
+
+        return bool(
+            self.supabase_url
+            and self.supabase_publishable_key
+            and self.supabase_db_url
+        )
+
+    @property
+    def contas_administraveis(self) -> bool:
+        """Há credencial privilegiada para criar conta e redefinir senha.
+
+        Existe como propriedade para quem só precisa *saber* se a operação é
+        possível não ter de tocar na chave. ``admin_secret_key()`` continua
+        sendo o único caminho até o valor.
+        """
+
+        return bool(self.supabase_ready and self.supabase_secret_key)
+
+    @property
+    def storage_ready(self) -> bool:
+        """O Storage usa as mesmas credenciais do Supabase, mais o bucket."""
+
+        return bool(self.supabase_ready and self.storage_bucket)
+
+    def admin_secret_key(self) -> str:
+        """Chave privilegiada do Supabase, para operação administrativa.
+
+        É um método, e não um acesso direto ao campo, para que todo uso fique
+        rastreável e explícito: ela ignora RLS e não pode aparecer em nenhum
+        caminho de aluno.
+        """
+
+        if not self.supabase_secret_key:
+            raise ValueError(
+                "SUPABASE_SECRET_KEY não configurada: operações administrativas "
+                "do Supabase Auth estão indisponíveis"
+            )
+        return self.supabase_secret_key
+
+    @property
     def is_production(self) -> bool:
         return self.app_env == "production"
 
@@ -103,19 +161,10 @@ class Settings:
     def from_env(cls, *, env_file: str | Path | None = ".env") -> Settings:
         if load_dotenv is not None and env_file:
             load_dotenv(dotenv_path=env_file, override=False)
+        _recusar_backup_no_github()
         settings = cls(
             app_env=os.getenv("APP_ENV", "development").strip().lower(),
-            demo_auth_enabled=_as_bool(os.getenv("DEMO_AUTH_ENABLED")),
-            demo_student_username=_env_with_legacy(
-                "DEMO_STUDENT_USERNAME", "DEMO_STUDENT_EMAIL", "aluno.demo"
-            ).strip().lower(),
-            demo_admin_username=_env_with_legacy(
-                "DEMO_ADMIN_USERNAME", "DEMO_ADMIN_EMAIL", "admin.demo"
-            ).strip().lower(),
             seed_fake_data=_as_bool(os.getenv("SEED_FAKE_DATA"), default=True),
-            local_auth_enabled=_as_bool(
-                os.getenv("LOCAL_AUTH_ENABLED"), default=True
-            ),
             bootstrap_admin_name=os.getenv("BOOTSTRAP_ADMIN_NAME", "").strip(),
             bootstrap_admin_username=_env_with_legacy(
                 "BOOTSTRAP_ADMIN_USERNAME", "BOOTSTRAP_ADMIN_EMAIL"
@@ -123,17 +172,8 @@ class Settings:
             bootstrap_admin_password=os.getenv(
                 "BOOTSTRAP_ADMIN_PASSWORD", ""
             ),
-            session_hours=int(os.getenv("SESSION_HOURS", "12")),
-            login_max_attempts=int(os.getenv("LOGIN_MAX_ATTEMPTS", "5")),
-            login_lock_minutes=int(os.getenv("LOGIN_LOCK_MINUTES", "15")),
             database_url=os.getenv("DATABASE_URL", "sqlite:///./data/app.db").strip(),
             upload_dir=Path(os.getenv("UPLOAD_DIR", "./data/uploads")),
-            allowed_usernames=_csv_set(
-                _env_with_legacy("ALLOWED_USERNAMES", "ALLOWED_EMAILS"), lower=True
-            ),
-            admin_usernames=_csv_set(
-                _env_with_legacy("ADMIN_USERNAMES", "ADMIN_EMAILS"), lower=True
-            ),
             max_upload_bytes=int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))),
             max_upload_files=int(os.getenv("MAX_UPLOAD_FILES", "10")),
             max_upload_total_bytes=int(
@@ -166,16 +206,27 @@ class Settings:
                 os.getenv("AUTO_APPROVE_CONFIDENCE", "0.88")
             ),
             summary_min_chars=int(os.getenv("SUMMARY_MIN_CHARS", "120")),
+            supabase_url=os.getenv("SUPABASE_URL", "").strip().rstrip("/"),
+            supabase_publishable_key=os.getenv(
+                "SUPABASE_PUBLISHABLE_KEY", ""
+            ).strip(),
+            supabase_secret_key=os.getenv("SUPABASE_SECRET_KEY", "").strip(),
+            supabase_db_url=os.getenv("SUPABASE_DB_URL", "").strip(),
+            supabase_username_domain=os.getenv(
+                "SUPABASE_USERNAME_DOMAIN", "robonaticos7565.invalid"
+            ).strip().lower(),
+            storage_bucket=os.getenv("STORAGE_BUCKET", "student-files").strip(),
+            storage_max_total_bytes=int(
+                os.getenv("STORAGE_MAX_TOTAL_BYTES", str(500 * 1024 * 1024))
+            ),
+            storage_max_monthly_egress_bytes=int(
+                os.getenv(
+                    "STORAGE_MAX_MONTHLY_EGRESS_BYTES", str(2 * 1024 * 1024 * 1024)
+                )
+            ),
             google_sheets_auto_sync=_as_bool(
                 os.getenv("GOOGLE_SHEETS_AUTO_SYNC")
             ),
-            github_backup_enabled=_as_bool(os.getenv("GITHUB_BACKUP_ENABLED")),
-            github_backup_repo=os.getenv("GITHUB_BACKUP_REPO", "").strip(),
-            github_backup_token=os.getenv("GITHUB_BACKUP_TOKEN", "").strip(),
-            github_backup_path=os.getenv(
-                "GITHUB_BACKUP_PATH", "backups/english-leaderboard.tar.gz"
-            ).strip(),
-            github_backup_branch=os.getenv("GITHUB_BACKUP_BRANCH", "main").strip(),
             google_sheets_spreadsheet_id=os.getenv(
                 "GOOGLE_SHEETS_SPREADSHEET_ID", ""
             ).strip(),
@@ -207,20 +258,6 @@ class Settings:
     def validate(self) -> None:
         if self.app_env not in {"development", "test", "production"}:
             raise ValueError("APP_ENV deve ser development, test ou production")
-        if self.is_production and self.demo_auth_enabled:
-            raise RuntimeError(
-                "DEMO_AUTH_ENABLED=true é proibido quando APP_ENV=production"
-            )
-        if (
-            self.is_production
-            and not self.local_auth_enabled
-            and not self.allowed_usernames
-        ):
-            raise RuntimeError("ALLOWED_USERNAMES não pode ficar vazio em produção")
-        if not self.admin_usernames.issubset(self.allowed_usernames):
-            raise ValueError(
-                "ADMIN_USERNAMES deve ser subconjunto de ALLOWED_USERNAMES"
-            )
         if not self.database_url:
             raise ValueError("DATABASE_URL não pode ficar vazio")
         if self.max_upload_bytes <= 0:
@@ -240,10 +277,6 @@ class Settings:
             )
         if self.max_pdf_render_pixels <= 0:
             raise ValueError("MAX_PDF_RENDER_PIXELS deve ser positivo")
-        if self.session_hours <= 0:
-            raise ValueError("SESSION_HOURS deve ser positivo")
-        if self.login_max_attempts < 2 or self.login_lock_minutes <= 0:
-            raise ValueError("Limites de login inválidos")
         bootstrap_values = (
             self.bootstrap_admin_name,
             self.bootstrap_admin_username,
@@ -274,13 +307,84 @@ class Settings:
             raise ValueError("AUTO_APPROVE_CONFIDENCE deve estar entre 0 e 1")
         if self.phash_distance_threshold < 0:
             raise ValueError("PHASH_DISTANCE_THRESHOLD não pode ser negativo")
-        if self.github_backup_enabled and not (
-            self.github_backup_repo and self.github_backup_token
+        if self.supabase_url and not self.supabase_url.startswith("https://"):
+            raise ValueError("SUPABASE_URL deve começar com https://")
+        if self.supabase_publishable_key and self.supabase_publishable_key.startswith(
+            "sb_secret_"
         ):
             raise ValueError(
-                "GITHUB_BACKUP_REPO e GITHUB_BACKUP_TOKEN são obrigatórios quando "
-                "GITHUB_BACKUP_ENABLED=true"
+                "SUPABASE_PUBLISHABLE_KEY recebeu uma chave secreta. A pública "
+                "tem o prefixo sb_publishable_"
             )
+        if self.supabase_secret_key and self.supabase_secret_key.startswith(
+            "sb_publishable_"
+        ):
+            raise ValueError(
+                "SUPABASE_SECRET_KEY recebeu a chave pública. A privilegiada "
+                "tem o prefixo sb_secret_"
+            )
+        if self.supabase_db_url:
+            url = make_url(self.supabase_db_url)
+            if not url.get_backend_name().startswith("postgresql"):
+                raise ValueError("SUPABASE_DB_URL deve apontar para PostgreSQL")
+            # A conexão direta na 5432 é IPv6 e o Streamlit Cloud é IPv4. O
+            # Session pooler usa a mesma porta, mas com host .pooler.
+            if self.is_production and url.host and "pooler" not in url.host:
+                raise ValueError(
+                    "Em produção use o Session pooler do Supabase: a conexão "
+                    "direta é IPv6 e o Streamlit Cloud não a alcança"
+                )
+        if self.is_production:
+            # Nomear o que falta, e não só dizer que falta algo. Sem isto o
+            # deploy quebrava tarde, dentro de runtime(), e a interface
+            # mostrava apenas "Configuração inválida".
+            faltando = [
+                nome
+                for nome, valor in (
+                    ("SUPABASE_URL", self.supabase_url),
+                    ("SUPABASE_PUBLISHABLE_KEY", self.supabase_publishable_key),
+                    ("SUPABASE_SECRET_KEY", self.supabase_secret_key),
+                    ("SUPABASE_DB_URL", self.supabase_db_url),
+                )
+                if not valor
+            ]
+            if faltando:
+                raise RuntimeError(
+                    "Configuração de produção incompleta. Defina nos Secrets: "
+                    f"{', '.join(faltando)}. A identidade, os dados e os "
+                    "arquivos vivem no Supabase. SUPABASE_SECRET_KEY é a chave "
+                    "privilegiada que cria a conta do primeiro administrador e "
+                    "redefine senha: sem ela o startup falharia adiante, ao "
+                    "semear o banco, em vez de aqui."
+                )
+        if "@" in self.supabase_username_domain:
+            raise ValueError("SUPABASE_USERNAME_DOMAIN deve ser só o domínio")
+        for rotulo, valor in (
+            ("STORAGE_MAX_TOTAL_BYTES", self.storage_max_total_bytes),
+            ("STORAGE_MAX_MONTHLY_EGRESS_BYTES", self.storage_max_monthly_egress_bytes),
+        ):
+            if valor <= 0:
+                raise ValueError(f"{rotulo} deve ser positivo")
+        # Franquia gratuita: 1 GB de espaço e 10 GB de egress por mês. Passar
+        # disso significa aceitar cobrança, então tem de ser explícito.
+        if self.storage_max_total_bytes > 1024 * 1024 * 1024:
+            raise ValueError(
+                "STORAGE_MAX_TOTAL_BYTES acima de 1 GB ultrapassa a franquia "
+                "gratuita do Supabase Storage e geraria cobrança"
+            )
+        if self.storage_max_monthly_egress_bytes > 10 * 1024 * 1024 * 1024:
+            raise ValueError(
+                "STORAGE_MAX_MONTHLY_EGRESS_BYTES acima de 10 GB ultrapassa a "
+                "franquia gratuita e geraria cobrança"
+            )
+        # O plano gratuito recusa arquivo individual acima de 50 MB.
+        if self.max_upload_bytes > 50 * 1024 * 1024:
+            raise ValueError(
+                "MAX_UPLOAD_BYTES acima de 50 MB excede o limite por arquivo "
+                "do Supabase Storage no plano gratuito"
+            )
+        if not self.storage_bucket:
+            raise ValueError("STORAGE_BUCKET não pode ficar vazio")
         if self.google_sheets_auto_sync and not self.google_sheets_spreadsheet_id:
             raise ValueError(
                 "GOOGLE_SHEETS_SPREADSHEET_ID é obrigatório quando "

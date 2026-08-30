@@ -1,5 +1,9 @@
 # PRD — Atividades de Inglês e Leaderboard
 
+> A persistência e autenticação seguem obrigatoriamente
+> [ARCHITECTURE.md](ARCHITECTURE.md): Supabase Auth, Supabase PostgreSQL,
+> Supabase Storage e filesystem temporário no Streamlit.
+
 ## Problema
 
 A equipe controla comprovações de atividades de inglês por prints e consolida pontos manualmente em uma planilha. O processo é lento, sujeito a duplicidade e não mantém uma trilha de auditoria confiável.
@@ -12,14 +16,19 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 ## Fluxos principais
 
 1. Sem autenticação, a pessoa acessa diretamente a página pública **Entrar** pela navegação superior.
-2. Na página **Entrar**, a pessoa informa nome de usuário e senha; não existe cadastro público nem login por e-mail. O modo demo permanece somente para desenvolvimento.
+2. Na página **Entrar**, cadastro, login, recuperação de acesso e sessão são
+   fornecidos pelo Supabase Auth.
 3. Depois da autenticação, a navegação mostra as rotas permitidas pelo papel e **Minha conta**, que concentra identidade e logout.
 4. O aluno autenticado escolhe uma atividade, informa campos exigidos e envia imagens, PDF, DOCX ou TXT pela mesma caixa.
-5. O servidor valida o arquivo, armazena-o com nome aleatório, executa OCR local e aplica regras configuráveis.
+5. O servidor valida o arquivo, executa OCR/processamento temporário, envia o
+   binário ao Supabase Storage com chave baseada em IDs estáveis e registra os
+   metadados no Supabase PostgreSQL.
 6. Evidência inequívoca e de alta confiança é aprovada; conteúdo subjetivo ou evidência ambígua vai para revisão; arquivo inválido ou duplicata exata comprovada é rejeitado.
 7. A aprovação cria unidades ou uma transação imutável no ledger. O leaderboard é sempre recalculado a partir do ledger.
 8. O administrador decide pendências sem preencher justificativa; a decisão e o ator continuam registrados na auditoria. Reunião em inglês é uma atividade comum.
-9. Depois do commit local, a aplicação pode espelhar leaderboard e ledger em uma planilha Google administrativa; falhas externas não revertem o lançamento.
+9. Depois do commit no PostgreSQL, a aplicação pode espelhar leaderboard e ledger
+   em uma planilha Google administrativa; falhas externas não revertem o
+   lançamento.
 
 ## Regras de negócio
 
@@ -58,9 +67,12 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 
 ## Escopo do MVP
 
-- Área pública com **Entrar**, autenticação local fechada, troca obrigatória de senha temporária e modo demo local opcional. O aluno escolhe livremente a própria senha; o sistema recusa apenas senha vazia.
-- Papéis `student` e `admin`, allowlist e autorização também na camada de serviço.
-- Cadastro/edição de usuários por nome de usuário e catálogo, com confirmação explícita antes de excluir ou arquivar uma atividade.
+- Área pública com **Entrar** e fluxos de cadastro, sessão, logout e recuperação
+  gerenciados pelo Supabase Auth. A aplicação não armazena senhas.
+- Papéis `student` e `admin` mantidos em perfil/claims protegidos, com
+  autorização também na camada de serviço e no RLS.
+- Cadastro e recuperação pelo Supabase Auth; gestão de perfis e catálogo com
+  confirmação explícita antes de excluir ou arquivar uma atividade.
 - Submissão de imagens/documentos, extração seletiva, validações, duplicidade e fila de revisão.
 - Ledger, grupos de cinco, atividades comuns, leaderboard geral/por período e progresso individual.
 - Meta semanal de lições configurável e indicadores de distância para o próximo colocado com sugestões de atividades.
@@ -70,14 +82,16 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 - Gestão ativa/inativa/arquivada e infraestrutura de lembretes SMTP preservada em processo separado, sem página administrativa na navegação.
 - Navegação superior: rotas públicas antes do login; para administradores, **Visão geral**, **Envios**, **Alunos**, **Catálogo**, **Recursos** e **Minha conta**. **Relatórios** e **Lembretes** não possuem rota visível.
 - Interface web responsiva: em até `768px`, colunas empilhadas e controles interativos com altura mínima de `44px`.
-- SQLite WAL, uploads persistentes, Docker Compose, health check, backup documentado e testes offline.
+- Supabase PostgreSQL para dados/metadados, Supabase Storage para arquivos privados,
+  RLS, URLs temporárias quando necessárias e limpeza dos arquivos intermediários
+  do Streamlit.
 
 ## Fora do escopo
 
 - Aplicativo móvel nativo, notificações, processamento assíncrono distribuído ou múltiplas organizações.
 - Avaliação semântica/gerativa de resumos, biometria ou prova de autoria da atividade.
 - Antifraude perfeito, recuperação automática de desastres e alta disponibilidade.
-- Redis, Celery, Kubernetes, microsserviços e Postgres no MVP.
+- Redis, Celery, Kubernetes e microsserviços no MVP.
 
 ## Limitações e suposições
 
@@ -87,7 +101,9 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 - A planilha real foi analisada apenas localmente e permanece fora do repositório,
   sem modificações, para preservar dados pessoais.
 - Os quatro screenshots específicos citados no briefing não estavam anexados. O workspace contém 35 JPEGs alternativos (21 Duolingo e 14 BeConfident), usados para inspeção e testes representativos; nenhum contém `combo x40` ou `combo x51`.
-- O administrador inicial é fornecido por variáveis de ambiente; em desenvolvimento, usuários demo são criados pelo seed.
+- Identidades reais são criadas no Supabase Auth. Usuários sintéticos podem
+  existir somente em ambiente local/teste e nunca compartilhar credenciais com
+  produção.
 
 ## Critérios de aceitação
 
@@ -101,11 +117,19 @@ A equipe controla comprovações de atividades de inglês por prints e consolida
 8. Aprovação manual atualiza o leaderboard na mesma transação lógica.
 9. Rejeição não altera o ledger.
 10. Administrador pode ajustar pontos somente por transação compensatória auditada.
-11. Banco e uploads sobrevivem à reinicialização de containers.
+11. Dados estruturados persistem no Supabase e arquivos persistem no Storage,
+    independentemente de reinício, hibernação ou deploy do Streamlit.
 12. Importar novamente a mesma planilha não duplica transações.
 13. Testes automatizados obrigatórios passam sem internet ou API externa.
-14. O README contém o caminho completo da execução local e por Docker/VPS.
+14. O README contém o caminho completo da execução local e do deploy no
+    Streamlit Cloud. Docker e VPS deixaram de ser suportados em 29 de agosto
+    de 2026: a implantação oficial é Streamlit Cloud + Supabase.
 15. Com a integração habilitada, um commit atualiza o snapshot do Sheets; uma falha da API preserva o dado local e pode ser reconciliada sem duplicação.
 16. Usuário deslogado vê apenas **Entrar** na navegação superior; após login, vê as rotas do seu papel e **Minha conta**.
-17. Refresh preserva a sessão opaca válida e a URL atual; logout, expiração ou troca de senha revogam a sessão.
+17. Refresh preserva uma sessão válida do Supabase; logout, expiração ou
+    recuperação/revogação de acesso invalidam a sessão conforme Supabase Auth.
 18. Em viewport de até `768px`, colunas são empilhadas, conteúdo não exige zoom e controles de toque têm pelo menos `44px` de altura.
+19. Nenhum arquivo de aluno é persistido no GitHub, filesystem do Streamlit ou
+    como binário no PostgreSQL.
+20. Um aluno não consegue consultar registros, obter `storage_key`, gerar URL assinada
+    nem acessar objetos pertencentes a outro aluno.

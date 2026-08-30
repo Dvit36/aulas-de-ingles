@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +18,6 @@ from .authz import (
 from .config import Settings
 from .document_processing import (
     DocumentValidationError,
-    persist_document,
     process_document_bytes,
 )
 from .image_processing import (
@@ -26,22 +25,15 @@ from .image_processing import (
     ImagePolicy,
     ImageValidationError,
     analyze_image_bytes,
-    persist_image,
     phash_distance,
     prepare_ocr_variants,
 )
-from .local_auth import (
-    generate_temporary_password,
-    normalize_username,
-    revoke_all_user_sessions,
-    set_temporary_password,
-)
-from .models import (
+from .contas import Contas
+from .supabase_auth import normalize_username
+from .schema import (
     Activity,
     ApprovedEvidence,
-    ApprovedFileEvidence,
     AuditLog,
-    AuthSession,
     CheckOutcome,
     DuplicateKind,
     DuplicateMatch,
@@ -53,13 +45,25 @@ from .models import (
     RuleCheck,
     Submission,
     SubmissionFile,
-    SubmissionImage,
     SubmissionStatus,
     User,
     new_id,
     utcnow,
 )
 from .ocr import OCRExecutionError, OCRResult, create_ocr_engine, extract_text
+from .storage import URL_EXPIRA_SEGUNDOS, StorageGateway
+from .storage_service import (
+    ArquivoNaoAutorizado,
+    ArquivoRegistrado,
+    baixar_arquivo,
+    salvar_arquivo,
+    url_temporaria,
+)
+from .submission_pipeline import (
+    CATEGORIA_DOCUMENTO,
+    CATEGORIA_IMAGEM,
+    limites_de,
+)
 from .rules import AnalysisDecision, RuleResult, analyze_submission_rules
 from .scoring import AwardResult, award_approved_submission
 from .states import transition_submission
@@ -113,68 +117,6 @@ def add_audit(
     return log
 
 
-def resolve_oidc_user(
-    session: Session,
-    *,
-    email: str,
-    display_name: str | None,
-    settings: Settings,
-    issuer: str | None = None,
-    subject: str | None = None,
-    email_verified: bool = True,
-) -> User:
-    if not email_verified:
-        raise AuthorizationError("O provedor OIDC não confirmou o e-mail")
-    normalized = email.strip().lower()
-    if not normalized or "@" not in normalized:
-        raise AuthorizationError("OIDC não forneceu um e-mail válido")
-    if normalized not in settings.allowed_usernames:
-        raise AuthorizationError("Identidade não está na lista autorizada")
-    user = None
-    if issuer and subject:
-        user = session.scalar(
-            select(User).where(
-                User.oidc_issuer == issuer,
-                User.oidc_subject == subject,
-            )
-        )
-    if user is None:
-        user = session.scalar(select(User).where(User.username == normalized))
-    if user is None:
-        user = User(
-            username=normalized,
-            display_name=(display_name or normalized.split("@", 1)[0]).strip(),
-            role=Role.ADMIN
-            if normalized in settings.admin_usernames
-            else Role.STUDENT,
-            active=True,
-            oidc_issuer=issuer,
-            oidc_subject=subject,
-        )
-        session.add(user)
-        session.flush()
-        add_audit(
-            session,
-            actor_id=user.id,
-            action="user_created_from_oidc",
-            entity_type="user",
-            entity_id=user.id,
-            after={"username": user.username, "role": user.role.value},
-        )
-    elif not user.active:
-        raise AuthorizationError("Usuário está inativo")
-    elif issuer and subject:
-        if user.oidc_issuer and (
-            user.oidc_issuer != issuer or user.oidc_subject != subject
-        ):
-            raise AuthorizationError("Identidade OIDC não corresponde ao usuário")
-        user.oidc_issuer = issuer
-        user.oidc_subject = subject
-    elif display_name and user.display_name != display_name.strip():
-        user.display_name = display_name.strip()
-    return user
-
-
 def _image_policy(settings: Settings) -> ImagePolicy:
     return ImagePolicy(
         max_bytes=settings.max_upload_bytes,
@@ -208,37 +150,24 @@ def _persist_rule_checks(
 
 
 def _claim_approved_evidence(session: Session, submission: Submission) -> None:
-    """Claim every evidence hash before scoring; PKs close concurrent races."""
+    """Reivindica cada checksum antes de pontuar; a PK fecha a corrida.
+
+    Imagem e documento deixaram de ter tabelas separadas: uma única
+    reivindicação por checksum cobre os dois, e a chave primária garante que
+    duas aprovações simultâneas do mesmo arquivo não paguem duas vezes.
+    """
 
     files = session.scalars(
         select(SubmissionFile).where(SubmissionFile.submission_id == submission.id)
     ).all()
     for stored_file in files:
-        existing = session.get(ApprovedFileEvidence, stored_file.sha256)
+        existing = session.get(ApprovedEvidence, stored_file.checksum_sha256)
         if existing is not None and existing.submission_id != submission.id:
             raise ValueError("Este arquivo já foi utilizado em uma aprovação")
         if existing is None:
             session.add(
-                ApprovedFileEvidence(
-                    sha256=stored_file.sha256,
-                    file_id=stored_file.id,
-                    submission_id=submission.id,
-                    student_id=submission.student_id,
-                )
-            )
-
-    images = session.scalars(
-        select(SubmissionImage).where(SubmissionImage.submission_id == submission.id)
-    ).all()
-    for image in images:
-        existing = session.get(ApprovedEvidence, image.sha256)
-        if existing is not None and existing.submission_id != submission.id:
-            raise ValueError("Esta imagem já foi utilizada em uma aprovação")
-        if existing is None:
-            session.add(
                 ApprovedEvidence(
-                    sha256=image.sha256,
-                    image_id=image.id,
+                    checksum_sha256=stored_file.checksum_sha256,
                     submission_id=submission.id,
                     student_id=submission.student_id,
                 )
@@ -268,12 +197,18 @@ def _previous_summaries(
 
 def _duplicate_candidates(
     session: Session,
-) -> list[tuple[SubmissionImage, str]]:
+) -> list[tuple[SubmissionFile, str]]:
+    """Arquivos já enviados que podem colidir com o envio atual.
+
+    Só entram os que têm pHash: a comparação perceptual é de imagem. Documento
+    é confrontado por checksum exato, em outro caminho.
+    """
+
     return list(
         session.execute(
-            select(SubmissionImage, Submission.student_id).join(
-                Submission, Submission.id == SubmissionImage.submission_id
-            )
+            select(SubmissionFile, Submission.student_id)
+            .join(Submission, Submission.id == SubmissionFile.submission_id)
+            .where(SubmissionFile.phash.is_not(None))
         ).all()
     )
 
@@ -282,23 +217,24 @@ def _record_duplicate_matches(
     session: Session,
     *,
     submission: Submission,
-    stored_images: Sequence[SubmissionImage],
+    stored_files: Sequence[SubmissionFile],
     analyzed: Sequence[AnalyzedImage],
-    prior_candidates: Sequence[tuple[SubmissionImage, str]],
+    prior_candidates: Sequence[tuple[SubmissionFile, str]],
     max_distance: int,
 ) -> tuple[list[bool], list[bool]]:
     exact_flags = [False] * len(analyzed)
     similar_flags = [False] * len(analyzed)
     for index, (current_model, current_analysis) in enumerate(
-        zip(stored_images, analyzed, strict=True)
+        zip(stored_files, analyzed, strict=True)
     ):
         for candidate, candidate_student_id in prior_candidates:
-            if current_analysis.sha256 == candidate.sha256:
+            if current_analysis.sha256 == candidate.checksum_sha256:
                 exact_flags[index] = True
                 session.add(
                     DuplicateMatch(
-                        image_id=current_model.id,
-                        matched_image_id=candidate.id,
+                        submission_id=submission.id,
+                        file_id=current_model.id,
+                        matched_file_id=candidate.id,
                         kind=DuplicateKind.EXACT,
                         distance=0,
                         same_student=candidate_student_id == submission.student_id,
@@ -310,22 +246,24 @@ def _record_duplicate_matches(
                 similar_flags[index] = True
                 session.add(
                     DuplicateMatch(
-                        image_id=current_model.id,
-                        matched_image_id=candidate.id,
+                        submission_id=submission.id,
+                        file_id=current_model.id,
+                        matched_file_id=candidate.id,
                         kind=DuplicateKind.SIMILAR,
                         distance=distance,
                         same_student=candidate_student_id == submission.student_id,
                     )
                 )
         for previous_index in range(index):
-            previous_model = stored_images[previous_index]
+            previous_model = stored_files[previous_index]
             previous_analysis = analyzed[previous_index]
             if current_analysis.sha256 == previous_analysis.sha256:
                 exact_flags[index] = True
                 session.add(
                     DuplicateMatch(
-                        image_id=current_model.id,
-                        matched_image_id=previous_model.id,
+                        submission_id=submission.id,
+                        file_id=current_model.id,
+                        matched_file_id=previous_model.id,
                         kind=DuplicateKind.EXACT,
                         distance=0,
                         same_student=True,
@@ -339,8 +277,9 @@ def _record_duplicate_matches(
                     similar_flags[index] = True
                     session.add(
                         DuplicateMatch(
-                            image_id=current_model.id,
-                            matched_image_id=previous_model.id,
+                            submission_id=submission.id,
+                            file_id=current_model.id,
+                            matched_file_id=previous_model.id,
                             kind=DuplicateKind.SIMILAR,
                             distance=distance,
                             same_student=True,
@@ -356,11 +295,19 @@ def submit_evidence(
     activity_id: str,
     uploads: Sequence[UploadPayload],
     settings: Settings,
+    gateway: StorageGateway,
     ocr_engine: Any | None = None,
     title: str | None = None,
     url: str | None = None,
     summary: str | None = None,
 ) -> SubmissionResult:
+    """Recebe a comprovação: valida, envia ao Storage e grava os metadados.
+
+    ``gateway`` é o bucket privado autenticado com o token do próprio aluno,
+    para as políticas do Storage valerem. Ele é injetado em vez de construído
+    aqui para os testes exercitarem o fluxo inteiro sem rede.
+    """
+
     require_active(actor)
     if actor.role != Role.STUDENT:
         raise AuthorizationError("Use um usuário aluno para enviar comprovação")
@@ -471,79 +418,81 @@ def submit_evidence(
         )
 
     prior_candidates = _duplicate_candidates(session)
-    stored_images: list[SubmissionImage] = []
-    stored_files: list[SubmissionFile] = []
-    for upload, analysis in zip(image_uploads, analyses, strict=True):
-        path = persist_image(analysis, settings.upload_dir)
-        session.info.setdefault("created_upload_paths", []).append(path)
-        model = SubmissionImage(
-            submission_id=submission.id,
-            storage_key=analysis.storage_name,
-            client_filename=_client_filename(upload.filename),
-            mime_type=analysis.mime_type,
-            image_format=analysis.image_format,
-            size_bytes=analysis.byte_size,
-            width=analysis.width,
-            height=analysis.height,
-            sha256=analysis.sha256,
-            phash=analysis.phash,
-            laplacian_variance=analysis.laplacian_variance,
-        )
-        session.add(model)
-        stored_images.append(model)
-    session.flush()
-    for upload, analysis, image_model in zip(
-        image_uploads, analyses, stored_images, strict=True
+    # Os binários vão para o bucket privado; o banco fica só com a referência.
+    # ``salvar_arquivo`` compensa sozinho: se a gravação dos metadados falhar,
+    # o objeto recém-enviado é removido, e se nem isso der certo ele é
+    # registrado em ``storage_orphans`` para reconciliação.
+    conexao = session.connection()
+    limites = limites_de(settings)
+    registrados: list[ArquivoRegistrado] = []
+    for posicao, (upload, analysis) in enumerate(
+        zip(image_uploads, analyses, strict=True)
     ):
-        file_model = SubmissionFile(
-            submission_id=submission.id,
-            image_id=image_model.id,
-            storage_key=analysis.storage_name,
-            client_filename=_client_filename(upload.filename),
-            mime_type=analysis.mime_type,
-            file_kind="image",
-            size_bytes=analysis.byte_size,
-            sha256=analysis.sha256,
-            extracted_text="",
+        registrados.append(
+            salvar_arquivo(
+                conexao,
+                gateway,
+                submission_id=submission.id,
+                student_id=actor.id,
+                filename=_client_filename(upload.filename),
+                dados=analysis.original_bytes,
+                content_type=analysis.mime_type,
+                categoria=CATEGORIA_IMAGEM,
+                extensao=analysis.extension,
+                bucket=settings.storage_bucket,
+                limites=limites,
+                phash=analysis.phash,
+                position=posicao,
+                width=analysis.width,
+                height=analysis.height,
+            )
         )
-        session.add(file_model)
-        stored_files.append(file_model)
 
     duplicate_document = False
     document_hashes: set[str] = set()
-    for upload, document in documents:
+    for deslocamento, (upload, document) in enumerate(documents):
         duplicate_document = (
             duplicate_document
             or document.sha256 in document_hashes
             or session.scalar(
                 select(SubmissionFile.id).where(
-                    SubmissionFile.sha256 == document.sha256
+                    SubmissionFile.checksum_sha256 == document.sha256
                 )
             )
             is not None
         )
         document_hashes.add(document.sha256)
-        storage_key, path = persist_document(document, settings.upload_dir)
-        session.info.setdefault("created_upload_paths", []).append(path)
-        file_model = SubmissionFile(
-            submission_id=submission.id,
-            storage_key=storage_key,
-            client_filename=_client_filename(upload.filename),
-            mime_type=document.mime_type,
-            file_kind=document.file_kind,
-            size_bytes=document.byte_size,
-            sha256=document.sha256,
-            page_count=document.page_count,
-            extracted_text=document.extracted_text,
+        registrados.append(
+            salvar_arquivo(
+                conexao,
+                gateway,
+                submission_id=submission.id,
+                student_id=actor.id,
+                filename=_client_filename(upload.filename),
+                dados=document.original_bytes,
+                content_type=document.mime_type,
+                categoria=CATEGORIA_DOCUMENTO,
+                extensao=document.extension,
+                bucket=settings.storage_bucket,
+                limites=limites,
+                ocr_text=document.extracted_text or None,
+                position=len(image_uploads) + deslocamento,
+                page_count=document.page_count,
+            )
         )
-        session.add(file_model)
-        stored_files.append(file_model)
-    session.flush()
+
+    # As linhas foram inseridas por SQL na mesma transação; recarregar pelo ORM
+    # é o que dá aos passos seguintes objetos mapeados, na ordem de envio.
+    stored_files = [
+        session.get(SubmissionFile, registro.id) for registro in registrados
+    ]
 
     exact_flags, similar_flags = _record_duplicate_matches(
         session,
         submission=submission,
-        stored_images=stored_images,
+        # ``stored_files`` também contém documentos; a comparação perceptual é
+        # posicional contra ``analyses``, então só as imagens entram aqui.
+        stored_files=stored_files[: len(analyses)],
         analyzed=analyses,
         prior_candidates=prior_candidates,
         max_distance=settings.phash_distance_threshold,
@@ -655,7 +604,7 @@ def get_submission_for_user(
     submission = session.scalar(
         select(Submission)
         .options(
-            selectinload(Submission.images),
+            selectinload(Submission.files),
             selectinload(Submission.files),
             selectinload(Submission.checks),
             selectinload(Submission.activity),
@@ -675,7 +624,15 @@ def get_submission_file_for_user(
     actor: User,
     file_id: str,
     settings: Settings,
-) -> tuple[SubmissionFile, Path]:
+    gateway: StorageGateway,
+) -> tuple[SubmissionFile, bytes]:
+    """Entrega os bytes do arquivo depois de conferir quem pode vê-lo.
+
+    A chave nunca vem da interface: o identificador é resolvido em um registro,
+    a propriedade é conferida contra a sessão e só então o objeto é buscado.
+    O consumo de egress é contabilizado, porque é o que a conta gratuita cobra.
+    """
+
     stored_file = session.get(SubmissionFile, file_id)
     if stored_file is None:
         raise LookupError("Arquivo não encontrado")
@@ -683,10 +640,110 @@ def get_submission_file_for_user(
     if submission is None:
         raise LookupError("Submissão não encontrada")
     require_submission_access(actor, submission)
-    path = settings.upload_dir / stored_file.storage_key
-    if not path.is_file() or path.parent.resolve() != settings.upload_dir.resolve():
-        raise LookupError("Arquivo armazenado não encontrado")
-    return stored_file, path
+    try:
+        dados = baixar_arquivo(
+            session.connection(),
+            gateway,
+            file_id=stored_file.id,
+            student_id=actor.id,
+            is_admin=actor.role == Role.ADMIN,
+            limites=limites_de(settings),
+        )
+    except ArquivoNaoAutorizado as erro:
+        raise AuthorizationError(str(erro)) from erro
+    return stored_file, dados
+
+
+def get_submission_file_url_for_user(
+    session: Session,
+    *,
+    actor: User,
+    file_id: str,
+    settings: Settings,
+    gateway: StorageGateway,
+    expira_em: int = URL_EXPIRA_SEGUNDOS,
+) -> tuple[SubmissionFile, str]:
+    """URL assinada curta, emitida somente depois de autorizar o registro.
+
+    Entrega o arquivo sem que os bytes passem pelo servidor do Streamlit. A
+    ordem de verificação é a mesma do download e não pode ser afrouxada: o
+    identificador é resolvido em um registro, a submissão é conferida contra o
+    ator, e só então ``url_temporaria`` assina — que por sua vez chama
+    ``resolver_arquivo_autorizado`` e, para quem não é administrador,
+    ``ensure_owned_key``. São duas barreiras sobre coisas diferentes: esta
+    camada confere a submissão, a camada de Storage confere a chave física.
+
+    A URL não é gravada em lugar nenhum: o banco guarda apenas a chave.
+    """
+
+    stored_file = session.get(SubmissionFile, file_id)
+    if stored_file is None:
+        raise LookupError("Arquivo não encontrado")
+    submission = session.get(Submission, stored_file.submission_id)
+    if submission is None:
+        raise LookupError("Submissão não encontrada")
+    require_submission_access(actor, submission)
+    try:
+        url = url_temporaria(
+            session.connection(),
+            gateway,
+            file_id=stored_file.id,
+            student_id=actor.id,
+            is_admin=actor.role == Role.ADMIN,
+            limites=limites_de(settings),
+            expira_em=expira_em,
+        )
+    except ArquivoNaoAutorizado as erro:
+        raise AuthorizationError(str(erro)) from erro
+    return stored_file, url
+
+
+# Uma página cobre a temporada inteira de um aluno típico — a planilha
+# migrada tem 61 envios para 7 alunos — então o histórico costuma caber sem
+# paginar. Para o administrador, é uma tela cheia da fila sem prometer que a
+# consulta continue barata quando o acervo dobrar.
+PAGINA_PADRAO = 25
+
+
+def _filtros_de_submissao(
+    *,
+    actor: User,
+    student_id: str | None,
+    status: SubmissionStatus | str | None,
+    statuses: Collection[SubmissionStatus | str] | None,
+    activity_id: str | None,
+    start: datetime | None,
+    end: datetime | None,
+) -> list[Any]:
+    """Condições compartilhadas pela listagem e pela contagem.
+
+    As duas precisam enxergar exatamente o mesmo conjunto: um filtro aplicado
+    só de um lado faria o total discordar das páginas.
+    """
+
+    require_active(actor)
+    if actor.role != Role.ADMIN:
+        if student_id is not None and student_id != actor.id:
+            raise AuthorizationError("Acesso negado")
+        student_id = actor.id
+    condicoes: list[Any] = []
+    if student_id:
+        condicoes.append(Submission.student_id == student_id)
+    if status:
+        condicoes.append(Submission.status == SubmissionStatus(status))
+    if statuses is not None:
+        # Coleção vazia é um filtro que não seleciona nada, e não a ausência
+        # de filtro: `in_(())` é justamente o que expressa isso.
+        condicoes.append(
+            Submission.status.in_([SubmissionStatus(item) for item in statuses])
+        )
+    if activity_id:
+        condicoes.append(Submission.activity_id == activity_id)
+    if start:
+        condicoes.append(Submission.received_at >= start)
+    if end:
+        condicoes.append(Submission.received_at < end)
+    return condicoes
 
 
 def list_submissions(
@@ -695,37 +752,77 @@ def list_submissions(
     actor: User,
     student_id: str | None = None,
     status: SubmissionStatus | str | None = None,
+    statuses: Collection[SubmissionStatus | str] | None = None,
     activity_id: str | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
+    limit: int | None = PAGINA_PADRAO,
+    offset: int = 0,
 ) -> list[Submission]:
-    require_active(actor)
-    if actor.role != Role.ADMIN:
-        if student_id is not None and student_id != actor.id:
-            raise AuthorizationError("Acesso negado")
-        student_id = actor.id
+    """Uma página de submissões, da mais recente para a mais antiga.
+
+    ``limit=None`` devolve tudo e existe para quem realmente precisa do
+    conjunto inteiro — exportação, contagem em memória. Não use em tela: cada
+    submissão carrega seus arquivos, e a lista cresce com o acervo.
+    """
+
+    if limit is not None and limit <= 0:
+        raise ValueError("limit deve ser positivo")
+    if offset < 0:
+        raise ValueError("offset não pode ser negativo")
+    condicoes = _filtros_de_submissao(
+        actor=actor,
+        student_id=student_id,
+        status=status,
+        statuses=statuses,
+        activity_id=activity_id,
+        start=start,
+        end=end,
+    )
     statement = (
         select(Submission)
         .options(
             selectinload(Submission.student),
             selectinload(Submission.activity),
             selectinload(Submission.files),
-            selectinload(Submission.images),
             selectinload(Submission.checks),
         )
+        .where(*condicoes)
         .order_by(Submission.received_at.desc(), Submission.id.desc())
     )
-    if student_id:
-        statement = statement.where(Submission.student_id == student_id)
-    if status:
-        statement = statement.where(Submission.status == SubmissionStatus(status))
-    if activity_id:
-        statement = statement.where(Submission.activity_id == activity_id)
-    if start:
-        statement = statement.where(Submission.received_at >= start)
-    if end:
-        statement = statement.where(Submission.received_at < end)
+    if limit is not None:
+        statement = statement.limit(limit)
+    if offset:
+        statement = statement.offset(offset)
     return list(session.scalars(statement).all())
+
+
+def count_submissions(
+    session: Session,
+    *,
+    actor: User,
+    student_id: str | None = None,
+    status: SubmissionStatus | str | None = None,
+    statuses: Collection[SubmissionStatus | str] | None = None,
+    activity_id: str | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> int:
+    """Quantas submissões os mesmos filtros alcançam, sem carregar nenhuma."""
+
+    condicoes = _filtros_de_submissao(
+        actor=actor,
+        student_id=student_id,
+        status=status,
+        statuses=statuses,
+        activity_id=activity_id,
+        start=start,
+        end=end,
+    )
+    total = session.scalar(
+        select(func.count(Submission.id)).where(*condicoes)
+    )
+    return int(total or 0)
 
 
 def review_submission(
@@ -760,10 +857,12 @@ def review_submission(
             )
             if units < 1:
                 raise ValueError("Aprovação de lições exige ao menos uma unidade")
+            # Só imagens contam como unidade; documento não é lição.
             image_count = int(
                 session.scalar(
-                    select(func.count(SubmissionImage.id)).where(
-                        SubmissionImage.submission_id == submission.id
+                    select(func.count(SubmissionFile.id)).where(
+                        SubmissionFile.submission_id == submission.id,
+                        SubmissionFile.content_type.startswith("image/"),
                     )
                 )
                 or 0
@@ -1139,8 +1238,17 @@ def save_user(
     role: Role | str = Role.STUDENT,
     active: bool = True,
     user_id: str | None = None,
+    auth_user_id: str | None = None,
     reminders_enabled: bool | None = None,
+    contas: Contas | None = None,
 ) -> User:
+    """Cria ou atualiza um perfil.
+
+    ``user_id`` seleciona quem editar; ``auth_user_id`` é o identificador da
+    conta no Supabase Auth, usado como chave do perfil na criação — os dois são
+    coisas distintas e não devem ser confundidos.
+    """
+
     require_admin(actor)
     normalized = normalize_username(username)
     requested_role = Role(role)
@@ -1151,7 +1259,10 @@ def save_user(
     )
     before = None
     if user is None:
+        # O id do perfil é o mesmo da conta no Supabase Auth. Quem já criou a
+        # conta passa o identificador; sem ele o perfil nasceria sem login.
         user = User(
+            id=str(auth_user_id) if auth_user_id else new_id(),
             username=normalized,
             display_name=display_name.strip(),
             role=requested_role,
@@ -1199,7 +1310,11 @@ def save_user(
             user.reminders_enabled = bool(reminders_enabled)
         action = "user_updated"
         if before["role"] != requested_role.value or before["active"] != bool(active):
-            revoke_all_user_sessions(session, user)
+            # Mudança de papel ou desativação precisa alcançar a sessão já
+            # emitida. Só o Supabase Auth consegue invalidá-la; marcar o perfil
+            # deixaria o acesso vivo até o token expirar sozinho.
+            if contas is not None and not active:
+                contas.desativar(user.id)
     session.flush()
     add_audit(
         session,
@@ -1223,24 +1338,43 @@ def create_user_account(
     session: Session,
     *,
     actor: User,
+    contas: Contas,
     username: str,
     display_name: str,
     role: Role | str = Role.STUDENT,
 ) -> tuple[User, str]:
+    """Cria a conta de acesso e o perfil correspondente.
+
+    A ordem importa: a conta no Supabase Auth vem primeiro porque é ela que
+    define o identificador, e o perfil referencia ``auth.users`` por chave
+    estrangeira. Fazer o contrário criaria um perfil sem login possível.
+
+    A aplicação não guarda senha. A temporária devolvida aqui é exibida uma
+    única vez ao administrador, que a entrega ao aluno.
+    """
+
     require_admin(actor)
     normalized = normalize_username(username)
     if session.scalar(select(User.id).where(func.lower(User.username) == normalized)):
         raise ValueError("Já existe uma conta com esse usuário")
-    temporary_password = generate_temporary_password()
-    user = save_user(
-        session,
-        actor=actor,
-        username=normalized,
-        display_name=display_name,
-        role=role,
-        active=True,
+    auth_user_id, temporary_password = contas.criar(
+        username=normalized, display_name=display_name
     )
-    set_temporary_password(session, user, temporary_password)
+    try:
+        user = save_user(
+            session,
+            actor=actor,
+            username=normalized,
+            display_name=display_name,
+            role=role,
+            active=True,
+            auth_user_id=auth_user_id,
+        )
+    except Exception:
+        # O perfil não entrou; a conta recém-criada ficaria órfã no Auth,
+        # ocupando o nome de usuário sem nada do outro lado.
+        contas.remover(auth_user_id)
+        raise
     return user, temporary_password
 
 
@@ -1248,14 +1382,20 @@ def reset_user_password(
     session: Session,
     *,
     actor: User,
+    contas: Contas,
     user_id: str,
 ) -> str:
+    """Gera uma senha temporária nova no Supabase Auth.
+
+    Substitui a recuperação por e-mail: como os endereços das contas são
+    internos, ninguém recebe link. O administrador gera e entrega.
+    """
+
     require_admin(actor)
     user = session.get(User, user_id)
     if user is None or user.archived_at is not None:
         raise LookupError("Usuário não encontrado")
-    temporary_password = generate_temporary_password()
-    set_temporary_password(session, user, temporary_password)
+    temporary_password = contas.redefinir_senha(user.id)
     add_audit(
         session,
         actor_id=actor.id,
@@ -1272,6 +1412,7 @@ def archive_or_delete_user(
     *,
     actor: User,
     user_id: str,
+    contas: Contas | None = None,
 ) -> str:
     require_admin(actor)
     user = session.get(User, user_id)
@@ -1307,9 +1448,6 @@ def archive_or_delete_user(
                 )
             ),
             session.scalar(
-                select(func.count(AuthSession.id)).where(AuthSession.user_id == user.id)
-            ),
-            session.scalar(
                 select(func.count(AuditLog.id)).where(AuditLog.actor_id == user.id)
             ),
         )
@@ -1326,9 +1464,19 @@ def archive_or_delete_user(
     if references:
         user.active = False
         user.archived_at = utcnow()
-        revoke_all_user_sessions(session, user)
+        if contas is not None:
+            # Banir antes de confirmar é o lado seguro do erro: se o commit
+            # falhar, a conta fica sem acesso em vez de ficar acessível.
+            contas.desativar(user.id)
         return "archived"
     session.delete(user)
+    # A ordem importa: o perfil é apagado primeiro, ainda dentro da transação.
+    # Se a remoção no Auth falhar logo abaixo, o rollback devolve o perfil e os
+    # dois lados continuam de acordo. Fazer o inverso apagaria o perfil por
+    # cascade e deixaria o DELETE do ORM sem linha para remover.
+    session.flush()
+    if contas is not None:
+        contas.remover(user.id)
     return "deleted"
 
 
@@ -1437,7 +1585,7 @@ def list_review_queue(session: Session, *, actor: User) -> list[Submission]:
             .options(
                 selectinload(Submission.student),
                 selectinload(Submission.activity),
-                selectinload(Submission.images),
+                selectinload(Submission.files),
                 selectinload(Submission.files),
                 selectinload(Submission.checks),
             )
@@ -1486,11 +1634,13 @@ __all__ = [
     "archive_or_delete_user",
     "cancel_submission",
     "count_activity_references",
+    "count_submissions",
     "create_activity",
     "create_points_adjustment",
     "create_user_account",
     "get_goal_configuration",
     "get_submission_file_for_user",
+    "get_submission_file_url_for_user",
     "get_submission_for_user",
     "list_resources",
     "list_review_queue",
@@ -1498,7 +1648,6 @@ __all__ = [
     "normalize_resource_url",
     "replace_resources",
     "reset_user_password",
-    "resolve_oidc_user",
     "review_submission",
     "save_activity_changes",
     "save_goal_configuration",

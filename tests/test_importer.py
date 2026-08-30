@@ -9,7 +9,7 @@ from openpyxl import Workbook
 from sqlalchemy import func, select
 
 from english_leaderboard.importer import import_legacy_workbook, parse_legacy_workbook
-from english_leaderboard.models import LedgerKind, LedgerTransaction, User
+from english_leaderboard.schema import LedgerKind, LedgerTransaction, User
 
 
 def _dated_workbook(*, changed: bool = False) -> bytes:

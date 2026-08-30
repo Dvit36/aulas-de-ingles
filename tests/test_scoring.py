@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from sqlalchemy import func, select
 
-from english_leaderboard.models import (
+from english_leaderboard.schema import (
     Activity,
     LedgerTransaction,
     LessonBatchUnit,
     Role,
     Submission,
     SubmissionStatus,
+    new_id,
 )
 from english_leaderboard.scoring import (
     award_approved_submission,
@@ -226,7 +227,7 @@ def test_units_never_migrate_between_grouped_activities(session, users):
 def test_weekly_lesson_count_only_sees_the_current_week(session, users):
     from datetime import timedelta
 
-    from english_leaderboard.models import LessonUnit
+    from english_leaderboard.schema import LessonUnit
     from english_leaderboard.scoring import week_bounds, weekly_lesson_count
 
     student = users[Role.STUDENT]
@@ -263,7 +264,7 @@ def test_weekly_lesson_count_only_sees_the_current_week(session, users):
 def test_weekly_goal_summary_counts_students_that_reached_it(session, users):
     from datetime import timedelta
 
-    from english_leaderboard.models import LessonUnit
+    from english_leaderboard.schema import LessonUnit
     from english_leaderboard.scoring import (
         students_meeting_weekly_goal,
         week_bounds,
@@ -297,12 +298,12 @@ def test_weekly_goal_summary_counts_students_that_reached_it(session, users):
 
 
 def test_next_rival_reports_the_gap_and_ignores_ties(session, users):
-    from english_leaderboard.models import User
+    from english_leaderboard.schema import User
     from english_leaderboard.scoring import next_rival
 
     student = users[Role.STUDENT]
-    leader = User(username="leader", display_name="Líder", role=Role.STUDENT)
-    tied = User(username="tied", display_name="Empatado", role=Role.STUDENT)
+    leader = User(id=new_id(), username="leader", display_name="Líder", role=Role.STUDENT)
+    tied = User(id=new_id(), username="tied", display_name="Empatado", role=Role.STUDENT)
     session.add_all([leader, tied])
     session.flush()
     meeting = _activity(session, "english_meeting")

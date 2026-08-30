@@ -1,16 +1,34 @@
 # English Activities & Leaderboard
 
-Aplicação interna Streamlit para receber comprovações de atividades de inglês, executar OCR local, encaminhar ambiguidades para revisão e calcular o leaderboard a partir de um ledger imutável.
+Aplicação Streamlit para receber comprovações de atividades de inglês, executar
+OCR, encaminhar ambiguidades para revisão e calcular o leaderboard a partir de
+um ledger imutável.
 
-O MVP foi desenhado para cerca de 15 alunos em uma única máquina. Não usa API paga, IA generativa, Redis, Celery ou serviços externos de processamento. A sincronização de relatórios com Google Sheets é opcional.
+## Arquitetura oficial e estado da migração
+
+A arquitetura oficial de produção é **Streamlit Cloud + Supabase Auth + Supabase
+PostgreSQL + Supabase Storage**. GitHub armazena somente código, configuração sem
+segredos, documentação e assets fixos. Arquivos de alunos pertencem ao Storage; dados
+estruturados e metadados pertencem ao PostgreSQL; autenticação pertence ao
+Supabase Auth. O filesystem do Streamlit é sempre temporário.
+
+Leia [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) antes de alterar persistência,
+autenticação ou uploads.
+
+> **Arquitetura oficial em vigor.** Identidade no Supabase Auth, dados no
+> Supabase PostgreSQL com RLS, binários no Supabase Storage privado. A
+> autenticação local, o SQLite de produção, os uploads em disco e o backup no
+> GitHub foram removidos do código. O SQLite permanece apenas como banco de
+> desenvolvimento e da suíte de testes, exercitando os **mesmos** modelos.
 
 ## O que está incluído
 
+Na implementação legada atual, preservada enquanto a migração é feita:
+
 - página pública **Entrar** em uma barra de navegação superior, sem menu lateral;
-- autenticação local fechada por **nome de usuário** e senha Argon2, com senha
-  temporária, troca obrigatória, sessões persistentes e revogáveis e bloqueio
-  por tentativas;
-- modo demo local com escolha de identidade e clique explícito em **Entrar**, bloqueado em produção;
+- autenticação por **nome de usuário** no Supabase Auth, com senha temporária
+  entregue pela administração e sessão persistente pelo refresh token; o
+  controle de tentativas de login é o do próprio Supabase Auth;
 - depois do login, rotas permitidas pelo papel e a página **Minha conta** com identidade e logout;
 - papéis `student` e `admin`, validados também na camada de serviço;
 - catálogo configurável com pontuação histórica preservada;
@@ -36,7 +54,8 @@ O MVP foi desenhado para cerca de 15 alunos em uma única máquina. Não usa API
 - históricos visuais por aluno e administrador, gestão segura de contas/atividades
   e lembretes SMTP configuráveis em processo separado;
 - importação idempotente da planilha legada e relatório JSON;
-- SQLite WAL, uploads persistentes, backup, Docker e testes offline.
+- SQLite em memória para a suíte offline, sobre os mesmos modelos que rodam no
+  PostgreSQL de produção.
 
 ## Materiais analisados
 
@@ -50,13 +69,12 @@ locais. Veja [docs/PRD.md](docs/PRD.md) e [docs/SPEC.md](docs/SPEC.md).
 
 - Python 3.11 ou 3.12 (RapidOCR legado não suporta Python 3.13+);
 - Streamlit 1.61.1 ou superior, com o extra de autenticação;
-- aproximadamente 2–4 CPUs, 8 GB de RAM e SSD;
-- Docker + Docker Compose, se optar por containers.
+- aproximadamente 2–4 CPUs, 8 GB de RAM e SSD.
 
-O núcleo da aplicação, autenticação local, OCR e testes funcionam sem API externa.
-Somente SMTP e a sincronização opcional com Google Sheets exigem internet.
+O núcleo legado, OCR e testes locais funcionam sem API externa. A arquitetura
+oficial de produção exige conectividade com Supabase e Supabase Storage.
 
-## Execução local em modo demo
+## Execução local
 
 ```bash
 cp .env.example .env
@@ -70,86 +88,82 @@ english-leaderboard init-db
 streamlit run streamlit_app.py
 ```
 
-Abra `http://localhost:8501`. O `.env.example` ativa o modo demo, cria um aluno e um administrador locais e popula cinco alunos claramente marcados como **Demo** com 52 envios sintéticos e ranking idempotente. A aplicação começa na área pública: abra **Entrar**, escolha uma identidade e clique explicitamente em **Entrar**. Apenas selecionar um usuário não inicia uma sessão. A identidade escolhida permanece na sessão até usar **Minha conta → Sair do modo demo**. Defina `SEED_FAKE_DATA=false` para impedir a criação em bancos novos; a opção não apaga lançamentos já criados no ledger imutável.
+Abra `http://localhost:8501`. A aplicação começa na área pública, em **Entrar**.
+Toda conta vive no Supabase Auth: preencha as variáveis do Supabase e as de
+bootstrap no `.env` antes de subir, porque não existe login local nem identidade
+de demonstração.
 
-Nunca use o modo demo em produção; o startup recusa `APP_ENV=production` junto de `DEMO_AUTH_ENABLED=true`.
+`SEED_FAKE_DATA=true` popula cinco alunos marcados como **Demo** com envios
+sintéticos e ranking idempotente, úteis para ver o leaderboard preenchido em
+desenvolvimento. Eles são apenas perfis, sem conta no Auth e sem acesso — por
+isso a opção nasce `false` no `.env.example` e não deve ser ligada em um banco
+apontado para um Supabase real. Desligá-la não apaga lançamentos já criados no
+ledger imutável.
 
-## Primeiro administrador e autenticação local
+## Contas e autenticação
 
-Não existe cadastro público. Antes do primeiro `init-db`, defina no ambiente:
+A identidade vive no **Supabase Auth**. A aplicação não guarda senha, hash nem
+sessão própria: ela troca credenciais por um token do Supabase e o mantém em
+memória, com o *refresh token* no `localStorage` do navegador por um componente
+bidirecional do Streamlit. Nada de nome, usuário ou papel é gravado no navegador.
+
+Não existe cadastro público. O primeiro administrador nasce das variáveis de
+bootstrap, uma única vez:
 
 ```dotenv
-LOCAL_AUTH_ENABLED=true
 BOOTSTRAP_ADMIN_NAME=Nome do administrador
 BOOTSTRAP_ADMIN_USERNAME=admin
 BOOTSTRAP_ADMIN_PASSWORD=uma-senha-forte-com-10-ou-mais-caracteres
 ```
 
-Execute `english-leaderboard init-db`. A conta é criada apenas quando ainda não
-existe administrador local e nunca é sobrescrita em reinicializações. No primeiro
-login, a troca da senha é obrigatória. Depois disso, o administrador cria as demais
-contas pela página **Alunos**; a senha temporária é mostrada uma única vez.
+Na primeira subida a conta é criada no Supabase Auth e o perfil correspondente
+no PostgreSQL. Se já existe um administrador ativo, essas variáveis são
+ignoradas — trocar a senha de quem já usa o sistema por variável de ambiente
+seria uma porta dos fundos. Depois disso o administrador cria as demais contas
+pela página **Alunos**, e a senha temporária aparece uma única vez.
 
-O login usa nome de usuário, não e-mail. Um usuário aceita de 3 a 150 caracteres
-entre letras, números, ponto, hífen, sublinhado e arroba, sempre em minúsculas.
-Bancos criados antes desta mudança guardavam o identificador na coluna `email`; a
-migração 2 renomeia essa coluna para `username` sem alterar os valores, então as
-contas existentes continuam entrando com exatamente o que já usavam.
+### Login por usuário, não por e-mail
 
-As variáveis de ambiente também foram renomeadas, e os nomes antigos continuam
-sendo aceitos para não derrubar ambientes já implantados na atualização:
+O Supabase Auth autentica por endereço, e a equipe quis manter o login por nome
+de usuário. A aplicação resolve isso traduzindo `ana.silva` para
+`ana.silva@{SUPABASE_USERNAME_DOMAIN}` antes de falar com o serviço; o aluno
+nunca vê esse endereço, e `profiles.username` continua sendo a identidade
+visível. Um usuário aceita de 3 a 150 caracteres entre letras, números, ponto,
+hífen, sublinhado e arroba, em minúsculas. Contas migradas que guardavam um
+e-mail nesse campo continuam entrando com exatamente o que já usavam.
+
+A consequência aceita é que **não há recuperação de senha por e-mail**: como
+nenhum endereço é real, ninguém receberia o link. As contas nascem confirmadas
+pela Admin API e a redefinição é feita pelo administrador, que gera e entrega
+uma senha temporária — o mesmo fluxo que a equipe já usava.
+
+A senha é escolhida livremente: não há exigência de tamanho, letras ou números.
+Desativar ou excluir uma conta alcança o Supabase Auth, e não apenas o perfil:
+marcar só o perfil deixaria a sessão já emitida válida até expirar sozinha.
+
+### Nomes de variáveis renomeados
+
+Os nomes antigos continuam aceitos para não derrubar ambientes já implantados:
 
 | Nome atual | Nome antigo ainda aceito |
 |---|---|
 | `BOOTSTRAP_ADMIN_USERNAME` | `BOOTSTRAP_ADMIN_EMAIL` |
-| `ALLOWED_USERNAMES` | `ALLOWED_EMAILS` |
-| `ADMIN_USERNAMES` | `ADMIN_EMAILS` |
-| `DEMO_STUDENT_USERNAME` | `DEMO_STUDENT_EMAIL` |
-| `DEMO_ADMIN_USERNAME` | `DEMO_ADMIN_EMAIL` |
 
-Quando as duas estão definidas, a atual vence. Prefira migrar os segredos para
-os nomes atuais; o suporte aos antigos existe para a janela de transição.
+Quando as duas estão definidas, a atual vence.
 
-As senhas usam Argon2 e a pessoa escolhe a que quiser: não há exigência de
-tamanho, letras ou números, apenas a recusa de senha vazia. A proteção contra
-tentativa e erro fica no bloqueio por tentativas descrito abaixo, e a aplicação
-precisa estar atrás de HTTPS. A sessão usa token aleatório opaco: no servidor fica apenas
-seu SHA-256 e, no navegador, o token é mantido em `localStorage` por um componente
-oficial bidirecional do Streamlit. Nenhum nome, usuário, papel ou senha é salvo no
-navegador. A sessão expira após `SESSION_HOURS` e é revogada em logout, alteração,
-redefinição, desativação ou mudança de papel. Após `LOGIN_MAX_ATTEMPTS` falhas, a
-conta fica bloqueada por `LOGIN_LOCK_MINUTES`. A aplicação deve ser publicada atrás
-de HTTPS. O modo Google OIDC legado continua disponível somente quando
-`LOCAL_AUTH_ENABLED=false`.
+### Streamlit Community Cloud
 
-### Streamlit Community Cloud (demonstração)
+O Community Cloud **não garante persistência do filesystem local** — foi por
+isso que dados criados em um dia sumiram no seguinte, no desenho anterior. Nada
+que precise sobreviver a um restart mora lá: o banco é o Supabase PostgreSQL e
+os arquivos vão para o Supabase Storage. O disco local só recebe processamento
+temporário.
 
-Antes de atualizar a aplicação no Community Cloud, abra **Manage app → Settings →
-Secrets** e acrescente valores de nível raiz (TOML):
+Preencha os Secrets conforme `.streamlit/secrets.toml.example`. Em produção a
+aplicação recusa subir sem a configuração completa do Supabase, em vez de
+funcionar por um tempo e perder dados depois.
 
-```toml
-APP_ENV = "production"
-DEMO_AUTH_ENABLED = false
-LOCAL_AUTH_ENABLED = true
-BOOTSTRAP_ADMIN_NAME = "Nome do administrador"
-BOOTSTRAP_ADMIN_USERNAME = "admin"
-BOOTSTRAP_ADMIN_PASSWORD = "uma-senha-inicial-forte-2026"
-REMINDER_DRY_RUN = true
-```
-
-Segredos de nível raiz são disponibilizados pelo Streamlit como variáveis de
-ambiente. Não coloque esses valores no GitHub. Em um host com volume persistente,
-o segredo de bootstrap pode ser removido depois da primeira criação; reinicializações
-não sobrescrevem uma conta local já existente.
-
-O Community Cloud **não garante persistência do filesystem local**. Portanto,
-SQLite e uploads nesse ambiente servem somente para demonstração e podem ser
-apagados em rebuilds/reinicializações. Nesse caso, mantenha os três segredos de
-bootstrap para que a conta possa ser recriada após a perda do banco, usando uma
-senha exclusiva para a demo. Para uso real com alunos, use o Compose/VPS com
-volumes persistentes e backups descritos abaixo.
-
-Documentação oficial: [Secrets no Community Cloud](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management) e [persistência de dados locais](https://docs.streamlit.io/develop/concepts/connections/connecting-to-data).
+Segredos de produção serão configurados no painel do Streamlit, nunca no Git.
 
 ## Navegação e telas móveis
 
@@ -179,62 +193,21 @@ Além do limite individual, cada submissão respeita `MAX_UPLOAD_FILES` e
 PDF digitalizado possui orçamento agregado de pixels antes da renderização. Esses
 limites evitam que um usuário autenticado esgote memória ou CPU do servidor.
 
-Cada arquivo recebe UUID, modo `0600`, SHA-256 e registro no banco. Downloads são
-resolvidos por ID e passam novamente pela autorização da submissão; caminhos
-internos e nomes físicos não são mostrados.
+Cada arquivo recebe UUID, SHA-256 e registro no banco; o binário vai para o
+bucket privado e o banco guarda a `storage_key`. Downloads são resolvidos por ID
+e passam novamente pela autorização da submissão; a chave do Storage nunca vem
+da interface, e caminhos internos e nomes físicos não são mostrados.
 
-## Cópia de segurança em repositório privado
+## Persistência de arquivos
 
-Hospedagens de disco efêmero — o Streamlit Community Cloud entre elas — recriam
-o contêiner a partir do git. O SQLite e os uploads **não sobrevivem** a um
-rebuild nem ao despertar depois de hibernação. Com esta opção ligada, cada
-alteração confirmada guarda um pacote com banco e uploads em um repositório
-privado do GitHub, e a aplicação repõe tudo sozinha quando sobe com banco
-vazio.
+GitHub **não é storage nem destino de backup de dados de alunos**, mesmo quando o
+repositório é privado. O mecanismo legado `GITHUB_BACKUP_*` está descontinuado e
+não deve ser habilitado em novos ambientes.
 
-### Preparação
-
-1. Crie um repositório **privado e separado** do repositório da aplicação, por
-   exemplo `sua-conta/english-leaderboard-backups`, com um commit inicial na
-   branch `main`.
-2. Gere um token fine-grained em **Settings → Developer settings → Personal
-   access tokens → Fine-grained tokens**, com acesso **apenas** a esse
-   repositório e permissão de **Contents: Read and write**.
-3. Configure o ambiente (ou os Secrets do Streamlit Cloud):
-
-```dotenv
-GITHUB_BACKUP_ENABLED=true
-GITHUB_BACKUP_REPO=sua-conta/english-leaderboard-backups
-GITHUB_BACKUP_TOKEN=github_pat_...
-GITHUB_BACKUP_PATH=backups/english-leaderboard.tar.gz
-GITHUB_BACKUP_BRANCH=main
-```
-
-O repositório de backup **precisa ser diferente** do repositório da aplicação.
-Gravar no próprio repo dispara um rebuild no Cloud, que apaga os dados, que são
-restaurados e regravados — um laço que destrói o que deveria proteger. A
-aplicação detecta esse caso e recusa a configuração.
-
-### Uso manual
-
-```bash
-english-leaderboard backup-push
-```
-
-```bash
-english-leaderboard backup-restore
-```
-
-O pacote é determinístico: sem alteração nos dados, ele sai byte a byte igual e
-não gera commit novo. O limite adotado é de 40 MB por pacote — para quinze
-alunos numa temporada, o arquivo fica na casa de poucos MB.
-
-### O que isso não resolve
-
-Os comprovantes são prints enviados pelos alunos. Guardá-los em um repositório
-privado move esse material para o histórico do git, que é trabalhoso de expurgar
-depois. Para uso prolongado com dados de menores, a hospedagem própria descrita
-em **Docker e VPS** continua sendo a opção mais adequada.
+Na arquitetura oficial, o Streamlit valida e processa temporariamente o arquivo,
+envia o binário privado ao Supabase Storage e registra no Supabase somente metadados
+e a `storage_key`. Leituras consultam primeiro o registro sob autorização/RLS e só
+então acessam o Storage. Consulte [o fluxo completo](docs/ARCHITECTURE.md).
 
 ## Lembretes por e-mail
 
@@ -255,25 +228,34 @@ Para manter o processo independente do Streamlit:
 english-leaderboard scheduler
 ```
 
-O `docker-compose.yml` já contém `reminder_scheduler`. Cada destinatário/período
-tem chave única, impedindo duplicidade; falhas transitórias recebem no máximo três
+Cada destinatário/período tem chave única, impedindo duplicidade; falhas transitórias recebem no máximo três
 tentativas. Testes e configuração inicial nunca enviam e-mail real.
 
 ## Migrações
 
-`initialize_database` executa migrações aditivas e repetíveis registradas em
-`schema_migrations`. A migração 1 acrescenta autenticação local, arquivamento,
-arquivos genéricos e lembretes, sem remover tabelas históricas, reuniões antigas,
-submissões, ledger ou uploads. Faça backup antes de atualizar um volume existente:
+O schema do PostgreSQL pertence a `supabase/migrations`, aplicado por
+`tools/apply_migrations.py`: uma transação por arquivo, o que já foi aplicado é
+registrado em `schema_migrations` e pulado na próxima execução.
 
 ```bash
-english-leaderboard backup --destination backups
-english-leaderboard init-db
+python tools/apply_migrations.py --dry-run   # mostra o que falta aplicar
+python tools/apply_migrations.py
+```
+
+`initialize_database` **não cria tabelas no PostgreSQL** — apenas confere que as
+migrações rodaram e recusa subir se faltar alguma. Um `create_all` do ORM
+produziria tabelas sem RLS, sem os gatilhos de imutabilidade do ledger e sem as
+restrições declaradas no SQL: pareceria certo e deixaria os dados desprotegidos.
+
+Depois de mexer nos modelos, confira que eles ainda batem com o banco:
+
+```bash
+python tools/verify_schema_mapping.py
 ```
 
 ## Sincronização automática com Google Sheets
 
-Os dados continuam tendo uma única fonte de verdade: SQLite e o ledger imutável. Quando habilitado, o Google Sheets recebe um espelho completo das abas `Leaderboard` e `Ledger` depois de cada alteração confirmada. Uma falha do Google gera um aviso, mas não desfaz submissões, aprovações, ajustes ou importações.
+Os dados continuam tendo uma única fonte de verdade: o PostgreSQL e o ledger imutável. Quando habilitado, o Google Sheets recebe um espelho completo das abas `Leaderboard` e `Ledger` depois de cada alteração confirmada. Uma falha do Google gera um aviso, mas não desfaz submissões, aprovações, ajustes ou importações.
 
 Foi usado Google **Sheets**, e não um documento de texto do Google Docs, porque leaderboard e ledger são dados tabulares.
 
@@ -341,92 +323,38 @@ english-leaderboard analyze-image \
 Ao criar a aplicação no Community Cloud, selecione **Python 3.12** em
 **Advanced settings**. O arquivo `packages.txt` instala as bibliotecas nativas
 de OpenCV/ONNX (`libgl1`, `libglib2.0-0t64` e `libgomp1`) exigidas pelo
-RapidOCR no ambiente Linux. Para uma demo descartável, use
-`APP_ENV=development` e `DEMO_AUTH_ENABLED=true` nos Secrets da aplicação.
+RapidOCR no ambiente Linux.
 
-O SQLite e os uploads locais não têm persistência garantida no Community Cloud;
-para uso contínuo, prefira o Docker Compose com o volume `/data` descrito abaixo.
+## Durabilidade e cópias
 
-## Docker Compose
+A durabilidade é responsabilidade dos serviços Supabase: o PostgreSQL tem
+backup automático gerenciado e o bucket `student-files` guarda os binários. A
+aplicação não mantém cópia própria, e o GitHub **não é storage nem destino de
+backup de dados de alunos** — o repositório guarda código, documentação e
+configuração sem credenciais.
 
-```bash
-cp .env.example .env
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-mkdir -p backups
-docker compose up --build -d
-docker compose ps
-curl --fail http://localhost:8501/_stcore/health
-```
+O que a aplicação garante do seu lado:
 
-Com uma chave JSON para Google Sheets, use o overlay que monta a credencial como secret somente leitura:
+- **o ledger é imutável por gatilho no banco.** Correção de pontuação é
+  lançamento compensatório, nunca edição do histórico. O papel `authenticated`
+  não tem sequer o privilégio de `update` ou `delete` nessa tabela;
+- **binário e metadado não podem divergir em silêncio.** Se a gravação dos
+  metadados falhar depois do upload, o objeto é removido; se nem a remoção
+  funcionar, o caso é registrado em `storage_orphans` para reconciliação;
+- **um checksum só pontua uma vez.** A chave primária de `approved_evidence`
+  fecha a corrida entre duas aprovações simultâneas do mesmo arquivo.
 
-```bash
-mkdir -p secrets
-chmod 700 secrets
-chmod 600 secrets/google-service-account.json
-docker compose -f docker-compose.yml -f docker-compose.google.yml up --build -d
-```
-
-Defina `GOOGLE_SERVICE_ACCOUNT_FILE` se o arquivo no host tiver outro caminho. O `.env` ainda precisa de `GOOGLE_SHEETS_AUTO_SYNC=true` e do ID da planilha; o overlay define o caminho correto da credencial dentro do container.
-
-Para o primeiro teste local via Docker, mantenha `APP_ENV=development` e `DEMO_AUTH_ENABLED=true`. Para produção, desative o demo, configure o administrador inicial por variáveis de ambiente e use HTTPS antes do `up`.
-
-Volumes:
-
-- `app_db` → `/data/db/app.db`;
-- `app_uploads` → `/data/uploads`;
-- `./backups` → `/backups`.
-
-Recriar o container não apaga os volumes. `docker compose down -v` apaga os volumes e, portanto, é destrutivo.
-
-## Implantação em VPS
-
-1. Instale Docker Engine/Compose e copie apenas o projeto, `.env` e `secrets.toml` preenchidos.
-2. Restrinja a porta 8501 ao host/rede privada; não a exponha diretamente à internet.
-3. Prefira uma destas opções:
-   - Tailscale/VPN, mantendo o serviço privado; ou
-   - Caddy/Nginx como proxy reverso com certificado HTTPS e redirecionamento HTTP→HTTPS.
-4. Configure DNS e HTTPS com o hostname definitivo.
-5. Rode `docker compose up --build -d` e valide `/_stcore/health`.
-6. Agende backups, copie-os para outro disco/host e teste restauração.
-
-O endpoint e o padrão de health check seguem a [documentação oficial do Streamlit para Docker](https://docs.streamlit.io/deploy/tutorials/docker). TLS deve terminar no proxy reverso ou VPN, não no servidor de desenvolvimento do Streamlit.
-
-## Backup e restauração
-
-Local:
-
-```bash
-english-leaderboard backup --destination backups
-english-leaderboard verify-backup backups/manifest-AAAAMMDDTHHMMSSZ.json
-```
-
-Container:
-
-```bash
-docker compose exec app english-leaderboard backup --destination /backups
-docker compose exec app english-leaderboard verify-backup /backups/manifest-AAAAMMDDTHHMMSSZ.json
-```
-
-O comando usa a API de backup online do SQLite, importante quando WAL está ativo, e cria snapshot do banco, `uploads-*.tar.gz` e manifesto com SHA-256.
-
-Para restaurar:
-
-1. valide o manifesto;
-2. pare a aplicação com `docker compose stop app`;
-3. preserve uma cópia dos volumes atuais;
-4. substitua `/data/db/app.db` pelo snapshot e extraia o arquivo de uploads em `/data`;
-5. confira dono/permissões e inicie novamente;
-6. valide health check, ledger e algumas imagens.
-
-Faça primeiro um ensaio em ambiente separado. Não restaure sobre uma instância ativa.
+Antes de qualquer migração destrutiva, use o *dry run* de
+`tools/migrate_to_supabase.py` e confira o relatório gerado.
 
 ## Estrutura principal
 
 ```text
 streamlit_app.py                 interface aluno/admin
-english_leaderboard/models.py   modelo e restrições
-english_leaderboard/local_auth.py Argon2, bootstrap e sessões revogáveis
+english_leaderboard/schema.py   modelo de dados, espelhando o PostgreSQL
+english_leaderboard/supabase_auth.py login, renovação e contas no Supabase Auth
+english_leaderboard/contas.py   conta do Auth e perfil mantidos em passo
+english_leaderboard/rls_session.py identidade aplicada por transação, para a RLS valer
 english_leaderboard/migrations.py migrações aditivas e repetíveis
 english_leaderboard/services.py casos de uso e auditoria
 english_leaderboard/rules.py    motor configurável/conservador
@@ -439,6 +367,7 @@ english_leaderboard/scheduler.py processo independente de lembretes
 english_leaderboard/importer.py importação idempotente
 english_leaderboard/exporter.py downloads XLSX
 english_leaderboard/google_sheets.py espelho idempotente via Sheets API
+docs/ARCHITECTURE.md            arquitetura oficial de produção
 docs/                           PRD, SPEC e plano verificável
 tests/                          suite offline
 ```
@@ -450,6 +379,9 @@ tests/                          suite offline
 - Regras simples não avaliam qualidade/veracidade de resumos; essas entregas vão para revisão.
 - OCR pode falhar em imagens comprimidas ou textos pequenos; baixa confiança vai para revisão.
 - Estados aprovados são terminais no MVP. Correções de pontos usam uma nova transação compensatória auditada na página de relatórios; a submissão original não é reescrita.
-- A persistência do login local usa `localStorage`, pois o Community Cloud filtra cookies personalizados no refresh. O valor é um token opaco revogável, nunca identidade ou papel; por ser legível por JavaScript, exige HTTPS e código de interface confiável. O hash no banco, a expiração e a revogação limitam o risco residual.
-- SQLite é adequado ao volume atual; uma futura migração pode reutilizar `DATABASE_URL`, mas exige migrações formais e testes no novo dialeto.
+- Não há recuperação de senha por e-mail: os endereços das contas são internos
+  (`usuario@dominio-interno`), então ninguém receberia o link. A redefinição é
+  feita pelo administrador.
+- O SQLite serve ao desenvolvimento e à suíte de testes, sobre os mesmos
+  modelos; produção é sempre Supabase PostgreSQL e Supabase Storage.
 - Google Sheets é um espelho eventualmente consistente e administrativo; indisponibilidade externa não altera o ledger local, e o comando de reconciliação refaz o snapshot completo.

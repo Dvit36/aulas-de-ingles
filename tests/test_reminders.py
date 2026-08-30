@@ -5,7 +5,7 @@ from datetime import timedelta
 
 from sqlalchemy import func, select
 
-from english_leaderboard.models import EmailAttempt, EmailAttemptStatus, Role, utcnow
+from english_leaderboard.schema import EmailAttempt, EmailAttemptStatus, Role, utcnow
 from english_leaderboard.reminders import (
     eligible_students,
     get_reminder_configuration,

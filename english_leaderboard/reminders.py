@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from .authz import require_admin
 from .config import Settings
-from .models import (
+from .schema import (
     EmailAttempt,
     EmailAttemptStatus,
     ReminderConfiguration,

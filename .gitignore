@@ -24,8 +24,10 @@ tmp/
 backups/
 import-reports/
 
-# Segredos Streamlit; o exemplo permanece versionável
-.streamlit/secrets.toml
+# Segredos Streamlit; o exemplo permanece versionável.
+# O padrão cobre variantes como secrets.cloud.toml e secrets.local.toml.
+.streamlit/secrets*.toml
+!.streamlit/secrets.toml.example
 
 # Credenciais externas nunca entram no repositório
 secrets/
@@ -37,3 +39,6 @@ inputs/
 .codex-audit-*/
 frontend-atual/
 frontend-atual.zip
+
+# Relatórios gerados pelas ferramentas de migração
+migration-report.json

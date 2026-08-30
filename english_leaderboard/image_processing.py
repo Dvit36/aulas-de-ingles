@@ -12,8 +12,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from io import BytesIO
-import os
-from pathlib import Path
 from typing import Any, BinaryIO, Mapping
 from uuid import uuid4
 import warnings
@@ -514,51 +512,10 @@ def is_perceptually_similar(left: str, right: str, *, max_distance: int = 8) -> 
     return phash_distance(left, right) <= max_distance
 
 
-def persist_image(image: AnalyzedImage, upload_directory: str | os.PathLike[str]) -> Path:
-    """Persist validated original bytes under the generated UUID name.
-
-    Bytes are fsynced to a same-directory temporary file, then linked atomically
-    to the UUID destination without overwriting an existing file.
-    """
-
-    root = Path(upload_directory)
-    root.mkdir(parents=True, exist_ok=True)
-    try:
-        root.chmod(0o700)
-    except OSError:
-        pass
-    destination = root / image.storage_name
-    temporary = root / f".{image.storage_name}.{uuid4().hex}.tmp"
-    try:
-        with temporary.open("xb") as handle:
-            os.chmod(temporary, 0o600)
-            handle.write(image.original_bytes)
-            handle.flush()
-            os.fsync(handle.fileno())
-        # link(2) publishes the completed file atomically and refuses overwrite.
-        os.link(temporary, destination)
-        try:
-            directory_fd = os.open(root, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except OSError:
-            # Some filesystems do not support directory fsync; file fsync above
-            # still guarantees that readers never observe a partial payload.
-            pass
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
-    temporary.unlink(missing_ok=True)
-    return destination
-
-
 # Explicit aliases retained for service-layer readability.
 ProcessedImage = AnalyzedImage
 process_image = validate_image
 validate_image_upload = validate_image
-store_image = persist_image
 
 
 __all__ = [
@@ -578,10 +535,8 @@ __all__ = [
     "measure_color_signals",
     "phash_distance",
     "prepare_ocr_variants",
-    "persist_image",
     "process_image",
     "sha256_hex",
-    "store_image",
     "validate_image",
     "validate_image_upload",
 ]

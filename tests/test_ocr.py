@@ -8,7 +8,7 @@ import pytest
 
 from english_leaderboard.image_processing import analyze_image_bytes
 from english_leaderboard.ocr import OCRResult, create_ocr_engine, extract_text
-from english_leaderboard.models import SubmissionStatus
+from english_leaderboard.schema import SubmissionStatus
 from english_leaderboard.rules import (
     analyze_submission_rules,
     detect_completion,

@@ -5,7 +5,7 @@ from dataclasses import replace
 from sqlalchemy import func, select
 
 from english_leaderboard.catalog import seed_catalog, seed_database
-from english_leaderboard.models import (
+from english_leaderboard.schema import (
     LedgerTransaction,
     Role,
     Submission,
