@@ -7,6 +7,17 @@ requisição, inclusive quando ela termina em exceção.
 
 Nenhum código pode contar com a existência de um arquivo local depois do fim
 do bloco: o filesystem do Streamlit não é persistente.
+
+**Hoje nenhum caminho de produção chama estas funções, e isso é esperado.** O
+pipeline é todo em memória, então só os testes as exercitam. O módulo não é
+código morto: ``AGENTS.md`` e ``docs/ARCHITECTURE.md`` exigem limpeza garantida
+por context manager ou ``try/finally`` sempre que uma biblioteca precisar de um
+path, e esta é a única infraestrutura do projeto que cumpre essa regra.
+Mantê-lo pronto é o que evita que a próxima dependência com API baseada em
+caminho seja atendida com ``tempfile`` solto e um arquivo esquecido no disco.
+
+Decisão registrada em 30 de agosto de 2026, depois de um diagnóstico ter
+apontado o módulo como candidato a remoção por falta de chamadores.
 """
 
 from __future__ import annotations
