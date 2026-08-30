@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -752,37 +752,77 @@ def list_submissions(
     actor: User,
     student_id: str | None = None,
     status: SubmissionStatus | str | None = None,
+    statuses: Collection[SubmissionStatus | str] | None = None,
     activity_id: str | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
+    limit: int | None = PAGINA_PADRAO,
+    offset: int = 0,
 ) -> list[Submission]:
-    require_active(actor)
-    if actor.role != Role.ADMIN:
-        if student_id is not None and student_id != actor.id:
-            raise AuthorizationError("Acesso negado")
-        student_id = actor.id
+    """Uma página de submissões, da mais recente para a mais antiga.
+
+    ``limit=None`` devolve tudo e existe para quem realmente precisa do
+    conjunto inteiro — exportação, contagem em memória. Não use em tela: cada
+    submissão carrega seus arquivos, e a lista cresce com o acervo.
+    """
+
+    if limit is not None and limit <= 0:
+        raise ValueError("limit deve ser positivo")
+    if offset < 0:
+        raise ValueError("offset não pode ser negativo")
+    condicoes = _filtros_de_submissao(
+        actor=actor,
+        student_id=student_id,
+        status=status,
+        statuses=statuses,
+        activity_id=activity_id,
+        start=start,
+        end=end,
+    )
     statement = (
         select(Submission)
         .options(
             selectinload(Submission.student),
             selectinload(Submission.activity),
             selectinload(Submission.files),
-            selectinload(Submission.files),
             selectinload(Submission.checks),
         )
+        .where(*condicoes)
         .order_by(Submission.received_at.desc(), Submission.id.desc())
     )
-    if student_id:
-        statement = statement.where(Submission.student_id == student_id)
-    if status:
-        statement = statement.where(Submission.status == SubmissionStatus(status))
-    if activity_id:
-        statement = statement.where(Submission.activity_id == activity_id)
-    if start:
-        statement = statement.where(Submission.received_at >= start)
-    if end:
-        statement = statement.where(Submission.received_at < end)
+    if limit is not None:
+        statement = statement.limit(limit)
+    if offset:
+        statement = statement.offset(offset)
     return list(session.scalars(statement).all())
+
+
+def count_submissions(
+    session: Session,
+    *,
+    actor: User,
+    student_id: str | None = None,
+    status: SubmissionStatus | str | None = None,
+    statuses: Collection[SubmissionStatus | str] | None = None,
+    activity_id: str | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> int:
+    """Quantas submissões os mesmos filtros alcançam, sem carregar nenhuma."""
+
+    condicoes = _filtros_de_submissao(
+        actor=actor,
+        student_id=student_id,
+        status=status,
+        statuses=statuses,
+        activity_id=activity_id,
+        start=start,
+        end=end,
+    )
+    total = session.scalar(
+        select(func.count(Submission.id)).where(*condicoes)
+    )
+    return int(total or 0)
 
 
 def review_submission(
@@ -1594,6 +1634,7 @@ __all__ = [
     "archive_or_delete_user",
     "cancel_submission",
     "count_activity_references",
+    "count_submissions",
     "create_activity",
     "create_points_adjustment",
     "create_user_account",

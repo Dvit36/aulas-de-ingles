@@ -90,7 +90,9 @@ from english_leaderboard.services import (
     admin_student_submissions,
     archive_or_delete_activity,
     archive_or_delete_user,
+    PAGINA_PADRAO,
     count_activity_references,
+    count_submissions,
     create_activity,
     create_points_adjustment,
     create_user_account,
@@ -1098,7 +1100,7 @@ def student_dashboard(session, actor: User) -> None:
 
     st.link_button("Novo envio", "submit", icon=":material/add:")
     st.subheader("Atividades recentes")
-    recent = list_submissions(session, actor=actor)[:3]
+    recent = list_submissions(session, actor=actor, limit=3)
     _render_submission_cards(session, actor, recent, settings=None, compact=True)
 
 
@@ -1634,17 +1636,47 @@ def _render_submission_cards(
                             )
 
 
+def _pagina_atual(total: int, *, prefix: str) -> int:
+    """Seletor de página; devolve o deslocamento da página escolhida.
+
+    Fica acima da lista para o total aparecer mesmo quando cabe numa página só.
+    """
+
+    paginas = max(1, -(-total // PAGINA_PADRAO))  # divisão para cima
+    if paginas == 1:
+        st.caption(f"{total} envio(s).")
+        return 0
+    pagina = st.number_input(
+        "Página",
+        min_value=1,
+        max_value=paginas,
+        step=1,
+        key=f"{prefix}_pagina",
+    )
+    pagina = int(pagina)
+    primeiro = (pagina - 1) * PAGINA_PADRAO + 1
+    ultimo = min(pagina * PAGINA_PADRAO, total)
+    st.caption(f"{total} envio(s) · mostrando {primeiro}–{ultimo}.")
+    return (pagina - 1) * PAGINA_PADRAO
+
+
 def student_history(session, actor: User, settings: Settings) -> None:
     st.header("Histórico")
     _, status_value, activity_id, start = _submission_filters(
         session, prefix="student_history"
     )
+    filtros = {
+        "status": status_value,
+        "activity_id": activity_id,
+        "start": start,
+    }
+    total = count_submissions(session, actor=actor, **filtros)
+    offset = _pagina_atual(total, prefix="student_history")
     submissions = list_submissions(
         session,
         actor=actor,
-        status=status_value,
-        activity_id=activity_id,
-        start=start,
+        offset=offset,
+        **filtros,
     )
     _render_submission_cards(session, actor, submissions, settings)
 
@@ -1668,18 +1700,33 @@ def review_queue_view(session, actor: User, settings: Settings) -> None:
         include_students=True,
         include_status=False,
     )
-    submissions = list_submissions(
+    # O recorte por status vai para a consulta. Filtrar em Python depois de
+    # paginar esvaziaria páginas inteiras: a página 1 poderia não conter
+    # nenhum envio do status escolhido.
+    filtros = {
+        "student_id": student_id,
+        "statuses": _review_statuses(review_view),
+        "activity_id": activity_id,
+        "start": start,
+    }
+    total = count_submissions(session, actor=actor, **filtros)
+    pending = count_submissions(
         session,
         actor=actor,
         student_id=student_id,
+        statuses={SubmissionStatus.NEEDS_REVIEW},
         activity_id=activity_id,
         start=start,
     )
-    allowed_statuses = _review_statuses(review_view)
-    submissions = [item for item in submissions if item.status in allowed_statuses]
-    pending = sum(item.status == SubmissionStatus.NEEDS_REVIEW for item in submissions)
     if pending:
         st.warning(f"{pending} envio(s) aguardando revisão nos filtros atuais.")
+    offset = _pagina_atual(total, prefix="admin_submissions")
+    submissions = list_submissions(
+        session,
+        actor=actor,
+        offset=offset,
+        **filtros,
+    )
     _render_submission_cards(
         session,
         actor,
