@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from streamlit.testing.v1 import AppTest
 
 import streamlit_app
 from english_leaderboard.schema import Role
@@ -82,13 +84,57 @@ def test_a_deactivated_account_loses_a_live_session(
     assert streamlit_app.SESSAO_KEY not in state
 
 
+def test_a_rejected_session_token_becomes_a_friendly_error_not_a_crash(
+    settings, monkeypatch
+) -> None:
+    """Reproduz o crash de produção: o Supabase Auth aceita a credencial e
+    devolve uma sessão, mas o token que chega ao guard de browser_session é
+    recusado. Antes da correção, o ValueError de _guardar_sessao escapava de
+    login_view como exceção não tratada em vez de virar st.error, porque a
+    chamada ficava fora do try/except."""
+
+    ready_settings = replace(
+        settings,
+        supabase_url="https://example.supabase.co",
+        supabase_publishable_key="sb_publishable_teste",
+        supabase_db_url="postgresql://user:pass@localhost/db",
+    )
+
+    def _entrar_falso(*_args, **_kwargs):
+        return streamlit_app.Sessao(
+            user_id="11111111-1111-1111-1111-111111111111",
+            access_token="acesso",
+            refresh_token="token com espaço, formato inválido",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+
+    monkeypatch.setattr(streamlit_app, "entrar", _entrar_falso)
+
+    app = AppTest.from_string(
+        """
+import streamlit as st
+import streamlit_app
+
+streamlit_app.login_view(None, st.session_state["settings"])
+"""
+    )
+    app.session_state["settings"] = ready_settings
+    app.run(timeout=10)
+    app.text_input[0].input("qualquer").run(timeout=10)
+    app.text_input[1].input("qualquer").run(timeout=10)
+    app.button[0].click().run(timeout=10)
+
+    assert not app.exception
+    assert any("Token de sessão inválido" in e.value for e in app.error)
+
+
 def test_pending_browser_write_holds_private_ui_until_ack(
     session,
     settings,
     users,
     monkeypatch,
 ) -> None:
-    token = "A" * 64
+    token = "k3f9pqz7xw2b"
     state: dict[str, object] = {
         "local_auth_token": token,
         "browser_session_command": {
@@ -110,7 +156,7 @@ def test_stale_component_snapshot_cannot_replace_pending_login_token(
     settings,
     monkeypatch,
 ) -> None:
-    new_token = "B" * 64
+    new_token = "z9wq2kf7pxb3"
     state: dict[str, object] = {
         "local_auth_token": new_token,
         "browser_session_command": {
@@ -126,7 +172,7 @@ def test_stale_component_snapshot_cannot_replace_pending_login_token(
         "mount_browser_session",
         lambda _st: streamlit_app.BrowserSessionSnapshot(
             ready=True,
-            token="A" * 64,
+            token="k3f9pqz7xw2b",
         ),
     )
 

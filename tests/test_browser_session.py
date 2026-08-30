@@ -9,6 +9,8 @@ from english_leaderboard import browser_session
 from english_leaderboard.browser_session import (
     COMMAND_KEY,
     COOKIE_NAME,
+    TOKEN_MAX_LENGTH,
+    TOKEN_MIN_LENGTH,
     forget_token,
     mount_browser_session,
     queue_token_write,
@@ -16,7 +18,9 @@ from english_leaderboard.browser_session import (
     valid_session_token,
 )
 
-TOKEN = "A" * 64
+# Shape of a real Supabase GoTrue refresh token (12 lowercase alphanumeric
+# chars), not the fixed 64-char string this module used to require.
+TOKEN = "k3f9pqz7xw2b"
 
 
 def _future_expiry() -> datetime:
@@ -40,6 +44,26 @@ def _payload(
     }
 
 
+def test_accepts_the_short_opaque_token_shape_supabase_actually_returns() -> None:
+    """Production Supabase Auth returns ~12-char lowercase alphanumeric
+    refresh tokens (e.g. "4n7u56q7cpky"), not the fixed 64-char string this
+    module used to require. That mismatch broke every login in production
+    while 234 tests, all built on a fabricated 64-char token, stayed green.
+    """
+    real_shaped_token = "4n7u56q7cpky"
+    assert valid_session_token(real_shaped_token) == real_shaped_token
+
+
+def test_rejects_tokens_below_the_length_floor() -> None:
+    assert valid_session_token("a" * (TOKEN_MIN_LENGTH - 1)) is None
+    assert valid_session_token("a" * TOKEN_MIN_LENGTH) == "a" * TOKEN_MIN_LENGTH
+
+
+def test_rejects_tokens_above_the_length_ceiling() -> None:
+    assert valid_session_token("a" * TOKEN_MAX_LENGTH) == "a" * TOKEN_MAX_LENGTH
+    assert valid_session_token("a" * (TOKEN_MAX_LENGTH + 1)) is None
+
+
 def test_request_token_accepts_only_bounded_opaque_values() -> None:
     browser = SimpleNamespace(
         session_state={},
@@ -50,8 +74,8 @@ def test_request_token_accepts_only_bounded_opaque_values() -> None:
     assert request_token(browser) == TOKEN
     browser.context.cookies[COOKIE_NAME] = "x" * 10_000
     assert request_token(browser) is None
-    assert valid_session_token("_" * 64) == "_" * 64
-    assert valid_session_token("!" * 64) is None
+    assert valid_session_token("_" * 20) == "_" * 20
+    assert valid_session_token("!" * 20) is None
 
 
 def test_queue_write_keeps_command_pending_until_matching_ack() -> None:
@@ -100,7 +124,7 @@ def test_matching_ack_cannot_confirm_a_different_token() -> None:
     mount_browser_session(
         streamlit,
         renderer=lambda **_kwargs: {
-            "payload": _payload(token="B" * 64, ack_id=str(command_id)),
+            "payload": _payload(token="z9wq2kf7pxb3", ack_id=str(command_id)),
         },
     )
 

@@ -460,10 +460,10 @@ def login_view(
                     chave_publica=settings.supabase_publishable_key,
                     dominio=settings.supabase_username_domain,
                 )
+                _guardar_sessao(sessao)
             except (AuthError, ValueError) as error:
                 st.error(str(error))
             else:
-                _guardar_sessao(sessao)
                 st.rerun()
 
 

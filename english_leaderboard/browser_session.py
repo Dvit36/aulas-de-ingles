@@ -25,7 +25,14 @@ COMPONENT_KEY = "browser_session_store"
 COMMAND_KEY = "browser_session_command"
 LOCAL_TOKEN_KEY = "local_auth_token"
 
-_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{64}$")
+# GoTrue's refresh token is opaque and its length isn't a stable contract
+# across Supabase Auth versions (observed in production: 12 lowercase
+# alphanumeric chars, e.g. "4n7u56q7cpky" — not the 64-char string this
+# module used to require). Bound the length instead of pinning an exact
+# value; the charset plus a ceiling is what guards against arbitrary blobs.
+TOKEN_MIN_LENGTH = 10
+TOKEN_MAX_LENGTH = 255
+_TOKEN_PATTERN = re.compile(rf"^[A-Za-z0-9_-]{{{TOKEN_MIN_LENGTH},{TOKEN_MAX_LENGTH}}}$")
 
 _BROWSER_SESSION_JS = f"""
 const STORAGE_KEY = {STORAGE_KEY!r};
@@ -37,7 +44,7 @@ function samePayload(left, right) {{
 
 function validRecord(value) {{
   if (!value || value.version !== 1) return null;
-  if (typeof value.token !== "string" || !/^[A-Za-z0-9_-]{{64}}$/.test(value.token)) {{
+  if (typeof value.token !== "string" || !/^[A-Za-z0-9_-]{{{TOKEN_MIN_LENGTH},{TOKEN_MAX_LENGTH}}}$/.test(value.token)) {{
     return null;
   }}
   if (typeof value.expires_at !== "string") return null;
@@ -72,7 +79,7 @@ export default function(component) {{
       command?.op === "write" &&
       typeof command.id === "string" &&
       typeof command.token === "string" &&
-      /^[A-Za-z0-9_-]{{64}}$/.test(command.token) &&
+      /^[A-Za-z0-9_-]{{{TOKEN_MIN_LENGTH},{TOKEN_MAX_LENGTH}}}$/.test(command.token) &&
       typeof command.expires_at === "string" &&
       Number.isFinite(Date.parse(command.expires_at))
     ) {{
