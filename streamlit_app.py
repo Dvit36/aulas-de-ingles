@@ -37,6 +37,7 @@ from english_leaderboard.exporter import (
 from english_leaderboard.google_sheets import sync_leaderboard_and_ledger
 from english_leaderboard.contas import contas_de, contas_disponiveis
 from english_leaderboard.storage import (
+    URL_EXPIRA_SEGUNDOS,
     StorageError,
     SupabaseStorageGateway,
     criar_cliente,
@@ -94,7 +95,7 @@ from english_leaderboard.services import (
     create_points_adjustment,
     create_user_account,
     get_goal_configuration,
-    get_submission_file_for_user,
+    get_submission_file_url_for_user,
     list_resources,
     list_submissions,
     replace_resources,
@@ -1316,12 +1317,72 @@ def _submission_filters(
     return student_id, status_value, activity_id, start
 
 
+URLS_ASSINADAS_KEY = "urls_assinadas"
+# Folga para o clique acontecer depois de a página renderizar. Uma URL a menos
+# de 15 segundos do fim é reassinada em vez de entregue quase vencida.
+MARGEM_URL_SEGUNDOS = 15
+
+ICONE_POR_TIPO = {"image": "🖼️", "pdf": "📕", "docx": "📘", "txt": "📄"}
+
+
+def _url_assinada(
+    session,
+    actor: User,
+    stored_file: SubmissionFile,
+    settings: Settings,
+) -> str:
+    """URL curta do arquivo, reaproveitada enquanto ainda vale.
+
+    Assinar não transfere bytes, mas ``url_temporaria`` já debita o tamanho do
+    objeto no orçamento de egress — quem recebe a URL vai baixar. Sem este
+    cache, cada rerun do Streamlit debitaria o arquivo inteiro de novo, que é
+    a mesma conta que o download integral fazia.
+
+    O cache é a sessão do navegador, em memória. A URL assinada não vai para o
+    banco: lá fica só a ``storage_key``.
+    """
+
+    cache: dict[str, tuple[datetime, str]] = st.session_state.setdefault(
+        URLS_ASSINADAS_KEY, {}
+    )
+    agora = datetime.now(timezone.utc)
+    guardada = cache.get(stored_file.id)
+    if guardada is not None:
+        valida_ate, url = guardada
+        if valida_ate > agora + timedelta(seconds=MARGEM_URL_SEGUNDOS):
+            return url
+
+    _, url = get_submission_file_url_for_user(
+        session,
+        actor=actor,
+        file_id=stored_file.id,
+        settings=settings,
+        gateway=_storage_gateway(settings),
+    )
+    cache[stored_file.id] = (
+        agora + timedelta(seconds=URL_EXPIRA_SEGUNDOS),
+        url,
+    )
+    return url
+
+
 def _render_submission_files(
     session,
     actor: User,
     submission: Submission,
     settings: Settings | None,
 ) -> None:
+    """Entrega os arquivos por URL assinada, e só quando pedidos.
+
+    Duas decisões de custo moram aqui. A primeira é não trazer os bytes para o
+    servidor: a URL vai para o navegador, que busca o objeto direto do bucket.
+    A segunda é o botão. O corpo de um ``st.expander`` é executado mesmo
+    fechado, então um laço sobre as submissões da página emitiria URL para
+    todos os arquivos de todas elas a cada rerun — e cada assinatura debita o
+    tamanho do objeto no orçamento de egress. O botão é o que transforma
+    "abriu o histórico" em "pediu este arquivo".
+    """
+
     if settings is None:
         file_count = len(submission.files) or len(submission.images)
         st.caption(f"📎 {file_count} arquivo(s) enviado(s)")
@@ -1329,34 +1390,55 @@ def _render_submission_files(
     if not submission.files:
         st.caption("Nenhum arquivo anexado.")
         return
+
+    aberto_key = f"arquivos_abertos_{submission.id}"
+    total = len(submission.files)
+    if not st.session_state.get(aberto_key):
+        if st.button(
+            f"📎 Ver {total} arquivo(s)",
+            key=f"abrir_arquivos_{submission.id}",
+        ):
+            st.session_state[aberto_key] = True
+        else:
+            st.caption(
+                "Os arquivos ficam no armazenamento privado e são carregados "
+                "só quando você pede."
+            )
+            return
+
     for index, stored_file in enumerate(submission.files, start=1):
-        icon = {"image": "🖼️", "pdf": "📕", "docx": "📘", "txt": "📄"}.get(
-            stored_file.file_kind, "📎"
-        )
+        icon = ICONE_POR_TIPO.get(stored_file.file_kind, "📎")
         label = stored_file.filename or f"Arquivo {index}"
         try:
-            authorized_file, dados = get_submission_file_for_user(
-                session,
-                actor=actor,
-                file_id=stored_file.id,
-                settings=settings,
-                gateway=_storage_gateway(settings),
+            url = _url_assinada(session, actor, stored_file, settings)
+        except LookupError:
+            st.warning(
+                f"{icon} {label}: o registro do arquivo não existe mais."
             )
-        except (LookupError, StorageError):
-            st.warning(f"{icon} {label} não está disponível no armazenamento.")
             continue
         except AuthorizationError:
             st.warning(f"{icon} {label}: sem permissão para abrir.")
             continue
-        if authorized_file.file_kind == "image":
-            st.image(dados, caption=label, width="stretch")
-        st.download_button(
+        except StorageBudgetExceeded as erro:
+            # O orçamento é do mês inteiro, não deste arquivo: tentar os
+            # próximos só produziria a mesma recusa repetida.
+            show_operation_error("assinar_arquivo", erro)
+            return
+        except StorageError as erro:
+            show_operation_error("assinar_arquivo", erro)
+            continue
+
+        if stored_file.file_kind == "image":
+            st.image(url, caption=label, width="stretch")
+        st.link_button(
             f"{icon} Abrir/baixar {label}",
-            data=dados,
-            file_name=label,
-            mime=authorized_file.content_type,
+            url,
             key=f"download_{submission.id}_{stored_file.id}",
         )
+    st.caption(
+        f"Os links valem {URL_EXPIRA_SEGUNDOS} segundos. Recarregue a página "
+        "para gerar novos."
+    )
 
 
 def _render_submission_timeline(submission: Submission) -> None:

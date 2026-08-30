@@ -51,12 +51,13 @@ from .schema import (
     utcnow,
 )
 from .ocr import OCRExecutionError, OCRResult, create_ocr_engine, extract_text
-from .storage import StorageGateway
+from .storage import URL_EXPIRA_SEGUNDOS, StorageGateway
 from .storage_service import (
     ArquivoNaoAutorizado,
     ArquivoRegistrado,
     baixar_arquivo,
     salvar_arquivo,
+    url_temporaria,
 )
 from .submission_pipeline import (
     CATEGORIA_DOCUMENTO,
@@ -651,6 +652,98 @@ def get_submission_file_for_user(
     except ArquivoNaoAutorizado as erro:
         raise AuthorizationError(str(erro)) from erro
     return stored_file, dados
+
+
+def get_submission_file_url_for_user(
+    session: Session,
+    *,
+    actor: User,
+    file_id: str,
+    settings: Settings,
+    gateway: StorageGateway,
+    expira_em: int = URL_EXPIRA_SEGUNDOS,
+) -> tuple[SubmissionFile, str]:
+    """URL assinada curta, emitida somente depois de autorizar o registro.
+
+    Entrega o arquivo sem que os bytes passem pelo servidor do Streamlit. A
+    ordem de verificação é a mesma do download e não pode ser afrouxada: o
+    identificador é resolvido em um registro, a submissão é conferida contra o
+    ator, e só então ``url_temporaria`` assina — que por sua vez chama
+    ``resolver_arquivo_autorizado`` e, para quem não é administrador,
+    ``ensure_owned_key``. São duas barreiras sobre coisas diferentes: esta
+    camada confere a submissão, a camada de Storage confere a chave física.
+
+    A URL não é gravada em lugar nenhum: o banco guarda apenas a chave.
+    """
+
+    stored_file = session.get(SubmissionFile, file_id)
+    if stored_file is None:
+        raise LookupError("Arquivo não encontrado")
+    submission = session.get(Submission, stored_file.submission_id)
+    if submission is None:
+        raise LookupError("Submissão não encontrada")
+    require_submission_access(actor, submission)
+    try:
+        url = url_temporaria(
+            session.connection(),
+            gateway,
+            file_id=stored_file.id,
+            student_id=actor.id,
+            is_admin=actor.role == Role.ADMIN,
+            limites=limites_de(settings),
+            expira_em=expira_em,
+        )
+    except ArquivoNaoAutorizado as erro:
+        raise AuthorizationError(str(erro)) from erro
+    return stored_file, url
+
+
+# Uma página cobre a temporada inteira de um aluno típico — a planilha
+# migrada tem 61 envios para 7 alunos — então o histórico costuma caber sem
+# paginar. Para o administrador, é uma tela cheia da fila sem prometer que a
+# consulta continue barata quando o acervo dobrar.
+PAGINA_PADRAO = 25
+
+
+def _filtros_de_submissao(
+    *,
+    actor: User,
+    student_id: str | None,
+    status: SubmissionStatus | str | None,
+    statuses: Collection[SubmissionStatus | str] | None,
+    activity_id: str | None,
+    start: datetime | None,
+    end: datetime | None,
+) -> list[Any]:
+    """Condições compartilhadas pela listagem e pela contagem.
+
+    As duas precisam enxergar exatamente o mesmo conjunto: um filtro aplicado
+    só de um lado faria o total discordar das páginas.
+    """
+
+    require_active(actor)
+    if actor.role != Role.ADMIN:
+        if student_id is not None and student_id != actor.id:
+            raise AuthorizationError("Acesso negado")
+        student_id = actor.id
+    condicoes: list[Any] = []
+    if student_id:
+        condicoes.append(Submission.student_id == student_id)
+    if status:
+        condicoes.append(Submission.status == SubmissionStatus(status))
+    if statuses is not None:
+        # Coleção vazia é um filtro que não seleciona nada, e não a ausência
+        # de filtro: `in_(())` é justamente o que expressa isso.
+        condicoes.append(
+            Submission.status.in_([SubmissionStatus(item) for item in statuses])
+        )
+    if activity_id:
+        condicoes.append(Submission.activity_id == activity_id)
+    if start:
+        condicoes.append(Submission.received_at >= start)
+    if end:
+        condicoes.append(Submission.received_at < end)
+    return condicoes
 
 
 def list_submissions(
@@ -1506,6 +1599,7 @@ __all__ = [
     "create_user_account",
     "get_goal_configuration",
     "get_submission_file_for_user",
+    "get_submission_file_url_for_user",
     "get_submission_for_user",
     "list_resources",
     "list_review_queue",
