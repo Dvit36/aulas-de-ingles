@@ -29,7 +29,6 @@ Na implementação legada atual, preservada enquanto a migração é feita:
 - autenticação local fechada por **nome de usuário** e senha Argon2, com senha
   temporária, troca obrigatória, sessões persistentes e revogáveis e bloqueio
   por tentativas;
-- modo demo local com escolha de identidade e clique explícito em **Entrar**, bloqueado em produção;
 - depois do login, rotas permitidas pelo papel e a página **Minha conta** com identidade e logout;
 - papéis `student` e `admin`, validados também na camada de serviço;
 - catálogo configurável com pontuação histórica preservada;
@@ -76,7 +75,7 @@ locais. Veja [docs/PRD.md](docs/PRD.md) e [docs/SPEC.md](docs/SPEC.md).
 O núcleo legado, OCR e testes locais funcionam sem API externa. A arquitetura
 oficial de produção exige conectividade com Supabase e Supabase Storage.
 
-## Execução local em modo demo
+## Execução local
 
 ```bash
 cp .env.example .env
@@ -90,9 +89,17 @@ english-leaderboard init-db
 streamlit run streamlit_app.py
 ```
 
-Abra `http://localhost:8501`. O `.env.example` ativa o modo demo, cria um aluno e um administrador locais e popula cinco alunos claramente marcados como **Demo** com 52 envios sintéticos e ranking idempotente. A aplicação começa na área pública: abra **Entrar**, escolha uma identidade e clique explicitamente em **Entrar**. Apenas selecionar um usuário não inicia uma sessão. A identidade escolhida permanece na sessão até usar **Minha conta → Sair do modo demo**. Defina `SEED_FAKE_DATA=false` para impedir a criação em bancos novos; a opção não apaga lançamentos já criados no ledger imutável.
+Abra `http://localhost:8501`. A aplicação começa na área pública, em **Entrar**.
+Toda conta vive no Supabase Auth: preencha as variáveis do Supabase e as de
+bootstrap no `.env` antes de subir, porque não existe login local nem identidade
+de demonstração.
 
-Nunca use o modo demo em produção; o startup recusa `APP_ENV=production` junto de `DEMO_AUTH_ENABLED=true`.
+`SEED_FAKE_DATA=true` popula cinco alunos marcados como **Demo** com envios
+sintéticos e ranking idempotente, úteis para ver o leaderboard preenchido em
+desenvolvimento. Eles são apenas perfis, sem conta no Auth e sem acesso — por
+isso a opção nasce `false` no `.env.example` e não deve ser ligada em um banco
+apontado para um Supabase real. Desligá-la não apaga lançamentos já criados no
+ledger imutável.
 
 ## Contas e autenticação
 
@@ -142,8 +149,6 @@ Os nomes antigos continuam aceitos para não derrubar ambientes já implantados:
 | Nome atual | Nome antigo ainda aceito |
 |---|---|
 | `BOOTSTRAP_ADMIN_USERNAME` | `BOOTSTRAP_ADMIN_EMAIL` |
-| `DEMO_STUDENT_USERNAME` | `DEMO_STUDENT_EMAIL` |
-| `DEMO_ADMIN_USERNAME` | `DEMO_ADMIN_EMAIL` |
 
 Quando as duas estão definidas, a atual vence.
 
@@ -319,8 +324,7 @@ english-leaderboard analyze-image \
 Ao criar a aplicação no Community Cloud, selecione **Python 3.12** em
 **Advanced settings**. O arquivo `packages.txt` instala as bibliotecas nativas
 de OpenCV/ONNX (`libgl1`, `libglib2.0-0t64` e `libgomp1`) exigidas pelo
-RapidOCR no ambiente Linux. Para uma demo descartável, use
-`APP_ENV=development` e `DEMO_AUTH_ENABLED=true` nos Secrets da aplicação.
+RapidOCR no ambiente Linux.
 
 Os volumes Docker abaixo servem ao desenvolvimento local. Em produção a
 persistência é inteiramente do Supabase.

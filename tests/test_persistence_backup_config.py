@@ -95,15 +95,6 @@ def test_sqlite_persists_after_engine_restart(tmp_path: Path):
     second_engine.dispose()
 
 
-def test_demo_auth_is_refused_in_production():
-    settings = Settings(
-        app_env="production",
-        demo_auth_enabled=True,
-    )
-    with pytest.raises(RuntimeError):
-        settings.validate()
-
-
 def test_google_sheets_enabled_requires_spreadsheet_id(monkeypatch):
     monkeypatch.setenv("GOOGLE_SHEETS_AUTO_SYNC", "true")
     monkeypatch.delenv("GOOGLE_SHEETS_SPREADSHEET_ID", raising=False)
@@ -220,12 +211,9 @@ def test_legacy_email_variables_still_configure_the_new_username_settings(
         "BOOTSTRAP_ADMIN_USERNAME",
         "BOOTSTRAP_ADMIN_EMAIL",
         "BOOTSTRAP_ADMIN_PASSWORD",
-        "DEMO_STUDENT_USERNAME",
-        "DEMO_STUDENT_EMAIL",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.setenv("DEMO_AUTH_ENABLED", "false")
     # Produção exige o Supabase completo; aqui o que está sob teste é só o
     # nome das variáveis antigas continuar valendo.
     monkeypatch.setenv("SUPABASE_URL", "https://ref.supabase.co")
@@ -239,12 +227,10 @@ def test_legacy_email_variables_still_configure_the_new_username_settings(
     monkeypatch.setenv("BOOTSTRAP_ADMIN_NAME", "Administrador")
     monkeypatch.setenv("BOOTSTRAP_ADMIN_EMAIL", "admin@equipe.org")
     monkeypatch.setenv("BOOTSTRAP_ADMIN_PASSWORD", "senha-inicial-forte-2026")
-    monkeypatch.setenv("DEMO_STUDENT_EMAIL", "aluno.legado")
 
     settings = Settings.from_env(env_file=None)
 
     assert settings.bootstrap_admin_username == "admin@equipe.org"
-    assert settings.demo_student_username == "aluno.legado"
 
     # O nome novo tem precedência quando os dois estão definidos.
     monkeypatch.setenv("BOOTSTRAP_ADMIN_USERNAME", "admin")

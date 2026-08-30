@@ -48,9 +48,6 @@ def _csv_set(value: str | None, *, lower: bool = False) -> frozenset[str]:
 @dataclass(frozen=True)
 class Settings:
     app_env: str = "development"
-    demo_auth_enabled: bool = False
-    demo_student_username: str = "aluno.demo"
-    demo_admin_username: str = "admin.demo"
     seed_fake_data: bool = True
     bootstrap_admin_name: str = ""
     bootstrap_admin_username: str = ""
@@ -155,13 +152,6 @@ class Settings:
             load_dotenv(dotenv_path=env_file, override=False)
         settings = cls(
             app_env=os.getenv("APP_ENV", "development").strip().lower(),
-            demo_auth_enabled=_as_bool(os.getenv("DEMO_AUTH_ENABLED")),
-            demo_student_username=_env_with_legacy(
-                "DEMO_STUDENT_USERNAME", "DEMO_STUDENT_EMAIL", "aluno.demo"
-            ).strip().lower(),
-            demo_admin_username=_env_with_legacy(
-                "DEMO_ADMIN_USERNAME", "DEMO_ADMIN_EMAIL", "admin.demo"
-            ).strip().lower(),
             seed_fake_data=_as_bool(os.getenv("SEED_FAKE_DATA"), default=True),
             bootstrap_admin_name=os.getenv("BOOTSTRAP_ADMIN_NAME", "").strip(),
             bootstrap_admin_username=_env_with_legacy(
@@ -265,10 +255,6 @@ class Settings:
     def validate(self) -> None:
         if self.app_env not in {"development", "test", "production"}:
             raise ValueError("APP_ENV deve ser development, test ou production")
-        if self.is_production and self.demo_auth_enabled:
-            raise RuntimeError(
-                "DEMO_AUTH_ENABLED=true é proibido quando APP_ENV=production"
-            )
         if not self.database_url:
             raise ValueError("DATABASE_URL não pode ficar vazio")
         if self.max_upload_bytes <= 0:

@@ -22,7 +22,6 @@ from english_leaderboard.storage import StorageError
 def settings(tmp_path: Path) -> Settings:
     return Settings(
         app_env="test",
-        demo_auth_enabled=False,
         seed_fake_data=False,
         database_url="sqlite+pysqlite:///:memory:",
         upload_dir=tmp_path / "uploads",

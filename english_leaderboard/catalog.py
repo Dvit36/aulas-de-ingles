@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import Settings
-from .schema import Activity, ReminderConfiguration, Resource, Role, User, new_id
+from .schema import Activity, ReminderConfiguration, Resource
 
 CATALOG_SEED: tuple[dict[str, object], ...] = (
     {
@@ -190,47 +188,6 @@ def seed_catalog(session: Session) -> list[Activity]:
     return created
 
 
-def seed_demo_users(session: Session, settings: Settings) -> list[User]:
-    """Cria as identidades demo, que existem só fora do Supabase.
-
-    Elas nascem sem conta no Auth, o que só um banco sem ``auth.users``
-    aceita. Em PostgreSQL o insert violaria ``profiles.id -> auth.users(id)``,
-    então a semeadura recusa em vez de derrubar o startup com uma violação de
-    chave estrangeira que não diz o que fazer.
-    """
-
-    if not settings.demo_auth_enabled:
-        return []
-    from .contas import ContaObrigatoria, exige_conta_no_auth
-
-    if exige_conta_no_auth(session):
-        raise ContaObrigatoria(
-            "DEMO_AUTH_ENABLED=true não é compatível com o PostgreSQL do "
-            "Supabase: os perfis demo nasceriam sem conta no Auth e violariam "
-            "profiles.id -> auth.users(id). O login demo foi removido junto "
-            "com a autenticação local — use DEMO_AUTH_ENABLED=false."
-        )
-    definitions: Iterable[tuple[str, str, Role]] = (
-        (settings.demo_student_username, "Aluno Demo", Role.STUDENT),
-        (settings.demo_admin_username, "Administrador Demo", Role.ADMIN),
-    )
-    created: list[User] = []
-    for username, name, role in definitions:
-        user = session.scalar(select(User).where(User.username == username))
-        if user is None:
-            user = User(
-                id=new_id(),
-                username=username,
-                display_name=name,
-                role=role,
-                active=True,
-            )
-            session.add(user)
-            created.append(user)
-    session.flush()
-    return created
-
-
 def seed_database(session: Session, settings: Settings, contas=None) -> None:
     """Semeia catálogo, recursos e o administrador inicial.
 
@@ -240,7 +197,6 @@ def seed_database(session: Session, settings: Settings, contas=None) -> None:
 
     seed_catalog(session)
     seed_resources(session)
-    seed_demo_users(session, settings)
     from .contas import bootstrap_admin
 
     bootstrap_admin(session, settings, contas)

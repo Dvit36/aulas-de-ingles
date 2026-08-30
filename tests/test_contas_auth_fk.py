@@ -20,7 +20,6 @@ import pytest
 from sqlalchemy import select, text
 
 from english_leaderboard import contas as contas_mod
-from english_leaderboard.catalog import seed_demo_users
 from english_leaderboard.config import Settings
 from english_leaderboard.contas import (
     ContaObrigatoria,
@@ -240,41 +239,6 @@ def test_bootstrap_nao_toca_no_auth_quando_ja_existe_administrador(
     admin = bootstrap_admin(session, replace(settings, **BOOTSTRAP), None)
 
     assert admin is not None and admin.username == "admin"
-
-
-# ------------------------------------------------------------- usuários demo
-
-
-def test_demo_users_sao_recusados_onde_o_auth_e_obrigatorio(
-    session, settings: Settings, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """DEMO_AUTH_ENABLED=true em PostgreSQL semearia perfis sem conta."""
-
-    finge_postgres(monkeypatch)
-    antes = perfis(session)
-
-    with pytest.raises(ContaObrigatoria, match="DEMO_AUTH_ENABLED"):
-        seed_demo_users(session, replace(settings, demo_auth_enabled=True))
-
-    assert perfis(session) == antes
-
-
-def test_demo_users_continuam_funcionando_no_sqlite(
-    session, settings: Settings
-) -> None:
-    criados = seed_demo_users(session, replace(settings, demo_auth_enabled=True))
-
-    assert {user.username for user in criados} == {"aluno.demo", "admin.demo"}
-
-
-def test_demo_desligado_nao_consulta_o_banco(
-    session, settings: Settings, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Com a flag falsa, nem o gate é avaliado: é o padrão de produção."""
-
-    finge_postgres(monkeypatch)
-
-    assert seed_demo_users(session, replace(settings, demo_auth_enabled=False)) == []
 
 
 # ------------------------------------------- escolha da fachada pela config

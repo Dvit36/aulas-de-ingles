@@ -64,12 +64,6 @@ LIDAS, ALIASES_LEGADOS = _variaveis_de_config()
 # Documentá-las convidaria a usá-las. O motivo fica registrado aqui porque é a
 # única coisa que impede alguém de "consertar" a ausência mais tarde.
 NAO_DOCUMENTADAS = {
-    "DEMO_AUTH_ENABLED": (
-        "O login demo foi removido junto com a autenticação local; a flag só "
-        "semeia perfis sem conta no Auth."
-    ),
-    "DEMO_STUDENT_USERNAME": "Só tem efeito com DEMO_AUTH_ENABLED.",
-    "DEMO_ADMIN_USERNAME": "Só tem efeito com DEMO_AUTH_ENABLED.",
     "LOGIN_MAX_ATTEMPTS": (
         "Resto do bloqueio por tentativas da autenticação local. Ainda é "
         "validada no startup, mas nenhum código a consome."
