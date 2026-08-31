@@ -1239,10 +1239,15 @@ def save_user(
         )
         if conflict is not None:
             raise ValueError("Usuário já pertence a outra conta")
+        # `user.role` é StrEnum sobre coluna Text: vindo de uma consulta ele é
+        # `str` puro e não tem `.value`. Aqui a leitura é anterior a qualquer
+        # atribuição — é o valor que estava no banco —, então era exatamente
+        # onde o AttributeError caía. `str()` serve aos dois tipos e devolve a
+        # string simples que a coluna JSON da auditoria deve guardar.
         before = {
             "username": user.username,
             "display_name": user.display_name,
-            "role": user.role.value,
+            "role": str(user.role),
             "active": user.active,
         }
         if (
@@ -1290,7 +1295,9 @@ def save_user(
         after={
             "display_name": user.display_name,
             "username": user.username,
-            "role": user.role.value,
+            # Aqui `user.role` costuma ser o enum recém-atribuído, mas depender
+            # disso é depender de o objeto não ter sido recarregado no caminho.
+            "role": str(user.role),
             "active": user.active,
         },
     )

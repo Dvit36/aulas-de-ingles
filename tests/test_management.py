@@ -7,7 +7,14 @@ from inspect import signature
 import pytest
 from sqlalchemy import select
 
-from english_leaderboard.schema import Activity, Role, Submission, SubmissionStatus
+from english_leaderboard.schema import (
+    Activity,
+    AuditLog,
+    Role,
+    Submission,
+    SubmissionStatus,
+    User,
+)
 from english_leaderboard.services import (
     archive_or_delete_activity,
     archive_or_delete_user,
@@ -82,6 +89,13 @@ def test_user_create_disable_reactivate_and_delete(session, users) -> None:
     # A aplicação não guarda senha nem hash: essa autoridade é do Auth.
     assert not hasattr(account, "password_hash")
 
+    # A sessão é criada com `expire_on_commit=False`, então o commit acima
+    # deixaria `account` intacto na memória, com o enum ainda anexado a `role`.
+    # Em produção quem edita é uma tela montada a partir de uma consulta nova, e
+    # aí `role` volta do banco como `str`. Sem expirar, este teste passava por
+    # cima de um AttributeError que derrubava a edição de usuário no app.
+    session.expire_all()
+
     save_user(
         session,
         actor=admin,
@@ -118,6 +132,59 @@ def test_user_create_disable_reactivate_and_delete(session, users) -> None:
     )
     # Sem conta removida no Auth, o usuário continuaria conseguindo entrar.
     assert contas.removidas == [account.id]
+
+
+def test_editar_usuario_carregado_do_banco_registra_o_papel_anterior(
+    session, users
+) -> None:
+    """`User.role` é StrEnum sobre coluna `Text`: do banco ele vem como `str`.
+
+    `save_user` lia `user.role.value` para montar o `before` da auditoria —
+    uma leitura anterior a qualquer atribuição, ou seja, o valor que estava no
+    banco. Com o objeto vindo de uma consulta isso é AttributeError, e a edição
+    de usuário pela tela de gestão caía inteira.
+
+    A suíte não pegava porque `create_session_factory` usa
+    `expire_on_commit=False`: o objeto sobrevivia ao commit com o enum
+    anexado, e `.value` funcionava. `expire_all` é o que força a releitura e
+    coloca o teste do lado certo da fronteira onde o tipo muda.
+    """
+
+    admin = users[Role.ADMIN]
+    alvo = users[Role.STUDENT]
+    contas = ContasFalsas()
+    session.commit()
+
+    session.expire_all()
+    recarregado = session.get(User, alvo.id)
+    assert isinstance(recarregado.role, str)
+    assert not hasattr(recarregado.role, "value"), (
+        "o papel veio do banco como enum: o teste deixou de exercitar a "
+        "fronteira onde o tipo muda, e o defeito passaria batido de novo"
+    )
+
+    save_user(
+        session,
+        actor=admin,
+        username=recarregado.username,
+        display_name=recarregado.display_name,
+        role=Role.ADMIN,
+        active=True,
+        user_id=recarregado.id,
+        contas=contas,
+    )
+    session.flush()
+
+    log = session.scalar(
+        select(AuditLog)
+        .where(AuditLog.entity_type == "user", AuditLog.entity_id == alvo.id)
+        .order_by(AuditLog.created_at.desc())
+    )
+    assert log.action == "user_updated"
+    # A auditoria precisa dizer de onde para onde: um `before` perdido é uma
+    # promoção a administrador sem rastro do papel anterior.
+    assert log.before_json["role"] == "student"
+    assert log.after_json["role"] == "admin"
 
 
 def test_activity_delete_is_logical_when_history_exists(session, users) -> None:
