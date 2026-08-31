@@ -55,9 +55,11 @@ from english_leaderboard.supabase_auth import (
 from english_leaderboard.schema import (
     Activity,
     AuditLog,
+    DuplicateKind,
     DuplicateMatch,
     Resource,
     Role,
+    RuleCheck,
     Submission,
     SubmissionFile,
     SubmissionStatus,
@@ -1450,6 +1452,26 @@ def _render_submission_timeline(submission: Submission) -> None:
         st.write(f"{icon} {label} · {submission.decided_at:%d/%m/%Y %H:%M}")
 
 
+SIMBOLO_POR_RESULTADO = {"pass": "✅", "review": "⚠️", "fail": "❌"}
+
+
+def _simbolo_da_verificacao(check: RuleCheck) -> str:
+    """Ícone do resultado da regra, aceitando enum ou a string do banco.
+
+    ``RuleCheck.outcome`` é um ``StrEnum`` mapeado sobre coluna ``Text`` — sem
+    tipo enum do SQLAlchemy, ele volta do banco como ``str`` puro. O código
+    pedia ``check.outcome.value``, que só existe enquanto o objeto está fresco
+    na sessão; num card carregado do banco a leitura levantava AttributeError e
+    derrubava o card inteiro do administrador, junto com o painel de
+    duplicidade e o formulário de decisão logo abaixo.
+
+    A busca direta no dicionário serve aos dois casos, porque ``StrEnum``
+    compara e hasheia pelo próprio valor.
+    """
+
+    return SIMBOLO_POR_RESULTADO[check.outcome]
+
+
 def _duplicate_matches(session, submission: Submission) -> list[DuplicateMatch]:
     """As suspeitas de duplicidade levantadas contra as imagens desta submissão.
 
@@ -1471,16 +1493,63 @@ def _duplicate_matches(session, submission: Submission) -> list[DuplicateMatch]:
     )
 
 
+def _url_ou_aviso(
+    session,
+    actor: User,
+    stored_file: SubmissionFile,
+    settings: Settings,
+) -> tuple[str | None, str]:
+    """Assina a URL do arquivo ou devolve o motivo de não ter assinado.
+
+    A comparação mostra duas imagens lado a lado e uma pode faltar sem que a
+    outra falte — chave adulterada, registro removido, falha do Storage em uma
+    só. Devolver o aviso em vez de levantar deixa cada coluna contar a própria
+    história, em vez de a primeira falha apagar as duas.
+
+    ``StorageBudgetExceeded`` escapa de propósito: o orçamento é do mês inteiro,
+    não deste arquivo, e quem decide parar o painel é o laço.
+    """
+
+    try:
+        return _url_assinada(session, actor, stored_file, settings), ""
+    except LookupError:
+        return None, "O registro do arquivo não existe mais."
+    except AuthorizationError:
+        return None, "Sem permissão para abrir este arquivo."
+    except StorageError as erro:
+        return None, str(erro)
+
+
 def _render_duplicate_matches(
     session,
+    actor: User,
     submission: Submission,
     matches: list[DuplicateMatch],
     settings: Settings,
 ) -> None:
+    """Comparação visual antifraude, por URL assinada e sob pedido.
+
+    O painel montava um caminho dentro de ``settings.upload_dir`` a partir da
+    ``storage_key`` e perguntava por ``is_file()``. Desde a migração a chave é
+    do Supabase Storage e o objeto nunca toca o disco do Streamlit — que além
+    disso é efêmero —, então a resposta era sempre falsa e o revisor via
+    "Imagem atual indisponível" nas duas colunas. A comparação antifraude
+    estava morta.
+
+    A entrega segue o mesmo padrão de ``_render_submission_files``: autorizar
+    antes de assinar, deixar os bytes irem do bucket direto ao navegador e
+    reaproveitar a URL enquanto vale. O portão explícito pesa mais aqui do que
+    no histórico, porque cada suspeita custa **duas** assinaturas — e cada
+    assinatura debita o tamanho do objeto no orçamento de egress. Por isso o
+    botão é por suspeita, não pelo painel: o revisor costuma querer conferir
+    uma, e abrir o card não pode pagar por todas.
+    """
+
     if not matches:
         return
     st.warning(f"{len(matches)} possível(is) duplicidade(s) encontrada(s).")
     st.markdown("**Comparação de evidências**")
+    assinou = False
     for index, match in enumerate(matches, start=1):
         current_image = session.get(SubmissionFile, match.file_id)
         matched_image = session.get(SubmissionFile, match.matched_file_id)
@@ -1488,8 +1557,13 @@ def _render_duplicate_matches(
             st.warning(f"Correspondência {index}: imagem não disponível.")
             continue
         matched_submission = session.get(Submission, matched_image.submission_id)
+        # `kind` é StrEnum sobre coluna Text: volta do banco como str, sem
+        # `.value`. Comparar com o membro funciona nos dois casos, porque
+        # StrEnum compara e hasheia pelo valor.
         kind_label = (
-            "Duplicata exata" if match.kind.value == "exact" else "Imagem semelhante"
+            "Duplicata exata"
+            if match.kind == DuplicateKind.EXACT
+            else "Imagem semelhante"
         )
         similarity = (
             "conteúdo idêntico"
@@ -1505,21 +1579,52 @@ def _render_duplicate_matches(
                     f"{matched_submission.activity.name} · "
                     f"{matched_submission.received_at:%d/%m/%Y %H:%M}"
                 )
+            aberto_key = f"comparacao_aberta_{match.id}"
+            if not st.session_state.get(aberto_key):
+                if st.button(
+                    "🔍 Comparar as duas imagens",
+                    key=f"abrir_comparacao_{match.id}",
+                ):
+                    st.session_state[aberto_key] = True
+                else:
+                    st.caption(
+                        "As imagens ficam no armazenamento privado e são "
+                        "carregadas só quando você pede a comparação."
+                    )
+                    continue
+            try:
+                current_url, current_reason = _url_ou_aviso(
+                    session, actor, current_image, settings
+                )
+                duplicate_url, duplicate_reason = _url_ou_aviso(
+                    session, actor, matched_image, settings
+                )
+            except StorageBudgetExceeded as erro:
+                # O orçamento é do mês inteiro, não desta suspeita: seguir para
+                # as próximas só produziria a mesma recusa repetida.
+                show_operation_error("assinar_arquivo", erro)
+                return
+            assinou = True
             current_column, duplicate_column = st.columns(2)
-            current_path = settings.upload_dir / current_image.storage_key
-            duplicate_path = settings.upload_dir / matched_image.storage_key
             with current_column:
                 st.caption("Envio atual")
-                if current_path.is_file():
-                    st.image(str(current_path), width="stretch")
+                if current_url is None:
+                    st.warning(f"Imagem atual indisponível. {current_reason}")
                 else:
-                    st.warning("Imagem atual indisponível.")
+                    st.image(current_url, width="stretch")
             with duplicate_column:
                 st.caption("Possível duplicata")
-                if duplicate_path.is_file():
-                    st.image(str(duplicate_path), width="stretch")
+                if duplicate_url is None:
+                    st.warning(
+                        f"Imagem correspondente indisponível. {duplicate_reason}"
+                    )
                 else:
-                    st.warning("Imagem correspondente indisponível.")
+                    st.image(duplicate_url, width="stretch")
+    if assinou:
+        st.caption(
+            f"As imagens valem {URL_EXPIRA_SEGUNDOS} segundos. Recarregue a "
+            "página para gerar novas."
+        )
 
 
 def _render_submission_cards(
@@ -1584,10 +1689,10 @@ def _render_submission_cards(
                 )
                 with st.expander("Verificações e auditoria"):
                     for check in submission.checks:
-                        symbol = {"pass": "✅", "review": "⚠️", "fail": "❌"}[
-                            check.outcome.value
-                        ]
-                        st.write(f"{symbol} **{check.rule_name}** — {check.message}")
+                        st.write(
+                            f"{_simbolo_da_verificacao(check)} "
+                            f"**{check.rule_name}** — {check.message}"
+                        )
                     audit_logs = list(
                         session.scalars(
                             select(AuditLog)
@@ -1606,6 +1711,7 @@ def _render_submission_cards(
                 if settings is not None:
                     _render_duplicate_matches(
                         session,
+                        actor,
                         submission,
                         _duplicate_matches(session, submission),
                         settings,
