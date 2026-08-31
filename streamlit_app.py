@@ -1450,6 +1450,27 @@ def _render_submission_timeline(submission: Submission) -> None:
         st.write(f"{icon} {label} · {submission.decided_at:%d/%m/%Y %H:%M}")
 
 
+def _duplicate_matches(session, submission: Submission) -> list[DuplicateMatch]:
+    """As suspeitas de duplicidade levantadas contra as imagens desta submissão.
+
+    A consulta filtra por ``file_id`` porque é ele que aponta para o arquivo do
+    envio atual — ``matched_file_id`` é o lado antigo da comparação. O nome
+    ``image_id`` que estava aqui vinha de quando ``submission_images`` e os
+    documentos eram tabelas separadas; a unificação em ``submission_files``
+    renomeou a coluna e esta chamada ficou para trás, levantando AttributeError
+    no primeiro card com imagem que um administrador abrisse.
+    """
+
+    image_ids = [image.id for image in submission.images]
+    if not image_ids:
+        return []
+    return list(
+        session.scalars(
+            select(DuplicateMatch).where(DuplicateMatch.file_id.in_(image_ids))
+        ).all()
+    )
+
+
 def _render_duplicate_matches(
     session,
     submission: Submission,
@@ -1582,20 +1603,13 @@ def _render_submission_cards(
                             f"🕘 {log.created_at:%d/%m/%Y %H:%M} · "
                             f"{log.action} · {log.reason or 'sem observação'}"
                         )
-                image_ids = [image.id for image in submission.images]
-                matches = (
-                    list(
-                        session.scalars(
-                            select(DuplicateMatch).where(
-                                DuplicateMatch.image_id.in_(image_ids)
-                            )
-                        ).all()
-                    )
-                    if image_ids
-                    else []
-                )
                 if settings is not None:
-                    _render_duplicate_matches(session, submission, matches, settings)
+                    _render_duplicate_matches(
+                        session,
+                        submission,
+                        _duplicate_matches(session, submission),
+                        settings,
+                    )
                 if submission.status == SubmissionStatus.NEEDS_REVIEW:
                     with st.form(f"review_{submission.id}"):
                         units = st.number_input(
