@@ -328,9 +328,11 @@ def _sessao_viva(settings: Settings) -> Sessao | None:
 
     gateway = _auth_gateway(settings.supabase_url)
     sessao = st.session_state.get(SESSAO_KEY)
+    print(f"[DEBUG-LOGIN] _sessao_viva: sessao_in_state={sessao is not None}")
 
     if sessao is None:
         token = request_token(st)
+        print(f"[DEBUG-LOGIN] _sessao_viva: no sessao in state, request_token={'present' if token else 'None'}")
         if not token:
             return None
         try:
@@ -339,12 +341,14 @@ def _sessao_viva(settings: Settings) -> Sessao | None:
                 refresh_token=token,
                 chave_publica=settings.supabase_publishable_key,
             )
-        except AuthError:
+        except AuthError as error:
+            print(f"[DEBUG-LOGIN] _sessao_viva: renovar(from browser token) raised {error!r}")
             _esquecer_sessao()
             return None
         _guardar_sessao(sessao)
         return sessao
 
+    print(f"[DEBUG-LOGIN] _sessao_viva: precisa_renovar={sessao.precisa_renovar()} expires_at={sessao.expires_at}")
     if sessao.precisa_renovar():
         try:
             sessao = renovar(
@@ -352,7 +356,8 @@ def _sessao_viva(settings: Settings) -> Sessao | None:
                 refresh_token=sessao.refresh_token,
                 chave_publica=settings.supabase_publishable_key,
             )
-        except AuthError:
+        except AuthError as error:
+            print(f"[DEBUG-LOGIN] _sessao_viva: renovar(refresh) raised {error!r}")
             _esquecer_sessao()
             return None
         _guardar_sessao(sessao)
@@ -371,6 +376,11 @@ def authenticate(
     command = st.session_state.get(COMMAND_KEY)
     limpando = isinstance(command, dict) and command.get("op") == "clear"
     salvando = isinstance(command, dict) and command.get("op") == "write"
+    print(
+        f"[DEBUG-LOGIN] authenticate: command_op={command.get('op') if isinstance(command, dict) else None} "
+        f"sessao_key_present={SESSAO_KEY in st.session_state} "
+        f"browser_session_ready={browser_session_ready} browser_storage_available={browser_storage_available}"
+    )
 
     if limpando:
         return AuthenticationState(
@@ -460,8 +470,15 @@ def login_view(
                     chave_publica=settings.supabase_publishable_key,
                     dominio=settings.supabase_username_domain,
                 )
+                print(f"[DEBUG-LOGIN] login_view: entrar() ok, user_id={sessao.user_id}")
                 _guardar_sessao(sessao)
+                print(
+                    f"[DEBUG-LOGIN] login_view: _guardar_sessao ok, "
+                    f"sessao_key_present={SESSAO_KEY in st.session_state} "
+                    f"command={st.session_state.get(COMMAND_KEY)!r}"
+                )
             except (AuthError, ValueError) as error:
+                print(f"[DEBUG-LOGIN] login_view: caught {error!r}")
                 st.error(str(error))
             else:
                 st.rerun()
