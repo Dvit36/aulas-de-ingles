@@ -100,13 +100,6 @@ class Settings:
     google_sheets_spreadsheet_id: str = ""
     google_sheets_leaderboard_tab: str = "Leaderboard"
     google_sheets_ledger_tab: str = "Ledger"
-    smtp_host: str = ""
-    smtp_port: int = 587
-    smtp_username: str = ""
-    smtp_password: str = ""
-    smtp_from_email: str = ""
-    smtp_from_name: str = "English Activities"
-    smtp_use_tls: bool = True
 
     @property
     def supabase_ready(self) -> bool:
@@ -232,15 +225,6 @@ class Settings:
             google_sheets_ledger_tab=os.getenv(
                 "GOOGLE_SHEETS_LEDGER_TAB", "Ledger"
             ).strip(),
-            smtp_host=os.getenv("SMTP_HOST", "").strip(),
-            smtp_port=int(os.getenv("SMTP_PORT", "587")),
-            smtp_username=os.getenv("SMTP_USERNAME", "").strip(),
-            smtp_password=os.getenv("SMTP_PASSWORD", ""),
-            smtp_from_email=os.getenv("SMTP_FROM_EMAIL", "").strip(),
-            smtp_from_name=os.getenv(
-                "SMTP_FROM_NAME", "English Activities"
-            ).strip(),
-            smtp_use_tls=_as_bool(os.getenv("SMTP_USE_TLS"), default=True),
         )
         settings.validate()
         return settings
@@ -291,8 +275,6 @@ class Settings:
             )
         if self.bootstrap_admin_password and len(self.bootstrap_admin_password) < 10:
             raise ValueError("BOOTSTRAP_ADMIN_PASSWORD deve ter ao menos 10 caracteres")
-        if self.smtp_port <= 0 or self.smtp_port > 65535:
-            raise ValueError("SMTP_PORT inválida")
         if not 0 <= self.auto_approve_confidence <= 1:
             raise ValueError("AUTO_APPROVE_CONFIDENCE deve estar entre 0 e 1")
         if self.phash_distance_threshold < 0:

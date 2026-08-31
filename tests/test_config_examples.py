@@ -286,7 +286,6 @@ def test_o_exemplo_nao_carrega_valor_de_credencial() -> None:
         "SUPABASE_DB_URL",
         "SUPABASE_URL",
         "BOOTSTRAP_ADMIN_PASSWORD",
-        "SMTP_PASSWORD",
     )
     preenchidas = [nome for nome in sensiveis if ENV.get(nome)]
     assert not preenchidas, (
