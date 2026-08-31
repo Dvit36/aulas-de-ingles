@@ -42,3 +42,7 @@ frontend-atual.zip
 
 # Relatórios gerados pelas ferramentas de migração
 migration-report.json
+
+# Senhas geradas na migração. Arquivo temporário, para distribuir aos alunos e
+# apagar em seguida; senha em claro não entra no Git em hipótese nenhuma.
+migration-credentials.json

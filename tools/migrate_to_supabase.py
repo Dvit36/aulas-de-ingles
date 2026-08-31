@@ -8,6 +8,12 @@ precisa ser o UUID de ``auth.users``. Todo o resto conserva o UUID legado,
 então reexecutar pula o que já existe pela chave primária. O mapa de usuários
 fica em um manifesto, o que também torna a execução retomável.
 
+Credenciais: ``--execute`` cria as contas no Auth com senha aleatória. Elas são
+gravadas em ``migration-credentials.json`` (0600, fora do Git), porque o domínio
+de e-mail é ``.invalid`` e não existe recuperação por e-mail — sem esse arquivo
+as contas nascem inacessíveis. **Distribua as senhas aos alunos e apague o
+arquivo em seguida**: é senha em claro, e existe só para essa entrega.
+
 Uso:
     python tools/migrate_to_supabase.py                 # dry-run (padrão)
     python tools/migrate_to_supabase.py --execute
@@ -19,6 +25,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import tomllib
 import urllib.error
@@ -41,6 +48,7 @@ from english_leaderboard.storage import (  # noqa: E402
 
 SEGREDOS = Path(".streamlit/secrets.toml")
 MANIFESTO = Path("migration-manifest.json")
+CREDENCIAIS = Path("migration-credentials.json")
 ORIGEM_DB = "sqlite:///./data/app.db"
 ORIGEM_UPLOADS = Path("data/uploads")
 
@@ -104,6 +112,39 @@ def gravar_manifesto(dados: dict[str, Any]) -> None:
     )
 
 
+def registrar_credencial(username: str, senha: str) -> None:
+    """Acrescenta uma senha gerada ao arquivo de credenciais, com modo 0600.
+
+    Fica fora do manifesto de propósito: o manifesto é o estado da migração,
+    versionável e útil para o rollback; isto é segredo em claro, descartável, e
+    não pode acabar no mesmo arquivo por acidente.
+
+    A gravação é por usuário, e não uma vez ao final, porque a senha só existe
+    em memória entre a chamada ao Auth e este ponto. Uma falha no meio do laço
+    deixaria a conta criada e a senha perdida — e, com domínio ``.invalid``,
+    conta sem senha é conta inacessível. Pelo mesmo motivo o arquivo é lido e
+    mesclado antes de reescrito: uma execução retomada não pode apagar as
+    senhas que a anterior gravou.
+    """
+
+    existentes: dict[str, str] = {}
+    if CREDENCIAIS.is_file():
+        existentes = json.loads(CREDENCIAIS.read_text(encoding="utf-8"))
+    existentes[username] = senha
+
+    # O modo vai no open, e não num chmod posterior, para o arquivo não existir
+    # nem por um instante legível por outros.
+    descritor = os.open(
+        CREDENCIAIS, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
+    )
+    with os.fdopen(descritor, "w", encoding="utf-8") as arquivo:
+        json.dump(existentes, arquivo, ensure_ascii=False, indent=2, sort_keys=True)
+        arquivo.write("\n")
+    # Um arquivo de execução anterior pode ter nascido com outro modo: o open
+    # acima só aplica o 0600 na criação.
+    os.chmod(CREDENCIAIS, 0o600)
+
+
 # ---------------------------------------------------------------- usuários
 
 def migrar_usuarios(origem, cfg, manifesto, relatorio, executar: bool) -> dict[str, str]:
@@ -125,13 +166,14 @@ def migrar_usuarios(origem, cfg, manifesto, relatorio, executar: bool) -> dict[s
             mapa[legado] = f"(novo uuid para {username})"
             relatorio.contar("usuarios", "migrados")
             continue
+        senha = uuid.uuid4().hex + "Aa1!"
         try:
             resposta = admin_api(
                 cfg,
                 "admin/users",
                 {
                     "email": email,
-                    "password": uuid.uuid4().hex + "Aa1!",
+                    "password": senha,
                     "email_confirm": True,
                     "user_metadata": {"display_name": nome, "legacy_id": legado},
                 },
@@ -144,6 +186,9 @@ def migrar_usuarios(origem, cfg, manifesto, relatorio, executar: bool) -> dict[s
             relatorio.erros.append(f"usuário {username}: {erro}")
             relatorio.contar("usuarios", "falhas")
             continue
+        # Antes de contabilizar: a conta já existe no Auth, e a senha só existe
+        # aqui. Registrar primeiro é o que garante que ela não se perca.
+        registrar_credencial(username, senha)
         mapa[legado] = resposta["id"]
         relatorio.contar("usuarios", "migrados")
         relatorio.usuarios[username] = resposta["id"]
@@ -633,6 +678,12 @@ def main() -> int:
             for item in itens[:10]:
                 print(f"  - {item}")
     print(f"\nRelatório: {args.report}")
+    if args.execute and CREDENCIAIS.is_file():
+        print(
+            f"\nSenhas geradas: {CREDENCIAIS} (modo 0600, fora do Git).\n"
+            "Distribua aos alunos e APAGUE o arquivo em seguida — é senha em "
+            "claro, e o domínio .invalid não tem recuperação por e-mail."
+        )
     if not args.execute:
         print("Nada foi alterado. Use --execute para valer.")
     return 1 if relatorio.erros else 0
