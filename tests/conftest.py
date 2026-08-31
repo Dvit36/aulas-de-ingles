@@ -24,7 +24,6 @@ def settings(tmp_path: Path) -> Settings:
         app_env="test",
         seed_fake_data=False,
         database_url="sqlite+pysqlite:///:memory:",
-        upload_dir=tmp_path / "uploads",
         max_upload_bytes=5 * 1024 * 1024,
         min_image_width=320,
         min_image_height=320,

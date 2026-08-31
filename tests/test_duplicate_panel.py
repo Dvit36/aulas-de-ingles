@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import pathlib
 from contextlib import contextmanager
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -131,22 +130,6 @@ class StFalso:
     @contextmanager
     def _coluna(self):
         yield self
-
-
-class CaminhoProibido:
-    """Ocupa o lugar de um diretório e denuncia quem tentar montar um caminho.
-
-    A regressão que este duplo existe para pegar não é uma exceção qualquer: é
-    o painel voltar a tratar a `storage_key` como se fosse um arquivo em disco.
-    """
-
-    def __truediv__(self, outro):
-        raise AssertionError(
-            "o painel montou um caminho de filesystem a partir da "
-            f"storage_key ({outro!r}). A chave é do Supabase Storage, o "
-            "objeto nunca vai para o disco do Streamlit e o disco é efêmero: "
-            "a entrega tem de ser por URL assinada."
-        )
 
 
 @pytest.fixture
@@ -292,14 +275,18 @@ def test_a_comparacao_nao_monta_caminho_de_filesystem(
 ):
     """A regressão central do Item 1.
 
-    `upload_dir` é trocado por um objeto que denuncia a divisão de caminho, e
-    `Path.is_file` por uma armadilha. As duas imagens têm de sair como URL
-    assinada, sem que o disco seja consultado.
+    `Path.is_file` é minado durante a renderização: qualquer sondagem ao disco
+    derruba o teste. E `Settings` não tem mais `upload_dir` — o diretório de
+    uploads foi removido justamente porque estas duas linhas eram o último
+    consumidor dele —, então nem existe de onde partir um caminho.
     """
 
     submission, espiao = duplicidade
     st_falso = StFalso(clicar=True)
-    sem_disco = replace(settings, upload_dir=CaminhoProibido())
+    assert not hasattr(settings, "upload_dir"), (
+        "voltou a existir um diretório de uploads em Settings; o disco do "
+        "Streamlit é efêmero e não guarda arquivo de aluno"
+    )
 
     _comparar(
         monkeypatch,
@@ -308,7 +295,7 @@ def test_a_comparacao_nao_monta_caminho_de_filesystem(
         session,
         users[Role.ADMIN],
         submission,
-        sem_disco,
+        settings,
     )
 
     assert len(st_falso.imagens) == 2, "as duas colunas têm de mostrar imagem"

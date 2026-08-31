@@ -166,7 +166,13 @@ def test_text_document_goes_to_the_documents_category(conexao, opcoes) -> None:
 
 
 def test_nothing_is_written_to_the_local_filesystem(conexao, opcoes, tmp_path) -> None:
-    """O disco do Streamlit é efêmero: o envio não pode depender dele."""
+    """O disco do Streamlit é efêmero: o envio não pode depender dele.
+
+    O teste apontava `upload_dir` para `tmp_path` e conferia que nada aparecia
+    lá. O campo deixou de existir — não havia mais para onde escrever —, então
+    o que resta é a garantia direta: processar um envio não cria arquivo local
+    nenhum, e `Settings` não oferece diretório de upload a quem tentar.
+    """
 
     gateway = GatewayFalso()
     antes = set(tmp_path.rglob("*"))
@@ -177,10 +183,11 @@ def test_nothing_is_written_to_the_local_filesystem(conexao, opcoes, tmp_path) -
         submission_id=uuid4(),
         student_id=ALUNO,
         arquivos=[ArquivoEnviado("print.png", make_png(seed=5))],
-        settings=replace(opcoes, upload_dir=tmp_path),
+        settings=opcoes,
     )
 
     assert set(tmp_path.rglob("*")) == antes
+    assert not hasattr(opcoes, "upload_dir")
 
 
 def test_invalid_file_is_rejected_without_touching_the_bucket(

@@ -71,7 +71,6 @@ class Settings:
     bootstrap_admin_username: str = ""
     bootstrap_admin_password: str = ""
     database_url: str = "sqlite:///./data/app.db"
-    upload_dir: Path = Path("./data/uploads")
     max_upload_bytes: int = 10 * 1024 * 1024
     max_upload_files: int = 10
     max_upload_total_bytes: int = 30 * 1024 * 1024
@@ -171,7 +170,6 @@ class Settings:
                 "BOOTSTRAP_ADMIN_PASSWORD", ""
             ),
             database_url=os.getenv("DATABASE_URL", "sqlite:///./data/app.db").strip(),
-            upload_dir=Path(os.getenv("UPLOAD_DIR", "./data/uploads")),
             max_upload_bytes=int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))),
             max_upload_files=int(os.getenv("MAX_UPLOAD_FILES", "10")),
             max_upload_total_bytes=int(
@@ -394,7 +392,10 @@ class Settings:
             raise ValueError("As abas de leaderboard e ledger devem ter nomes diferentes")
 
     def ensure_directories(self) -> None:
-        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        # Só o diretório do SQLite. Ele é load-bearing no desenvolvimento
+        # local: sem ele, um banco novo falha com "unable to open database
+        # file". Arquivo de aluno nenhum passa por aqui — os binários vivem no
+        # Supabase Storage, e o disco do Streamlit é efêmero.
         url = make_url(self.database_url)
         if url.get_backend_name() == "sqlite" and url.database not in {None, "", ":memory:"}:
             Path(url.database).expanduser().parent.mkdir(parents=True, exist_ok=True)
