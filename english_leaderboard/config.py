@@ -66,7 +66,10 @@ def _csv_set(value: str | None, *, lower: bool = False) -> frozenset[str]:
 @dataclass(frozen=True)
 class Settings:
     app_env: str = "development"
-    seed_fake_data: bool = True
+    # Semear alunos falsos escreve no banco. É opt-in explícito: um ambiente
+    # onde a variável falte, venha malformada ou não chegue ao processo tem de
+    # produzir banco limpo, não banco sujo.
+    seed_fake_data: bool = False
     bootstrap_admin_name: str = ""
     bootstrap_admin_username: str = ""
     bootstrap_admin_password: str = ""
@@ -154,7 +157,13 @@ class Settings:
         _recusar_backup_no_github()
         settings = cls(
             app_env=os.getenv("APP_ENV", "development").strip().lower(),
-            seed_fake_data=_as_bool(os.getenv("SEED_FAKE_DATA"), default=True),
+            # `default=False` porque a variável pode simplesmente não chegar
+            # aqui. O Streamlit só promove a `os.environ` valores `str`, `int`
+            # e `float`: um `SEED_FAKE_DATA = false` booleano no secrets.toml
+            # vira `st.secrets`, nunca variável de ambiente, e `os.getenv`
+            # devolve `None`. Com o default anterior, esse `None` semeava
+            # cinco alunos falsos em produção a cada startup.
+            seed_fake_data=_as_bool(os.getenv("SEED_FAKE_DATA"), default=False),
             bootstrap_admin_name=os.getenv("BOOTSTRAP_ADMIN_NAME", "").strip(),
             bootstrap_admin_username=_env_with_legacy(
                 "BOOTSTRAP_ADMIN_USERNAME", "BOOTSTRAP_ADMIN_EMAIL"
