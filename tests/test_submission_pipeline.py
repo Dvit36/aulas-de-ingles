@@ -30,6 +30,7 @@ from english_leaderboard.tempfiles import arquivo_temporario, diretorio_temporar
 from tests.conftest import make_png
 
 ALUNO = "11111111-1111-1111-1111-111111111111"
+OUTRO_ALUNO = "22222222-2222-2222-2222-222222222222"
 
 
 class GatewayFalso:
@@ -380,6 +381,140 @@ def test_resending_the_same_file_does_not_duplicate(conexao, opcoes) -> None:
     assert segundo.registrados[0].id == primeiro.registrados[0].id
     assert len(gateway.objetos) == 1
     assert conexao.execute(text("select count(*) from submission_files")).scalar() == 1
+
+
+def _matches(conexao) -> list[tuple]:
+    return list(
+        conexao.execute(
+            text(
+                "select kind, distance, same_student from duplicate_matches"
+                " order by kind"
+            )
+        ).all()
+    )
+
+
+def test_an_image_resent_by_another_student_is_an_exact_duplicate(
+    conexao, opcoes
+) -> None:
+    """O caso que o antifraude existe para pegar: o print de um aluno reenviado
+    por outro. Sem isso o pipeline pontuava os dois."""
+
+    gateway = GatewayFalso()
+    dados = make_png(seed=31)
+
+    processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("print.png", dados)],
+        settings=opcoes,
+    )
+    segundo = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=OUTRO_ALUNO,
+        arquivos=[ArquivoEnviado("print.png", dados)],
+        settings=opcoes,
+    )
+
+    assert segundo.duplicatas_exatas == [True]
+    assert segundo.duplicatas_similares == [False]
+    assert _matches(conexao) == [("exact", 0, False)]
+
+
+def test_a_recompressed_image_is_a_similar_duplicate(conexao, opcoes) -> None:
+    """Mesmos pixels, bytes diferentes: o checksum não pega, o pHash pega.
+
+    É por isso que imagem não pode depender só de checksum como documento faz.
+    """
+
+    gateway = GatewayFalso()
+
+    processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("print.png", make_png(seed=37))],
+        settings=opcoes,
+    )
+    segundo = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[
+            ArquivoEnviado("print.png", make_png(seed=37, metadata="reenviado"))
+        ],
+        settings=opcoes,
+    )
+
+    assert segundo.duplicatas_exatas == [False]
+    assert segundo.duplicatas_similares == [True]
+    assert _matches(conexao) == [("similar", 0, True)]
+
+
+def test_two_similar_images_in_one_batch_flag_the_second(conexao, opcoes) -> None:
+    """A comparação também é contra o próprio lote, não só contra o histórico."""
+
+    gateway = GatewayFalso()
+
+    resultado = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[
+            ArquivoEnviado("a.png", make_png(seed=41)),
+            ArquivoEnviado("b.png", make_png(seed=41, metadata="copia")),
+        ],
+        settings=opcoes,
+    )
+
+    # O primeiro não tem contra o que casar; o segundo casa com ele.
+    assert resultado.duplicatas_similares == [False, True]
+    assert _matches(conexao) == [("similar", 0, True)]
+
+
+def test_a_first_image_has_nothing_to_match(conexao, opcoes) -> None:
+    gateway = GatewayFalso()
+
+    resultado = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("print.png", make_png(seed=43))],
+        settings=opcoes,
+    )
+
+    assert resultado.duplicatas_exatas == [False]
+    assert resultado.duplicatas_similares == [False]
+    assert _matches(conexao) == []
+
+
+def test_document_gets_no_perceptual_flags(conexao, opcoes) -> None:
+    """As listas são paralelas às imagens do lote. Documento não entra nelas."""
+
+    gateway = GatewayFalso()
+
+    resultado = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[
+            ArquivoEnviado("resumo.txt", b"texto qualquer"),
+            ArquivoEnviado("print.png", make_png(seed=47)),
+        ],
+        settings=opcoes,
+    )
+
+    assert resultado.duplicatas_exatas == [False]
+    assert resultado.duplicatas_similares == [False]
 
 
 def test_resending_the_same_document_is_flagged_as_duplicate(conexao, opcoes) -> None:

@@ -18,14 +18,19 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from .config import Settings
 from .document_processing import DocumentValidationError, process_document_bytes
-from .image_processing import ImagePolicy, ImageValidationError, analyze_image_bytes
+from .image_processing import (
+    ImagePolicy,
+    ImageValidationError,
+    analyze_image_bytes,
+    phash_distance,
+)
 from .storage import StorageGateway
 from .storage_budget import LimitesStorage
 from .storage_service import ArquivoRegistrado, salvar_arquivo
@@ -77,6 +82,10 @@ class ResultadoProcessamento:
     # Um documento idêntico já enviado — no próprio lote ou em qualquer
     # submissão anterior. O pipeline só sinaliza; a rejeição é da camada acima.
     documento_duplicado: bool = False
+    # Paralelas às **imagens** do lote, na ordem de envio. Documento não entra:
+    # a comparação perceptual é de imagem, e a dele é por checksum exato.
+    duplicatas_exatas: list[bool] = field(default_factory=list)
+    duplicatas_similares: list[bool] = field(default_factory=list)
 
     @property
     def total_bytes(self) -> int:
@@ -179,8 +188,12 @@ def processar_envio(
             ) from erro
 
     resultado.documento_duplicado = _documento_ja_enviado(conexao, analisados)
+    # O histórico precisa ser lido antes da fase 2: depois dela os arquivos
+    # deste envio já estariam em `submission_files` e casariam consigo mesmos.
+    candidatos = _candidatos_perceptuais(conexao)
 
     # Fase 2: só agora os binários vão para o bucket e os metadados para o banco.
+    imagens: list[tuple[str, str, str]] = []
     for posicao, (arquivo, analisado) in enumerate(
         zip(arquivos, analisados, strict=True)
     ):
@@ -206,7 +219,19 @@ def processar_envio(
             resultado.textos_ocr.append(analisado["texto"])
         if analisado["phash"]:
             resultado.phashes.append(analisado["phash"])
+        if analisado["categoria"] == CATEGORIA_IMAGEM:
+            imagens.append(
+                (registrado.id, str(analisado["sha256"]), str(analisado["phash"]))
+            )
 
+    resultado.duplicatas_exatas, resultado.duplicatas_similares = _registrar_duplicatas(
+        conexao,
+        submission_id=submission_id,
+        student_id=student_id,
+        imagens=imagens,
+        candidatos=candidatos,
+        distancia_maxima=settings.phash_distance_threshold,
+    )
     return resultado
 
 
@@ -236,6 +261,98 @@ def _documento_ja_enviado(
             duplicado = True
         vistos.add(checksum)
     return duplicado
+
+
+def _candidatos_perceptuais(conexao: Connection) -> list[tuple[str, str, str, str]]:
+    """Arquivos já enviados que podem colidir com as imagens deste envio.
+
+    Só entram os que têm pHash, ou seja, imagens: documento é confrontado por
+    checksum exato em ``_documento_ja_enviado``. O dono sai do próprio
+    ``submission_files``, que já o guarda — não é preciso passar por
+    ``submissions`` para saber de quem é o arquivo.
+    """
+
+    return [
+        (str(linha[0]), str(linha[1]), str(linha[2]), str(linha[3]))
+        for linha in conexao.execute(
+            text(
+                "select id, checksum_sha256, phash, student_id"
+                " from submission_files where phash is not null"
+            )
+        ).all()
+    ]
+
+
+def _registrar_duplicatas(
+    conexao: Connection,
+    *,
+    submission_id: str | UUID,
+    student_id: str | UUID,
+    imagens: list[tuple[str, str, str]],
+    candidatos: list[tuple[str, str, str, str]],
+    distancia_maxima: int,
+) -> tuple[list[bool], list[bool]]:
+    """Confronta cada imagem com o histórico e com as anteriores do lote.
+
+    Checksum igual é cópia literal e vale ``exact``; pHash perto é a mesma tela
+    recortada, recomprimida ou reenviada em outro formato, e vale ``similar``.
+    As linhas em ``duplicate_matches`` são o que o painel de comparação de
+    evidências exibe; as duas listas de sinalizadores alimentam as regras.
+
+    O pipeline não decide nada com isso: registra e devolve.
+    """
+
+    dono = str(student_id).lower()
+    exatas = [False] * len(imagens)
+    similares = [False] * len(imagens)
+
+    def registrar(file_id: str, matched_id: str, kind: str, distancia: int, mesmo: bool):
+        conexao.execute(
+            text(
+                "insert into duplicate_matches"
+                " (id, submission_id, file_id, matched_file_id, kind, distance,"
+                "  same_student)"
+                " values (:id, :sub, :file, :matched, :kind, :dist, :mesmo)"
+            ),
+            {
+                "id": str(uuid4()),
+                "sub": str(submission_id),
+                "file": file_id,
+                "matched": matched_id,
+                "kind": kind,
+                "dist": distancia,
+                "mesmo": mesmo,
+            },
+        )
+
+    for indice, (file_id, sha256, phash) in enumerate(imagens):
+        for candidato_id, candidato_sha, candidato_phash, candidato_dono in candidatos:
+            if sha256 == candidato_sha:
+                exatas[indice] = True
+                registrar(file_id, candidato_id, "exact", 0, candidato_dono == dono)
+                continue
+            distancia = phash_distance(phash, candidato_phash)
+            if distancia <= distancia_maxima:
+                similares[indice] = True
+                registrar(
+                    file_id,
+                    candidato_id,
+                    "similar",
+                    distancia,
+                    candidato_dono == dono,
+                )
+        # Contra as imagens anteriores do próprio lote, que ainda não estavam
+        # no banco quando `candidatos` foi lido.
+        for anterior_id, anterior_sha, anterior_phash in imagens[:indice]:
+            if sha256 == anterior_sha:
+                exatas[indice] = True
+                registrar(file_id, anterior_id, "exact", 0, True)
+                continue
+            distancia = phash_distance(phash, anterior_phash)
+            if distancia <= distancia_maxima:
+                similares[indice] = True
+                registrar(file_id, anterior_id, "similar", distancia, True)
+    return exatas, similares
 
 
 def _analisar(
