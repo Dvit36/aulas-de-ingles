@@ -124,6 +124,24 @@ def processar_envio(
     objeto é derivada dele, então um identificador forjado não teria como
     apontar para a pasta de outro aluno — e ainda seria barrado pela política
     do bucket e pela constraint do banco.
+
+    **Duas responsabilidades ficam de fora, por desenho, e quem chamar esta
+    função direto está pulando as duas:**
+
+    - **Autorização.** O pipeline não confere nada sobre o ator: não exige
+      sessão ativa, não exige ``role == STUDENT`` e não confere se a atividade
+      existe, está ativa e não foi arquivada. Ele confia no ``student_id`` que
+      recebe. Derivar esse UUID da sessão do Supabase Auth é obrigação do
+      chamador — hoje ``services.submit_evidence``.
+    - **Regras, decisão, pontuação e auditoria.** O pipeline devolve fatos
+      sobre os arquivos: bytes registrados, texto de OCR, checksums, pHashes.
+      Ele não avalia ``RuleCheck``, não decide status, não transiciona a
+      submissão, não credita ponto e não escreve auditoria. Isso é
+      ``analyze_submission_rules`` + ``transition_submission`` +
+      ``award_approved_submission`` + ``add_audit``, na camada acima.
+
+    Um arquivo inválido rejeita o lote inteiro, com ``EnvioRejeitado``, antes
+    de qualquer objeto chegar ao bucket.
     """
 
     _validar_conjunto(arquivos, settings)
