@@ -117,6 +117,7 @@ def processar_envio(
     arquivos: list[ArquivoEnviado],
     settings: Settings,
     ocr_engine=None,
+    activity_code: str | None = None,
 ) -> ResultadoProcessamento:
     """Valida, analisa em memória, envia ao Storage e grava os metadados.
 
@@ -160,7 +161,9 @@ def processar_envio(
     analisados: list[dict[str, object]] = []
     for arquivo in arquivos:
         try:
-            analisados.append(_analisar(arquivo, politica, settings, ocr_engine))
+            analisados.append(
+                _analisar(arquivo, politica, settings, ocr_engine, activity_code)
+            )
         except (ImageValidationError, DocumentValidationError) as erro:
             # Nada foi ao Storage: não há objeto órfão a compensar.
             raise EnvioRejeitado(
@@ -206,11 +209,25 @@ def _analisar(
     politica: ImagePolicy,
     settings: Settings,
     ocr_engine,
+    activity_code: str | None = None,
 ) -> dict[str, object]:
-    """Roteia entre imagem e documento, sempre sobre os bytes em memória."""
+    """Roteia entre imagem e documento, sempre sobre os bytes em memória.
+
+    ``activity_code`` existe só para a regra de plataforma: há atividade cuja
+    comprovação é um print e nada mais. Sem ele o roteamento é o de sempre,
+    por extensão.
+    """
 
     nome = (arquivo.filename or "").lower()
     parece_imagem = nome.endswith((".jpg", ".jpeg", ".png", ".webp"))
+
+    if not parece_imagem and activity_code == "duolingo_beconfident":
+        # Antifraude: a prova de lição é o print da tela. Aceitar documento
+        # deixaria qualquer PDF pontuar como se fosse a lição concluída.
+        raise DocumentValidationError(
+            "Duolingo/BeConfident aceita somente imagens",
+            code="image_required",
+        )
 
     if parece_imagem:
         analisado = analyze_image_bytes(arquivo.dados, policy=politica)

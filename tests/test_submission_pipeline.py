@@ -246,6 +246,50 @@ def test_a_rejected_file_takes_the_whole_batch_down(conexao, opcoes) -> None:
     assert excinfo.value.arquivo == "ruim.png"
 
 
+def test_duolingo_activity_refuses_a_document(conexao, opcoes) -> None:
+    """Regra antifraude: prova de lição do Duolingo/BeConfident é print, não PDF.
+
+    Sem ela o aluno anexa um documento qualquer e a atividade pontua. O
+    pipeline não conhecia a atividade e por isso aceitava; `submit_evidence`
+    já recusava com `code="image_required"`.
+    """
+
+    gateway = GatewayFalso()
+
+    with pytest.raises(EnvioRejeitado, match="somente imagens") as excinfo:
+        processar_envio(
+            conexao,
+            gateway,
+            submission_id=uuid4(),
+            student_id=ALUNO,
+            arquivos=[ArquivoEnviado("licao.txt", "terminei a lição".encode())],
+            settings=opcoes,
+            activity_code="duolingo_beconfident",
+        )
+
+    assert excinfo.value.code == "image_required"
+    assert gateway.objetos == {}
+
+
+def test_duolingo_activity_still_accepts_an_image(conexao, opcoes) -> None:
+    """A regra recusa não-imagem, não aperta o que a atividade de fato aceita."""
+
+    gateway = GatewayFalso()
+
+    resultado = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("print.png", make_png(seed=19))],
+        settings=opcoes,
+        activity_code="duolingo_beconfident",
+    )
+
+    assert len(resultado.registrados) == 1
+    assert f"/{CATEGORIA_IMAGEM}/" in resultado.registrados[0].storage_key
+
+
 def test_batch_limits_are_enforced_before_any_upload(conexao, opcoes) -> None:
     gateway = GatewayFalso()
     pequeno = replace(opcoes, max_upload_files=2)
