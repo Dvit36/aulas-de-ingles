@@ -382,6 +382,87 @@ def test_resending_the_same_file_does_not_duplicate(conexao, opcoes) -> None:
     assert conexao.execute(text("select count(*) from submission_files")).scalar() == 1
 
 
+def test_resending_the_same_document_is_flagged_as_duplicate(conexao, opcoes) -> None:
+    """Sem esta marca, reenviar o mesmo PDF pontua de novo.
+
+    O pipeline só sinaliza. Transformar a marca em `RuleCheck` e em rejeição é
+    da camada acima, junto com o resto da decisão.
+    """
+
+    gateway = GatewayFalso()
+    dados = b"resumo da unidade"
+
+    primeiro = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("resumo.txt", dados)],
+        settings=opcoes,
+    )
+    assert primeiro.documento_duplicado is False
+
+    # Outra submissão: a idempotência de `salvar_arquivo` não entra no caminho.
+    segundo = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("outro-nome.txt", dados)],
+        settings=opcoes,
+    )
+    assert segundo.documento_duplicado is True
+
+
+def test_the_same_document_twice_in_one_batch_is_flagged(conexao, opcoes) -> None:
+    """A colisão dentro do próprio lote não passa pelo banco: nada foi gravado
+    ainda quando o segundo arquivo é analisado."""
+
+    gateway = GatewayFalso()
+    dados = b"mesma coisa duas vezes"
+
+    resultado = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[
+            ArquivoEnviado("a.txt", dados),
+            ArquivoEnviado("copia.txt", dados),
+        ],
+        settings=opcoes,
+    )
+
+    assert resultado.documento_duplicado is True
+
+
+def test_an_image_does_not_trip_the_document_duplicate_flag(conexao, opcoes) -> None:
+    """Imagem é confrontada por pHash, em outro caminho. Reenviá-la não pode
+    acender a marca que existe para documento."""
+
+    gateway = GatewayFalso()
+    dados = make_png(seed=23)
+
+    processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("print.png", dados)],
+        settings=opcoes,
+    )
+    segundo = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("print.png", dados)],
+        settings=opcoes,
+    )
+
+    assert segundo.documento_duplicado is False
+
+
 def test_key_is_always_derived_from_the_session_owner(conexao, opcoes) -> None:
     """Nem o nome do arquivo nem qualquer campo da interface entra na chave."""
 

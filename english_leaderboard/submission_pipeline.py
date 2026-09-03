@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from uuid import UUID
 
+from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from .config import Settings
@@ -73,6 +74,9 @@ class ResultadoProcessamento:
     textos_ocr: list[str] = field(default_factory=list)
     checksums: list[str] = field(default_factory=list)
     phashes: list[str] = field(default_factory=list)
+    # Um documento idêntico já enviado — no próprio lote ou em qualquer
+    # submissão anterior. O pipeline só sinaliza; a rejeição é da camada acima.
+    documento_duplicado: bool = False
 
     @property
     def total_bytes(self) -> int:
@@ -174,6 +178,8 @@ def processar_envio(
                 arquivo=arquivo.filename,
             ) from erro
 
+    resultado.documento_duplicado = _documento_ja_enviado(conexao, analisados)
+
     # Fase 2: só agora os binários vão para o bucket e os metadados para o banco.
     for posicao, (arquivo, analisado) in enumerate(
         zip(arquivos, analisados, strict=True)
@@ -202,6 +208,34 @@ def processar_envio(
             resultado.phashes.append(analisado["phash"])
 
     return resultado
+
+
+def _documento_ja_enviado(
+    conexao: Connection, analisados: list[dict[str, object]]
+) -> bool:
+    """Documento idêntico no próprio lote ou em qualquer submissão anterior.
+
+    Só documento. Imagem é confrontada por pHash, que tolera recorte e
+    recompressão; documento é bit a bit, então o checksum basta e é exato.
+
+    A consulta roda na fase de análise, antes de qualquer gravação: depois da
+    fase 2 o próprio arquivo já estaria em ``submission_files`` e casaria
+    consigo mesmo.
+    """
+
+    duplicado = False
+    vistos: set[str] = set()
+    for analisado in analisados:
+        if analisado["categoria"] != CATEGORIA_DOCUMENTO:
+            continue
+        checksum = str(analisado["sha256"])
+        if checksum in vistos or conexao.execute(
+            text("select 1 from submission_files where checksum_sha256 = :ck limit 1"),
+            {"ck": checksum},
+        ).first():
+            duplicado = True
+        vistos.add(checksum)
+    return duplicado
 
 
 def _analisar(
