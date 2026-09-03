@@ -209,26 +209,41 @@ def test_invalid_file_is_rejected_without_touching_the_bucket(
     assert conexao.execute(text("select count(*) from submission_files")).scalar() == 0
 
 
-def test_valid_files_survive_a_rejected_sibling(conexao, opcoes) -> None:
-    """Um arquivo ruim no lote não derruba os bons."""
+def test_a_rejected_file_takes_the_whole_batch_down(conexao, opcoes) -> None:
+    """Um arquivo ruim no lote rejeita o envio inteiro.
+
+    Este teste travava o contrário: os arquivos bons eram registrados e o ruim
+    virava uma linha em ``rejeitados``. A aceitação parcial foi descartada
+    porque creditava o aluno pelos arquivos bons e **descartava o ruim em
+    silêncio** — sem ``RuleCheck``, sem auditoria, sem nada na tela de revisão.
+    O revisor nunca ficava sabendo que um arquivo tinha sido recusado.
+
+    Tudo-ou-nada é o que ``submit_evidence`` já fazia, e é o que passa a valer
+    aqui. O arquivo bom vem primeiro de propósito: prova que a análise do lote
+    inteiro acontece antes de qualquer upload, e não que deu sorte na ordem.
+    """
 
     gateway = GatewayFalso()
 
-    resultado = processar_envio(
-        conexao,
-        gateway,
-        submission_id=uuid4(),
-        student_id=ALUNO,
-        arquivos=[
-            ArquivoEnviado("ruim.png", b"nao-e-imagem"),
-            ArquivoEnviado("bom.png", make_png(seed=7)),
-        ],
-        settings=opcoes,
-    )
+    with pytest.raises(EnvioRejeitado, match="ruim.png") as excinfo:
+        processar_envio(
+            conexao,
+            gateway,
+            submission_id=uuid4(),
+            student_id=ALUNO,
+            arquivos=[
+                ArquivoEnviado("bom.png", make_png(seed=7)),
+                ArquivoEnviado("ruim.png", b"nao-e-imagem"),
+            ],
+            settings=opcoes,
+        )
 
-    assert len(resultado.registrados) == 1
-    assert len(resultado.rejeitados) == 1
-    assert resultado.rejeitados[0][0] == "ruim.png"
+    assert gateway.objetos == {}
+    assert conexao.execute(text("select count(*) from submission_files")).scalar() == 0
+    # O código do erro original sobrevive: é com ele que a camada acima monta o
+    # `RuleCheck` de `valid_file_content` sem ler o texto da mensagem.
+    assert excinfo.value.code == "invalid_image"
+    assert excinfo.value.arquivo == "ruim.png"
 
 
 def test_batch_limits_are_enforced_before_any_upload(conexao, opcoes) -> None:

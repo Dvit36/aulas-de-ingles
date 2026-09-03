@@ -16,6 +16,7 @@ armazenamento.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from uuid import UUID
 
@@ -35,7 +36,28 @@ CATEGORIA_DOCUMENTO = "documents"
 
 
 class EnvioRejeitado(ValueError):
-    """O arquivo não passou nas validações antes de qualquer persistência."""
+    """O envio não passou nas validações antes de qualquer persistência.
+
+    Quando a recusa vem de um arquivo específico, ``code``, ``message`` e
+    ``details`` repetem os do erro de validação original, e ``arquivo`` diz
+    qual foi. É o que permite à camada acima montar o ``RuleCheck`` de
+    ``valid_file_content`` sem precisar interpretar o texto da mensagem.
+    """
+
+    def __init__(
+        self,
+        mensagem: str,
+        *,
+        code: str = "invalid_file",
+        message: str | None = None,
+        details: Mapping[str, object] | None = None,
+        arquivo: str | None = None,
+    ) -> None:
+        super().__init__(mensagem)
+        self.code = code
+        self.message = mensagem if message is None else message
+        self.details = dict(details or {})
+        self.arquivo = arquivo
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,7 +73,6 @@ class ResultadoProcessamento:
     textos_ocr: list[str] = field(default_factory=list)
     checksums: list[str] = field(default_factory=list)
     phashes: list[str] = field(default_factory=list)
-    rejeitados: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def total_bytes(self) -> int:
@@ -115,14 +136,27 @@ def processar_envio(
     )
     resultado = ResultadoProcessamento()
 
-    for posicao, arquivo in enumerate(arquivos):
+    # Fase 1: analisar o lote inteiro em memória. Um arquivo inválido rejeita
+    # o envio todo, e a recusa acontece antes de qualquer upload — por isso a
+    # análise é separada da persistência em vez de intercalada com ela.
+    analisados: list[dict[str, object]] = []
+    for arquivo in arquivos:
         try:
-            analisado = _analisar(arquivo, politica, settings, ocr_engine)
-        except (ImageValidationError, DocumentValidationError, EnvioRejeitado) as erro:
-            # Arquivo inválido não chega ao Storage: nada a compensar depois.
-            resultado.rejeitados.append((arquivo.filename, str(erro)))
-            continue
+            analisados.append(_analisar(arquivo, politica, settings, ocr_engine))
+        except (ImageValidationError, DocumentValidationError) as erro:
+            # Nada foi ao Storage: não há objeto órfão a compensar.
+            raise EnvioRejeitado(
+                f"Nenhum arquivo pôde ser aceito. {arquivo.filename}: {erro}",
+                code=getattr(erro, "code", "invalid_file"),
+                message=getattr(erro, "message", str(erro)),
+                details=getattr(erro, "details", None),
+                arquivo=arquivo.filename,
+            ) from erro
 
+    # Fase 2: só agora os binários vão para o bucket e os metadados para o banco.
+    for posicao, (arquivo, analisado) in enumerate(
+        zip(arquivos, analisados, strict=True)
+    ):
         registrado = salvar_arquivo(
             conexao,
             gateway,
@@ -146,9 +180,6 @@ def processar_envio(
         if analisado["phash"]:
             resultado.phashes.append(analisado["phash"])
 
-    if not resultado.registrados:
-        motivos = "; ".join(f"{nome}: {erro}" for nome, erro in resultado.rejeitados)
-        raise EnvioRejeitado(f"Nenhum arquivo pôde ser aceito. {motivos}")
     return resultado
 
 
