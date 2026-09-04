@@ -118,9 +118,12 @@ def test_txt_submission_skips_ocr(
         "Também escrevi anotações em português para praticar o conteúdo depois "
         "e compartilhar o aprendizado com meus colegas durante o treinamento."
     )
+    # Quem cria o motor deixou de ser `services` e passou a ser o pipeline,
+    # que o importa de `english_leaderboard.ocr` na hora de usar. O alvo do
+    # monkeypatch acompanha a mudança de lugar; a garantia é a mesma.
     monkeypatch.setattr(
-        "english_leaderboard.services.create_ocr_engine",
-        lambda: pytest.fail("OCR não deveria ser carregado para TXT"),
+        "english_leaderboard.ocr.create_ocr_engine",
+        lambda *a, **k: pytest.fail("OCR não deveria ser carregado para TXT"),
     )
     result = submit_evidence(
         session,

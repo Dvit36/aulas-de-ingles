@@ -291,3 +291,39 @@ def test_the_duplicate_flag_stays_tied_to_the_image_it_came_from(
     # E a linha do painel aponta para a imagem, não para o documento.
     assert marcado.file_id == arquivos["copia.png"].id
     assert marcado.kind == DuplicateKind.EXACT
+
+
+def test_an_empty_upload_list_no_longer_leaves_an_orphan_submission(
+    session, gateway, users, settings
+):
+    """Divergência 2, que a delegação resolve de graça.
+
+    `submit_evidence` não conferia lista vazia: criava a `Submission` com
+    `declared_units=0` e a deixava parada em PROCESSING, sem arquivo, sem
+    RuleCheck e sem auditoria. O pipeline sempre recusou, e agora a recusa
+    chega aqui como qualquer outro arquivo inválido — com motivo registrado.
+    """
+
+    activity = _activity(session, "impact_summary")
+
+    resultado = submit_evidence(
+        session,
+        gateway=gateway,
+        actor=users[Role.STUDENT],
+        activity_id=activity.id,
+        uploads=[],
+        settings=settings,
+        title="Sem anexo",
+        summary=_portuguese_summary("vazio"),
+    )
+    session.commit()
+
+    assert resultado.status == SubmissionStatus.REJECTED
+    check = session.scalar(
+        select(RuleCheck).where(
+            RuleCheck.submission_id == resultado.submission_id,
+            RuleCheck.rule_name == "valid_file_content",
+        )
+    )
+    assert check.details_json["hard_reject"] is True
+    assert "Nenhum arquivo" in check.message

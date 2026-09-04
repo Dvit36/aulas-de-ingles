@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select
@@ -16,18 +15,6 @@ from .authz import (
     require_submission_access,
 )
 from .config import Settings
-from .document_processing import (
-    DocumentValidationError,
-    process_document_bytes,
-)
-from .image_processing import (
-    AnalyzedImage,
-    ImagePolicy,
-    ImageValidationError,
-    analyze_image_bytes,
-    phash_distance,
-    prepare_ocr_variants,
-)
 from .contas import Contas
 from .supabase_auth import normalize_username
 from .schema import (
@@ -35,8 +22,6 @@ from .schema import (
     ApprovedEvidence,
     AuditLog,
     CheckOutcome,
-    DuplicateKind,
-    DuplicateMatch,
     GoalConfiguration,
     LedgerKind,
     LedgerTransaction,
@@ -50,19 +35,13 @@ from .schema import (
     new_id,
     utcnow,
 )
-from .ocr import OCRExecutionError, OCRResult, create_ocr_engine, extract_text
 from .storage import URL_EXPIRA_SEGUNDOS, StorageGateway
-from .storage_service import (
-    ArquivoNaoAutorizado,
-    ArquivoRegistrado,
-    salvar_arquivo,
-    url_temporaria,
-)
+from .storage_service import ArquivoNaoAutorizado, url_temporaria
 from .submission_pipeline import (
-    CATEGORIA_DOCUMENTO,
-    CATEGORIA_IMAGEM,
+    ArquivoEnviado,
+    EnvioRejeitado,
     limites_de,
-    sanitizar_nome,
+    processar_envio,
 )
 from .rules import AnalysisDecision, RuleResult, analyze_submission_rules
 from .scoring import AwardResult, award_approved_submission
@@ -115,17 +94,6 @@ def add_audit(
     )
     session.add(log)
     return log
-
-
-def _image_policy(settings: Settings) -> ImagePolicy:
-    return ImagePolicy(
-        max_bytes=settings.max_upload_bytes,
-        min_width=settings.min_image_width,
-        min_height=settings.min_image_height,
-        allowed_formats=settings.allowed_image_formats,
-        blur_threshold=settings.min_laplacian_variance,
-    )
-
 
 def _persist_rule_checks(
     session: Session, submission: Submission, checks: Iterable[RuleResult]
@@ -189,100 +157,6 @@ def _previous_summaries(
         ).all()
     )
 
-
-def _duplicate_candidates(
-    session: Session,
-) -> list[tuple[SubmissionFile, str]]:
-    """Arquivos já enviados que podem colidir com o envio atual.
-
-    Só entram os que têm pHash: a comparação perceptual é de imagem. Documento
-    é confrontado por checksum exato, em outro caminho.
-    """
-
-    return list(
-        session.execute(
-            select(SubmissionFile, Submission.student_id)
-            .join(Submission, Submission.id == SubmissionFile.submission_id)
-            .where(SubmissionFile.phash.is_not(None))
-        ).all()
-    )
-
-
-def _record_duplicate_matches(
-    session: Session,
-    *,
-    submission: Submission,
-    stored_files: Sequence[SubmissionFile],
-    analyzed: Sequence[AnalyzedImage],
-    prior_candidates: Sequence[tuple[SubmissionFile, str]],
-    max_distance: int,
-) -> tuple[list[bool], list[bool]]:
-    exact_flags = [False] * len(analyzed)
-    similar_flags = [False] * len(analyzed)
-    for index, (current_model, current_analysis) in enumerate(
-        zip(stored_files, analyzed, strict=True)
-    ):
-        for candidate, candidate_student_id in prior_candidates:
-            if current_analysis.sha256 == candidate.checksum_sha256:
-                exact_flags[index] = True
-                session.add(
-                    DuplicateMatch(
-                        submission_id=submission.id,
-                        file_id=current_model.id,
-                        matched_file_id=candidate.id,
-                        kind=DuplicateKind.EXACT,
-                        distance=0,
-                        same_student=candidate_student_id == submission.student_id,
-                    )
-                )
-                continue
-            distance = phash_distance(current_analysis.phash, candidate.phash)
-            if distance <= max_distance:
-                similar_flags[index] = True
-                session.add(
-                    DuplicateMatch(
-                        submission_id=submission.id,
-                        file_id=current_model.id,
-                        matched_file_id=candidate.id,
-                        kind=DuplicateKind.SIMILAR,
-                        distance=distance,
-                        same_student=candidate_student_id == submission.student_id,
-                    )
-                )
-        for previous_index in range(index):
-            previous_model = stored_files[previous_index]
-            previous_analysis = analyzed[previous_index]
-            if current_analysis.sha256 == previous_analysis.sha256:
-                exact_flags[index] = True
-                session.add(
-                    DuplicateMatch(
-                        submission_id=submission.id,
-                        file_id=current_model.id,
-                        matched_file_id=previous_model.id,
-                        kind=DuplicateKind.EXACT,
-                        distance=0,
-                        same_student=True,
-                    )
-                )
-            else:
-                distance = phash_distance(
-                    current_analysis.phash, previous_analysis.phash
-                )
-                if distance <= max_distance:
-                    similar_flags[index] = True
-                    session.add(
-                        DuplicateMatch(
-                            submission_id=submission.id,
-                            file_id=current_model.id,
-                            matched_file_id=previous_model.id,
-                            kind=DuplicateKind.SIMILAR,
-                            distance=distance,
-                            same_student=True,
-                        )
-                    )
-    return exact_flags, similar_flags
-
-
 def submit_evidence(
     session: Session,
     *,
@@ -296,11 +170,18 @@ def submit_evidence(
     url: str | None = None,
     summary: str | None = None,
 ) -> SubmissionResult:
-    """Recebe a comprovação: valida, envia ao Storage e grava os metadados.
+    """Recebe a comprovação: autoriza, delega o arquivo, decide e pontua.
 
     ``gateway`` é o bucket privado autenticado com o token do próprio aluno,
     para as políticas do Storage valerem. Ele é injetado em vez de construído
     aqui para os testes exercitarem o fluxo inteiro sem rede.
+
+    Validar, analisar, ler o OCR, subir ao Storage e gravar os metadados é
+    ``submission_pipeline.processar_envio``. O que fica aqui é justamente o
+    que o pipeline não faz, por desenho: **autorização** — sessão ativa, papel
+    de aluno, atividade viva — e **regras, decisão, pontuação e auditoria**. O
+    pipeline devolve fatos sobre os arquivos; a leitura desses fatos é desta
+    camada.
     """
 
     require_active(actor)
@@ -309,6 +190,9 @@ def submit_evidence(
     activity = session.get(Activity, activity_id)
     if activity is None or not activity.active or activity.archived_at is not None:
         raise ValueError("Atividade não existe ou está inativa")
+    # O pipeline confere os mesmos dois limites, mas só depois que a submissão
+    # já existe. Aqui eles vêm antes: um lote grande demais é recusado sem
+    # deixar linha nenhuma no banco, que é o que estes erros sempre fizeram.
     if len(uploads) > settings.max_upload_files:
         raise ValueError(
             f"Envie no máximo {settings.max_upload_files} arquivos por submissão"
@@ -338,54 +222,33 @@ def submit_evidence(
     session.add(submission)
     session.flush()
 
-    analyses: list[AnalyzedImage] = []
-    image_uploads: list[UploadPayload] = []
-    documents: list[tuple[UploadPayload, Any]] = []
     try:
-        for upload in uploads:
-            extension = Path(upload.filename.replace("\x00", "")).suffix.casefold()
-            if extension in {".png", ".jpg", ".jpeg", ".webp"}:
-                image_uploads.append(upload)
-                analyses.append(
-                    analyze_image_bytes(upload.data, policy=_image_policy(settings))
-                )
-                continue
-            if activity.code == "duolingo_beconfident":
-                raise DocumentValidationError(
-                    "Duolingo/BeConfident aceita somente imagens",
-                    code="image_required",
-                )
-            document = process_document_bytes(
-                upload.data,
-                upload.filename,
-                max_bytes=settings.max_upload_bytes,
-                max_pdf_pages=settings.max_pdf_pages,
-                max_document_expanded_bytes=settings.max_document_expanded_bytes,
-                max_pdf_render_pixels=settings.max_pdf_render_pixels,
-            )
-            if document.file_kind == "pdf" and not document.extracted_text:
-                if ocr_engine is None:
-                    ocr_engine = create_ocr_engine()
-                document = process_document_bytes(
-                    upload.data,
-                    upload.filename,
-                    max_bytes=settings.max_upload_bytes,
-                    max_pdf_pages=settings.max_pdf_pages,
-                    max_document_expanded_bytes=settings.max_document_expanded_bytes,
-                    max_pdf_render_pixels=settings.max_pdf_render_pixels,
-                    ocr_engine=ocr_engine,
-                )
-            documents.append((upload, document))
-    except (ImageValidationError, DocumentValidationError) as error:
-        error_code = getattr(error, "code", "invalid_file")
-        error_details = getattr(error, "details", {})
+        # Daqui para baixo o arquivo é assunto do pipeline: ele valida, analisa
+        # em memória, lê o OCR, envia ao bucket privado e grava os metadados —
+        # compensando sozinho se a gravação falhar depois do upload.
+        resultado = processar_envio(
+            session.connection(),
+            gateway,
+            submission_id=submission.id,
+            student_id=actor.id,
+            arquivos=[
+                ArquivoEnviado(upload.filename, upload.data) for upload in uploads
+            ],
+            settings=settings,
+            ocr_engine=ocr_engine,
+            activity_code=activity.code,
+        )
+    except EnvioRejeitado as error:
+        # Um arquivo inválido rejeita o envio inteiro, e nada chegou ao bucket.
+        # `code`, `message` e `details` vêm do erro de validação original: o
+        # RuleCheck sai igual ao de antes, sem interpretar texto de mensagem.
         check = RuleResult(
             name="valid_file_content",
             outcome=CheckOutcome.FAIL,
             required=True,
             score=0.0,
-            message=getattr(error, "message", str(error)),
-            details={**error_details, "code": error_code, "hard_reject": True},
+            message=error.message,
+            details={**error.details, "code": error.code, "hard_reject": True},
         )
         _persist_rule_checks(session, submission, [check])
         transition_submission(
@@ -399,7 +262,7 @@ def submit_evidence(
             action="submission_auto_rejected",
             entity_type="submission",
             entity_id=submission.id,
-            reason=error_code,
+            reason=error.code,
             after={"status": submission.status.value},
         )
         session.flush()
@@ -412,129 +275,26 @@ def submit_evidence(
             "Arquivo inválido",
         )
 
-    prior_candidates = _duplicate_candidates(session)
-    # Os binários vão para o bucket privado; o banco fica só com a referência.
-    # ``salvar_arquivo`` compensa sozinho: se a gravação dos metadados falhar,
-    # o objeto recém-enviado é removido, e se nem isso der certo ele é
-    # registrado em ``storage_orphans`` para reconciliação.
-    conexao = session.connection()
-    limites = limites_de(settings)
-    registrados: list[ArquivoRegistrado] = []
-    for posicao, (upload, analysis) in enumerate(
-        zip(image_uploads, analyses, strict=True)
-    ):
-        registrados.append(
-            salvar_arquivo(
-                conexao,
-                gateway,
-                submission_id=submission.id,
-                student_id=actor.id,
-                filename=sanitizar_nome(upload.filename),
-                dados=analysis.original_bytes,
-                content_type=analysis.mime_type,
-                categoria=CATEGORIA_IMAGEM,
-                extensao=analysis.extension,
-                bucket=settings.storage_bucket,
-                limites=limites,
-                phash=analysis.phash,
-                position=posicao,
-                width=analysis.width,
-                height=analysis.height,
-            )
-        )
-
-    duplicate_document = False
-    document_hashes: set[str] = set()
-    for deslocamento, (upload, document) in enumerate(documents):
-        duplicate_document = (
-            duplicate_document
-            or document.sha256 in document_hashes
-            or session.scalar(
-                select(SubmissionFile.id).where(
-                    SubmissionFile.checksum_sha256 == document.sha256
-                )
-            )
-            is not None
-        )
-        document_hashes.add(document.sha256)
-        registrados.append(
-            salvar_arquivo(
-                conexao,
-                gateway,
-                submission_id=submission.id,
-                student_id=actor.id,
-                filename=sanitizar_nome(upload.filename),
-                dados=document.original_bytes,
-                content_type=document.mime_type,
-                categoria=CATEGORIA_DOCUMENTO,
-                extensao=document.extension,
-                bucket=settings.storage_bucket,
-                limites=limites,
-                ocr_text=document.extracted_text or None,
-                position=len(image_uploads) + deslocamento,
-                page_count=document.page_count,
-            )
-        )
-
-    # As linhas foram inseridas por SQL na mesma transação; recarregar pelo ORM
-    # é o que dá aos passos seguintes objetos mapeados, na ordem de envio.
-    stored_files = [
-        session.get(SubmissionFile, registro.id) for registro in registrados
-    ]
-
-    exact_flags, similar_flags = _record_duplicate_matches(
-        session,
-        submission=submission,
-        # ``stored_files`` também contém documentos; a comparação perceptual é
-        # posicional contra ``analyses``, então só as imagens entram aqui.
-        stored_files=stored_files[: len(analyses)],
-        analyzed=analyses,
-        prior_candidates=prior_candidates,
-        max_distance=settings.phash_distance_threshold,
-    )
-
-    if ocr_engine is None and analyses:
-        ocr_engine = create_ocr_engine()
-    ocr_results: list[OCRResult] = []
-    for analysis in analyses:
-        try:
-            variants = prepare_ocr_variants(analysis)
-            primary = extract_text(variants["original"], engine=ocr_engine)
-            candidates = [primary]
-            if (primary.confidence or 0.0) < 0.60 or len(primary.text.strip()) < 10:
-                for variant_name in ("contrast", "threshold"):
-                    candidates.append(
-                        extract_text(variants[variant_name], engine=ocr_engine)
-                    )
-            ocr_results.append(
-                max(
-                    candidates,
-                    key=lambda result: (
-                        len(result.text.strip()),
-                        result.confidence or 0.0,
-                    ),
-                )
-            )
-        except OCRExecutionError:
-            ocr_results.append(OCRResult.empty())
-
+    # As quatro listas que as regras indexam entre si saem todas do mesmo
+    # `resultado.imagens`, na mesma ordem. Não há segunda ordenação a manter em
+    # dia — era daí que vinha o risco de a suspeita cair no arquivo errado.
     decision = analyze_submission_rules(
         activity=activity,
-        images=analyses,
-        ocr_results=ocr_results,
+        images=[imagem.analise for imagem in resultado.imagens],
+        ocr_results=[imagem.leitura for imagem in resultado.imagens],
         title=submission.title,
         url=submission.url,
         summary=submission.summary,
-        exact_duplicate_flags=exact_flags,
-        similar_duplicate_flags=similar_flags,
+        exact_duplicate_flags=resultado.duplicatas_exatas,
+        similar_duplicate_flags=resultado.duplicatas_similares,
         previous_summaries=_previous_summaries(
             session, student_id=actor.id, activity_id=activity.id
         ),
         auto_approve_confidence=settings.auto_approve_confidence,
-        evidence_count=len(stored_files),
-        document_texts=[document.extracted_text for _, document in documents],
+        evidence_count=len(resultado.registrados),
+        document_texts=resultado.textos_documentos,
     )
-    if duplicate_document:
+    if resultado.documento_duplicado:
         _persist_rule_checks(
             session,
             submission,
