@@ -10,6 +10,8 @@ from english_leaderboard.schema import (
     DuplicateKind,
     DuplicateMatch,
     Role,
+    RuleCheck,
+    SubmissionFile,
     SubmissionStatus,
     User,
     new_id,
@@ -201,3 +203,91 @@ def test_admin_queries_are_guarded_in_service_layer(session, gateway, users):
     with pytest.raises(AuthorizationError):
         admin_ledger_rows(session, actor=users[Role.STUDENT])
     assert list_review_queue(session, actor=users[Role.ADMIN]) == []
+
+
+def test_the_duplicate_flag_stays_tied_to_the_image_it_came_from(
+    session, gateway, users, settings
+):
+    """Lote misto, com o **documento primeiro** e a imagem duplicada depois.
+
+    A imagem é o item 1 do lote e o item 0 entre as imagens. As regras indexam
+    `exact_duplicate_flags` contra `images`, e os `{"indexes": [...]}` que saem
+    de lá são o que o painel de comparação exibe. Errar o alinhamento associa a
+    suspeita ao arquivo errado — e **nada quebra**: nenhuma exceção, nenhum
+    status diferente, só a comparação trocada na tela do revisor.
+
+    Este teste trava o alinhamento antes da delegação, para que a troca de
+    `submit_evidence` por `processar_envio` não possa desfazê-lo em silêncio.
+    """
+
+    activity = _activity(session, "impact_summary")
+    outro = User(
+        id=new_id(),
+        username="colega",
+        display_name="Colega",
+        role=Role.STUDENT,
+        active=True,
+    )
+    session.add(outro)
+    session.commit()
+
+    imagem = make_png(202)
+    submit_evidence(
+        session,
+        gateway=gateway,
+        actor=users[Role.STUDENT],
+        activity_id=activity.id,
+        uploads=[UploadPayload("original.png", imagem)],
+        settings=settings,
+        ocr_engine=FakeDuolingoOCR(),
+        title="Impact original",
+        summary=_portuguese_summary("original"),
+    )
+    session.commit()
+
+    resultado = submit_evidence(
+        session,
+        gateway=gateway,
+        actor=outro,
+        activity_id=activity.id,
+        uploads=[
+            UploadPayload("anexo.txt", "resumo em português do anexo".encode()),
+            UploadPayload("copia.png", imagem),
+        ],
+        settings=settings,
+        ocr_engine=FakeDuolingoOCR(),
+        title="Impact copiado",
+        summary=_portuguese_summary("copiado"),
+    )
+    session.commit()
+
+    checks = {
+        check.rule_name: check
+        for check in session.scalars(
+            select(RuleCheck).where(RuleCheck.submission_id == resultado.submission_id)
+        ).all()
+    }
+    # Dois arquivos no lote, uma imagem só: as duas contagens vêm de listas
+    # diferentes e não podem ser confundidas uma com a outra.
+    assert checks["required_images"].details_json["count"] == 2
+    assert checks["required_images"].details_json["image_count"] == 1
+    # A suspeita é da imagem, que é o índice 0 **entre as imagens** — não o
+    # índice 1, que é a posição dela no lote.
+    assert checks["exact_duplicate"].details_json["indexes"] == [0]
+
+    arquivos = {
+        stored.filename: stored
+        for stored in session.scalars(
+            select(SubmissionFile).where(
+                SubmissionFile.submission_id == resultado.submission_id
+            )
+        ).all()
+    }
+    marcado = session.scalar(
+        select(DuplicateMatch).where(
+            DuplicateMatch.submission_id == resultado.submission_id
+        )
+    )
+    # E a linha do painel aponta para a imagem, não para o documento.
+    assert marcado.file_id == arquivos["copia.png"].id
+    assert marcado.kind == DuplicateKind.EXACT
