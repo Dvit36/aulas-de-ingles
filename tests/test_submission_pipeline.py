@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
+import numpy as np
 import pytest
+from pypdf import PdfWriter
 from sqlalchemy import create_engine, text
 
 from english_leaderboard.schema import SchemaBase
@@ -31,6 +34,74 @@ from tests.conftest import make_png
 
 ALUNO = "11111111-1111-1111-1111-111111111111"
 OUTRO_ALUNO = "22222222-2222-2222-2222-222222222222"
+TEXTO_FALSO = "Licao concluida hoje"
+
+
+def _pdf_em_branco() -> bytes:
+    """PDF sem texto extraível: obriga o caminho de OCR de página digitalizada."""
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def _nome_da_variante(source) -> str:
+    """Descobre qual variante de `prepare_ocr_variants` chegou ao motor.
+
+    `original` é BGR de três canais; `contrast` e `threshold` são cinza, e só
+    o `threshold` é binário.
+    """
+
+    if getattr(source, "ndim", 0) == 3:
+        return "original"
+    return "threshold" if set(np.unique(source).tolist()) <= {0, 255} else "contrast"
+
+
+class OCRFalso:
+    """Motor barato: o suficiente para o pipeline achar texto e seguir."""
+
+    def __init__(self) -> None:
+        self.chamadas: list[str] = []
+
+    def __call__(self, source):
+        self.chamadas.append(_nome_da_variante(source))
+        return ([[None, TEXTO_FALSO, 0.99]], [0.01])
+
+
+class OCRRuimNaOriginal:
+    """Original sai ilegível; a variante de contraste é que rende texto.
+
+    É o caso comum de print escuro ou borrado — o motivo de as variantes
+    existirem.
+    """
+
+    def __init__(self) -> None:
+        self.chamadas: list[str] = []
+
+    def __call__(self, source):
+        variante = _nome_da_variante(source)
+        self.chamadas.append(variante)
+        if variante == "original":
+            return ([[None, "Lic", 0.20]], [0.01])
+        if variante == "contrast":
+            return ([[None, TEXTO_FALSO, 0.95]], [0.01])
+        return ([[None, "L1c40", 0.30]], [0.01])
+
+
+@pytest.fixture(autouse=True)
+def motor_ocr_barato(monkeypatch):
+    """Nenhum teste deste arquivo carrega o RapidOCR de verdade.
+
+    Depois da criação preguiçosa do motor, um envio de imagem sem
+    `ocr_engine` passa a fazer OCR — o que é o comportamento certo, e custaria
+    quase três segundos por chamada só para instanciar o modelo.
+    """
+
+    monkeypatch.setattr(
+        "english_leaderboard.ocr.create_ocr_engine", lambda *a, **k: OCRFalso()
+    )
 
 
 class GatewayFalso:
@@ -381,6 +452,110 @@ def test_resending_the_same_file_does_not_duplicate(conexao, opcoes) -> None:
     assert segundo.registrados[0].id == primeiro.registrados[0].id
     assert len(gateway.objetos) == 1
     assert conexao.execute(text("select count(*) from submission_files")).scalar() == 1
+
+
+def test_an_image_is_ocred_even_without_an_engine_argument(conexao, opcoes) -> None:
+    """Sem a criação preguiçosa, `ocr_engine=None` devolvia a imagem sem texto
+    nenhum, em silêncio. Em produção não aparecia porque o chamador sempre
+    passava o motor; aparecia em qualquer outro chamador."""
+
+    gateway = GatewayFalso()
+
+    resultado = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("print.png", make_png(seed=51))],
+        settings=opcoes,
+    )
+
+    assert resultado.textos_ocr == [TEXTO_FALSO]
+
+
+def test_a_scanned_pdf_creates_the_engine_on_demand(conexao, opcoes) -> None:
+    """O fallback de PDF digitalizado já existia em `process_document_bytes`,
+    mas o pipeline só o alcançava se alguém tivesse passado um motor."""
+
+    gateway = GatewayFalso()
+
+    resultado = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("digitalizado.pdf", _pdf_em_branco())],
+        settings=opcoes,
+    )
+
+    assert resultado.textos_ocr == [TEXTO_FALSO]
+
+
+def test_no_engine_is_created_when_there_is_nothing_to_ocr(
+    conexao, opcoes, monkeypatch
+) -> None:
+    """Criação preguiçosa é preguiçosa mesmo: um TXT tem texto próprio e não
+    pode arrastar o modelo de OCR para a memória."""
+
+    monkeypatch.setattr(
+        "english_leaderboard.ocr.create_ocr_engine",
+        lambda *a, **k: pytest.fail("OCR não deveria ser carregado para TXT"),
+    )
+
+    resultado = processar_envio(
+        conexao,
+        GatewayFalso(),
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("resumo.txt", "texto já extraível".encode())],
+        settings=opcoes,
+    )
+
+    assert resultado.textos_ocr == ["texto já extraível"]
+
+
+def test_a_poor_first_pass_falls_back_to_the_other_variants(conexao, opcoes) -> None:
+    """Print escuro ou borrado é o caso comum, e é onde a passada única falha.
+
+    Confiança baixa ou texto curto na original mandam tentar `contrast` e
+    `threshold`; fica o melhor dos três.
+    """
+
+    gateway = GatewayFalso()
+    motor = OCRRuimNaOriginal()
+
+    resultado = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("print.png", make_png(seed=53))],
+        settings=opcoes,
+        ocr_engine=motor,
+    )
+
+    assert motor.chamadas == ["original", "contrast", "threshold"]
+    assert resultado.textos_ocr == [TEXTO_FALSO]
+
+
+def test_a_good_first_pass_skips_the_variants(conexao, opcoes) -> None:
+    """As variantes custam duas passadas a mais. Só valem quando a primeira
+    não serviu."""
+
+    gateway = GatewayFalso()
+    motor = OCRFalso()
+
+    processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("print.png", make_png(seed=59))],
+        settings=opcoes,
+        ocr_engine=motor,
+    )
+
+    assert motor.chamadas == ["original"]
 
 
 def _matches(conexao) -> list[tuple]:

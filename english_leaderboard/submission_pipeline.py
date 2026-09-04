@@ -30,6 +30,7 @@ from .image_processing import (
     ImageValidationError,
     analyze_image_bytes,
     phash_distance,
+    prepare_ocr_variants,
 )
 from .storage import StorageGateway
 from .storage_budget import LimitesStorage
@@ -90,6 +91,34 @@ class ResultadoProcessamento:
     @property
     def total_bytes(self) -> int:
         return sum(item.file_size for item in self.registrados)
+
+
+# Uma passada de OCR abaixo de qualquer um dos dois não convence: vale gastar
+# as duas passadas extras nas variantes tratadas e ficar com a melhor.
+OCR_CONFIANCA_MINIMA = 0.60
+OCR_TEXTO_MINIMO = 10
+
+
+class _MotorOCR:
+    """Guarda o motor de OCR do envio e o cria só quando alguém precisar.
+
+    Instanciar o RapidOCR custa segundos e memória, e boa parte dos envios não
+    precisa dele: PDF com texto extraível, DOCX e TXT nunca chegam a pedir. Um
+    envio que precisa, por outro lado, não pode pagar isso uma vez por arquivo
+    — daí o motor ficar aqui, e não dentro do laço.
+    """
+
+    __slots__ = ("_engine",)
+
+    def __init__(self, engine=None) -> None:
+        self._engine = engine
+
+    def obter(self):
+        if self._engine is None:
+            from .ocr import create_ocr_engine
+
+            self._engine = create_ocr_engine()
+        return self._engine
 
 
 def limites_de(settings: Settings) -> LimitesStorage:
@@ -171,11 +200,12 @@ def processar_envio(
     # Fase 1: analisar o lote inteiro em memória. Um arquivo inválido rejeita
     # o envio todo, e a recusa acontece antes de qualquer upload — por isso a
     # análise é separada da persistência em vez de intercalada com ela.
+    motor = _MotorOCR(ocr_engine)
     analisados: list[dict[str, object]] = []
     for arquivo in arquivos:
         try:
             analisados.append(
-                _analisar(arquivo, politica, settings, ocr_engine, activity_code)
+                _analisar(arquivo, politica, settings, motor, activity_code)
             )
         except (ImageValidationError, DocumentValidationError) as erro:
             # Nada foi ao Storage: não há objeto órfão a compensar.
@@ -187,6 +217,7 @@ def processar_envio(
                 arquivo=arquivo.filename,
             ) from erro
 
+    _ocr_das_imagens(analisados, motor)
     resultado.documento_duplicado = _documento_ja_enviado(conexao, analisados)
     # O histórico precisa ser lido antes da fase 2: depois dela os arquivos
     # deste envio já estariam em `submission_files` e casariam consigo mesmos.
@@ -261,6 +292,49 @@ def _documento_ja_enviado(
             duplicado = True
         vistos.add(checksum)
     return duplicado
+
+
+def _ocr_com_variantes(dados: bytes, engine) -> str:
+    """Lê a imagem uma vez; se o resultado for fraco, tenta as versões tratadas.
+
+    Print escuro, borrado ou de baixo contraste é o caso comum, e é justamente
+    onde a passada única falha. ``contrast`` equaliza e ``threshold`` binariza;
+    fica a leitura com mais texto, e a confiança desempata.
+    """
+
+    from .ocr import extract_text
+
+    # As variantes são arrays em memória: nenhum arquivo é criado no disco.
+    variantes = prepare_ocr_variants(dados)
+    primeira = extract_text(variantes["original"], engine=engine)
+    candidatas = [primeira]
+    if (
+        primeira.confidence or 0.0
+    ) < OCR_CONFIANCA_MINIMA or len(primeira.text.strip()) < OCR_TEXTO_MINIMO:
+        candidatas.extend(
+            extract_text(variantes[nome], engine=engine)
+            for nome in ("contrast", "threshold")
+        )
+    melhor = max(
+        candidatas,
+        key=lambda leitura: (len(leitura.text.strip()), leitura.confidence or 0.0),
+    )
+    return melhor.text
+
+
+def _ocr_das_imagens(analisados: list[dict[str, object]], motor: _MotorOCR) -> None:
+    """Preenche o texto das imagens do lote, no lugar em que já estava."""
+
+    imagens = [
+        analisado
+        for analisado in analisados
+        if analisado["categoria"] == CATEGORIA_IMAGEM
+    ]
+    if not imagens:
+        return
+    engine = motor.obter()
+    for analisado in imagens:
+        analisado["texto"] = _ocr_com_variantes(analisado["dados"], engine)
 
 
 def _candidatos_perceptuais(conexao: Connection) -> list[tuple[str, str, str, str]]:
@@ -359,7 +433,7 @@ def _analisar(
     arquivo: ArquivoEnviado,
     politica: ImagePolicy,
     settings: Settings,
-    ocr_engine,
+    motor: _MotorOCR,
     activity_code: str | None = None,
 ) -> dict[str, object]:
     """Roteia entre imagem e documento, sempre sobre os bytes em memória.
@@ -382,12 +456,9 @@ def _analisar(
 
     if parece_imagem:
         analisado = analyze_image_bytes(arquivo.dados, policy=politica)
+        # O OCR da imagem roda depois, quando o lote inteiro já passou pela
+        # validação: arquivo ruim no fim da lista não custa OCR nos anteriores.
         texto = ""
-        if ocr_engine is not None:
-            from .ocr import extract_text
-
-            # O OCR recebe bytes: nenhum arquivo é criado no disco.
-            texto = extract_text(analisado.original_bytes, engine=ocr_engine).text
         return {
             "dados": analisado.original_bytes,
             "mime": analisado.mime_type,
@@ -400,15 +471,25 @@ def _analisar(
             "sha256": analisado.sha256,
         }
 
+    opcoes_documento = {
+        "max_bytes": settings.max_upload_bytes,
+        "max_pdf_pages": settings.max_pdf_pages,
+        "max_document_expanded_bytes": settings.max_document_expanded_bytes,
+        "max_pdf_render_pixels": settings.max_pdf_render_pixels,
+    }
+    # Primeiro sem motor: PDF com texto extraível, DOCX e TXT não precisam de
+    # OCR e não podem arrastar o modelo para a memória.
     documento = process_document_bytes(
-        arquivo.dados,
-        arquivo.filename,
-        max_bytes=settings.max_upload_bytes,
-        max_pdf_pages=settings.max_pdf_pages,
-        max_document_expanded_bytes=settings.max_document_expanded_bytes,
-        max_pdf_render_pixels=settings.max_pdf_render_pixels,
-        ocr_engine=ocr_engine,
+        arquivo.dados, arquivo.filename, **opcoes_documento
     )
+    if documento.file_kind == "pdf" and not documento.extracted_text:
+        # PDF digitalizado: as páginas são imagem. Só agora vale o motor.
+        documento = process_document_bytes(
+            arquivo.dados,
+            arquivo.filename,
+            **opcoes_documento,
+            ocr_engine=motor.obter(),
+        )
     return {
         "dados": documento.original_bytes,
         "mime": documento.mime_type,
