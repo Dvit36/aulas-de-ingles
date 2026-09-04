@@ -812,6 +812,42 @@ def test_an_image_does_not_trip_the_document_duplicate_flag(conexao, opcoes) -> 
     assert segundo.documento_duplicado is False
 
 
+def test_image_ocr_text_does_not_land_on_the_file_row(conexao, opcoes) -> None:
+    """O texto lido de uma imagem pertence a `submission.ocr_text`.
+
+    O pipeline gravava os dois — imagem e documento — em
+    `submission_files.ocr_text`. Só o do documento é lido de lá; o da imagem
+    chega às telas e às regras pela decisão, que a camada acima escreve na
+    submissão. Gravar nos dois lugares deixava a coluna com um valor que
+    ninguém consulta e que diverge do que a submissão diz.
+
+    O pipeline continua devolvendo os dois textos a quem chamou: quem grava
+    onde é decisão de quem está por cima.
+    """
+
+    gateway = GatewayFalso()
+
+    resultado = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[
+            ArquivoEnviado("print.png", make_png(seed=83)),
+            ArquivoEnviado("resumo.txt", "resumo em português".encode()),
+        ],
+        settings=opcoes,
+    )
+
+    linhas = conexao.execute(
+        text("select ocr_text from submission_files order by position")
+    ).all()
+
+    assert linhas[0] == (None,)
+    assert linhas[1] == ("resumo em português",)
+    assert resultado.textos_ocr == [TEXTO_FALSO, "resumo em português"]
+
+
 def test_dimensions_and_page_count_reach_the_metadata(conexao, opcoes) -> None:
     """`width` e `height` alimentam a comparação antifraude de evidências, e
     `page_count` aparece na tela de revisão. O pipeline não gravava nenhum

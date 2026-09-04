@@ -242,6 +242,14 @@ def processar_envio(
     for posicao, (arquivo, analisado) in enumerate(
         zip(arquivos, analisados, strict=True)
     ):
+        # Só o texto do documento fica na linha do arquivo. O da imagem
+        # pertence a `submission.ocr_text`, que a camada acima grava a partir
+        # da decisão — é de lá que as telas e as regras o leem.
+        texto_do_arquivo = (
+            analisado["texto"]
+            if analisado["categoria"] == CATEGORIA_DOCUMENTO
+            else None
+        )
         registrado = salvar_arquivo(
             conexao,
             gateway,
@@ -254,7 +262,7 @@ def processar_envio(
             extensao=analisado["extensao"],
             bucket=settings.storage_bucket,
             limites=limites_de(settings),
-            ocr_text=analisado["texto"] or None,
+            ocr_text=texto_do_arquivo or None,
             phash=analisado["phash"],
             position=posicao,
             width=analisado["width"],
