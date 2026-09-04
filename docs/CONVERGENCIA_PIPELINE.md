@@ -1,7 +1,9 @@
 # Convergência dos dois fluxos de submissão
 
-**Status:** análise concluída em 3 de setembro de 2026. Nenhum código alterado
-ainda. Este documento é o insumo da Etapa 2.
+**Status:** análise concluída em 3 de setembro de 2026. **Etapa 2 concluída em 4
+de setembro de 2026**, na branch `convergencia-pipeline-etapa2`. A Etapa 3 — a
+delegação — ainda não começou. O que a Etapa 2 entregou e o que ela mudou neste
+documento estão no fim.
 
 ## O problema
 
@@ -73,8 +75,18 @@ que motivou esta análise.
 **Recomendação:** tudo-ou-nada está certo para prova de atividade. Aceitar
 parcialmente credita o aluno pelos arquivos bons e descarta o ruim em silêncio,
 sem `RuleCheck` e sem auditoria — o revisor nunca fica sabendo. Mas é decisão do
-dono do projeto, e é **o único ponto da tabela em que portar a regra exige
-alterar um teste existente** em vez de apenas acrescentar.
+dono do projeto.
+
+**Decidido:** tudo-ou-nada. `processar_envio` rejeita a submissão inteira, e
+`test_valid_files_survive_a_rejected_sibling` foi reescrito para travar o
+comportamento novo.
+
+> **Correção.** Este parágrafo afirmava que a aceitação parcial era *o único
+> ponto da tabela em que portar a regra exige alterar um teste existente*. Não
+> era. A divergência **6** também exigia: `test_key_is_always_derived_from_the_`
+> `session_owner` travava `filename == "../../etc/passwd.png"`, isto é,
+> exatamente o nome cru que a sanitização corrige. Os dois testes foram
+> alterados, cada um no commit da sua regra. Nenhum outro precisou.
 
 ## Duas correções ao enunciado original
 
@@ -118,3 +130,48 @@ continuam valendo e não podem ser afastados, marcados como `skip` nem afrouxado
 ## Linha de base
 
 `255 passed, 4 skipped` · `ruff check .` com 78 achados.
+
+Depois da Etapa 2: `274 passed, 4 skipped` · `ruff check .` com **os mesmos 78
+achados**. Os 19 testes novos são todos de `tests/test_submission_pipeline.py`.
+
+## O que a Etapa 2 entregou
+
+Um commit por regra, na ordem proposta, com o teste escrito antes do porte.
+
+| Commit | Regra |
+|---|---|
+| Rejeitar o envio inteiro… | lote parcial → tudo-ou-nada |
+| Registrar na docstring… | divergências 1 e 14, documentadas |
+| Recusar não-imagem… | 5 |
+| Sinalizar documento idêntico… | 13 |
+| Comparar imagens por pHash… | 12 |
+| Ler a imagem em variantes… | 7 e 8 |
+| Tratar falha do motor… | 9 |
+| Sanitizar o nome… | 6 |
+| Gravar largura, altura…| 11 |
+| Guardar na linha do arquivo… | 10 |
+
+### Mudanças de API que a Etapa 3 vai usar
+
+- `processar_envio` recebe `activity_code` (regra 5). Sem ele o roteamento é o
+  de antes, por extensão.
+- `EnvioRejeitado` carrega `code`, `message`, `details` e `arquivo` do erro de
+  validação original. É com eles que `submit_evidence` monta o `RuleCheck` de
+  `valid_file_content` sem interpretar o texto da mensagem.
+- `ResultadoProcessamento` ganhou `documento_duplicado`, `duplicatas_exatas` e
+  `duplicatas_similares`; perdeu `rejeitados`, que sob tudo-ou-nada nunca teria
+  conteúdo.
+- `_client_filename` saiu de `services.py` e virou `sanitizar_nome` no pipeline.
+  `submit_evidence` já a importa de lá: uma cópia só.
+- A análise do lote inteiro acontece antes de qualquer upload. A recusa não
+  deixa objeto no bucket nem linha no banco.
+
+### Um ponto a resolver na Etapa 3
+
+`ResultadoProcessamento.textos_ocr` guarda `str`, mas
+`analyze_submission_rules` recebe `ocr_results` como `OCRResult` — precisa da
+confiança, não só do texto. Delegar exige o pipeline devolver os `OCRResult`
+das imagens, ou a camada acima perde o dado que hoje usa. As listas de
+duplicidade são paralelas **às imagens** do lote na ordem de envio, enquanto
+`submit_evidence` hoje reordena imagens antes de documentos: o alinhamento
+precisa ser conferido na delegação.
