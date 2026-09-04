@@ -812,6 +812,40 @@ def test_an_image_does_not_trip_the_document_duplicate_flag(conexao, opcoes) -> 
     assert segundo.documento_duplicado is False
 
 
+def test_the_client_filename_is_sanitized_before_becoming_metadata(
+    conexao, opcoes
+) -> None:
+    """O nome cru do cliente ia para `submission_files.filename` sem tratamento.
+
+    Ele não entra na chave do Storage — isso a construção da chave já garante
+    —, mas é gravado e exibido na tela de revisão. Diretório, byte nulo e nome
+    quilométrico não têm por que chegar até lá.
+    """
+
+    gateway = GatewayFalso()
+
+    processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[
+            ArquivoEnviado("../../etc/pas\x00swd.png", make_png(seed=71)),
+            ArquivoEnviado("a" * 300 + ".png", make_png(seed=73)),
+        ],
+        settings=opcoes,
+    )
+
+    nomes = [
+        linha[0]
+        for linha in conexao.execute(
+            text("select filename from submission_files order by position")
+        ).all()
+    ]
+    assert nomes[0] == "passwd.png"
+    assert len(nomes[1]) == 255
+
+
 def test_key_is_always_derived_from_the_session_owner(conexao, opcoes) -> None:
     """Nem o nome do arquivo nem qualquer campo da interface entra na chave."""
 
@@ -829,6 +863,9 @@ def test_key_is_always_derived_from_the_session_owner(conexao, opcoes) -> None:
     chave = resultado.registrados[0].storage_key
     assert chave.startswith(f"students/{ALUNO}/{CATEGORIA_IMAGEM}/")
     assert ".." not in chave and "passwd" not in chave
-    # O nome original sobrevive apenas nos metadados.
+    # O nome sobrevive apenas nos metadados, e sanitizado: o teste travava aqui
+    # o caminho cru `../../etc/passwd.png`, de quando o pipeline gravava o que
+    # o cliente mandasse. São duas barreiras sobre coisas diferentes — a chave
+    # física não usa o nome, e o metadado não guarda diretório.
     guardado = conexao.execute(text("select filename from submission_files")).scalar()
-    assert guardado == "../../etc/passwd.png"
+    assert guardado == "passwd.png"

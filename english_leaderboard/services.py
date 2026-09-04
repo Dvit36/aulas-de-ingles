@@ -62,6 +62,7 @@ from .submission_pipeline import (
     CATEGORIA_DOCUMENTO,
     CATEGORIA_IMAGEM,
     limites_de,
+    sanitizar_nome,
 )
 from .rules import AnalysisDecision, RuleResult, analyze_submission_rules
 from .scoring import AwardResult, award_approved_submission
@@ -124,11 +125,6 @@ def _image_policy(settings: Settings) -> ImagePolicy:
         allowed_formats=settings.allowed_image_formats,
         blur_threshold=settings.min_laplacian_variance,
     )
-
-
-def _client_filename(filename: str) -> str:
-    safe = Path((filename or "upload").replace("\x00", "")).name
-    return safe[:255] or "upload"
 
 
 def _persist_rule_checks(
@@ -433,7 +429,7 @@ def submit_evidence(
                 gateway,
                 submission_id=submission.id,
                 student_id=actor.id,
-                filename=_client_filename(upload.filename),
+                filename=sanitizar_nome(upload.filename),
                 dados=analysis.original_bytes,
                 content_type=analysis.mime_type,
                 categoria=CATEGORIA_IMAGEM,
@@ -467,7 +463,7 @@ def submit_evidence(
                 gateway,
                 submission_id=submission.id,
                 student_id=actor.id,
-                filename=_client_filename(upload.filename),
+                filename=sanitizar_nome(upload.filename),
                 dados=document.original_bytes,
                 content_type=document.mime_type,
                 categoria=CATEGORIA_DOCUMENTO,

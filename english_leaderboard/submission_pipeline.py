@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -119,6 +120,19 @@ class _MotorOCR:
 
             self._engine = create_ocr_engine()
         return self._engine
+
+
+def sanitizar_nome(filename: str) -> str:
+    """Reduz o nome vindo do cliente ao que pode virar metadado.
+
+    O nome não entra na chave do Storage — ela é montada a partir de UUIDs —,
+    mas é gravado em ``submission_files.filename`` e exibido na tela de
+    revisão. Tira o byte nulo, fica só com o último segmento do caminho e
+    corta em 255. Nome vazio vira ``upload``.
+    """
+
+    limpo = Path((filename or "upload").replace("\x00", "")).name
+    return limpo[:255] or "upload"
 
 
 def limites_de(settings: Settings) -> LimitesStorage:
@@ -233,7 +247,7 @@ def processar_envio(
             gateway,
             submission_id=submission_id,
             student_id=student_id,
-            filename=arquivo.filename,
+            filename=sanitizar_nome(arquivo.filename),
             dados=analisado["dados"],
             content_type=analisado["mime"],
             categoria=analisado["categoria"],
@@ -515,4 +529,5 @@ __all__ = [
     "ResultadoProcessamento",
     "limites_de",
     "processar_envio",
+    "sanitizar_nome",
 ]
