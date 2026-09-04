@@ -27,12 +27,14 @@ from sqlalchemy.engine import Connection
 from .config import Settings
 from .document_processing import DocumentValidationError, process_document_bytes
 from .image_processing import (
+    AnalyzedImage,
     ImagePolicy,
     ImageValidationError,
     analyze_image_bytes,
     phash_distance,
     prepare_ocr_variants,
 )
+from .ocr import OCRResult
 from .storage import StorageGateway
 from .storage_budget import LimitesStorage
 from .storage_service import ArquivoRegistrado, salvar_arquivo
@@ -75,6 +77,25 @@ class ArquivoEnviado:
     content_type: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ImagemProcessada:
+    """Tudo o que o lote apurou sobre uma imagem, num objeto só.
+
+    As regras precisam destes campos alinhados entre si: ``analise`` dá
+    ``valid`` e ``legible``, ``leitura`` dá o texto **e a confiança**, e os
+    dois sinalizadores dizem se a imagem casou com alguma anterior. Enquanto
+    eram listas paralelas, alinhá-las era obrigação de quem chamasse — e errar
+    não quebrava nada: só associava a suspeita ao arquivo errado, e o painel
+    de comparação exibia a evidência trocada.
+    """
+
+    registrado: ArquivoRegistrado
+    analise: AnalyzedImage
+    leitura: OCRResult
+    duplicata_exata: bool
+    duplicata_similar: bool
+
+
 @dataclass(slots=True)
 class ResultadoProcessamento:
     registrados: list[ArquivoRegistrado] = field(default_factory=list)
@@ -84,14 +105,23 @@ class ResultadoProcessamento:
     # Um documento idêntico já enviado — no próprio lote ou em qualquer
     # submissão anterior. O pipeline só sinaliza; a rejeição é da camada acima.
     documento_duplicado: bool = False
-    # Paralelas às **imagens** do lote, na ordem de envio. Documento não entra:
-    # a comparação perceptual é de imagem, e a dele é por checksum exato.
-    duplicatas_exatas: list[bool] = field(default_factory=list)
-    duplicatas_similares: list[bool] = field(default_factory=list)
+    # As imagens do lote, na ordem de envio, cada uma com o que se apurou
+    # sobre ela. Documento não entra: a comparação perceptual é de imagem.
+    imagens: list[ImagemProcessada] = field(default_factory=list)
+    # Paralela aos **documentos** do lote, na ordem de envio.
+    textos_documentos: list[str] = field(default_factory=list)
 
     @property
     def total_bytes(self) -> int:
         return sum(item.file_size for item in self.registrados)
+
+    @property
+    def duplicatas_exatas(self) -> list[bool]:
+        return [imagem.duplicata_exata for imagem in self.imagens]
+
+    @property
+    def duplicatas_similares(self) -> list[bool]:
+        return [imagem.duplicata_similar for imagem in self.imagens]
 
 
 # Uma passada de OCR abaixo de qualquer um dos dois não convence: vale gastar
@@ -238,7 +268,9 @@ def processar_envio(
     candidatos = _candidatos_perceptuais(conexao)
 
     # Fase 2: só agora os binários vão para o bucket e os metadados para o banco.
-    imagens: list[tuple[str, str, str]] = []
+    # As imagens ficam guardadas com a análise que as gerou; os sinalizadores
+    # de duplicidade só existem depois, porque dependem dos IDs recém-gravados.
+    pendentes: list[tuple[ArquivoRegistrado, dict[str, object]]] = []
     for posicao, (arquivo, analisado) in enumerate(
         zip(arquivos, analisados, strict=True)
     ):
@@ -276,18 +308,35 @@ def processar_envio(
         if analisado["phash"]:
             resultado.phashes.append(analisado["phash"])
         if analisado["categoria"] == CATEGORIA_IMAGEM:
-            imagens.append(
-                (registrado.id, str(analisado["sha256"]), str(analisado["phash"]))
-            )
+            pendentes.append((registrado, analisado))
+        else:
+            resultado.textos_documentos.append(str(analisado["texto"]))
 
-    resultado.duplicatas_exatas, resultado.duplicatas_similares = _registrar_duplicatas(
+    exatas, similares = _registrar_duplicatas(
         conexao,
         submission_id=submission_id,
         student_id=student_id,
-        imagens=imagens,
+        imagens=[
+            (registrado.id, str(analisado["sha256"]), str(analisado["phash"]))
+            for registrado, analisado in pendentes
+        ],
         candidatos=candidatos,
         distancia_maxima=settings.phash_distance_threshold,
     )
+    # Uma iteração só monta os cinco campos: não há como o sinalizador de uma
+    # imagem acabar preso ao arquivo de outra.
+    resultado.imagens = [
+        ImagemProcessada(
+            registrado=registrado,
+            analise=analisado["analise"],
+            leitura=analisado["leitura"],
+            duplicata_exata=exata,
+            duplicata_similar=similar,
+        )
+        for (registrado, analisado), exata, similar in zip(
+            pendentes, exatas, similares, strict=True
+        )
+    ]
     return resultado
 
 
@@ -319,7 +368,7 @@ def _documento_ja_enviado(
     return duplicado
 
 
-def _ocr_com_variantes(dados: bytes, engine) -> str:
+def _ocr_com_variantes(dados: bytes, engine) -> OCRResult:
     """Lê a imagem uma vez; se o resultado for fraco, tenta as versões tratadas.
 
     Print escuro, borrado ou de baixo contraste é o caso comum, e é justamente
@@ -343,18 +392,19 @@ def _ocr_com_variantes(dados: bytes, engine) -> str:
             )
     except OCRExecutionError:
         # Motor de OCR que quebra é problema do motor, não prova inválida. A
-        # imagem segue registrada, sem texto; as regras decidem o que fazer
-        # com uma evidência que não rendeu leitura.
-        return ""
-    melhor = max(
+        # imagem segue registrada, com leitura vazia; as regras decidem o que
+        # fazer com uma evidência que não rendeu texto. `empty()` deixa a
+        # confiança em `None`, e não em 0,0: uma leitura que não aconteceu não
+        # pode entrar na média e puxar para baixo a nota das que aconteceram.
+        return OCRResult.empty()
+    return max(
         candidatas,
         key=lambda leitura: (len(leitura.text.strip()), leitura.confidence or 0.0),
     )
-    return melhor.text
 
 
 def _ocr_das_imagens(analisados: list[dict[str, object]], motor: _MotorOCR) -> None:
-    """Preenche o texto das imagens do lote, no lugar em que já estava."""
+    """Lê as imagens do lote e guarda a leitura junto da análise de cada uma."""
 
     imagens = [
         analisado
@@ -365,7 +415,9 @@ def _ocr_das_imagens(analisados: list[dict[str, object]], motor: _MotorOCR) -> N
         return
     engine = motor.obter()
     for analisado in imagens:
-        analisado["texto"] = _ocr_com_variantes(analisado["dados"], engine)
+        leitura = _ocr_com_variantes(analisado["dados"], engine)
+        analisado["leitura"] = leitura
+        analisado["texto"] = leitura.text
 
 
 def _candidatos_perceptuais(conexao: Connection) -> list[tuple[str, str, str, str]]:
@@ -500,6 +552,8 @@ def _analisar(
             # armazenamento não pode alterar as regras antifraude.
             "phash": analisado.phash,
             "sha256": analisado.sha256,
+            "analise": analisado,
+            "leitura": OCRResult.empty(),
             "width": analisado.width,
             "height": analisado.height,
             "paginas": None,
@@ -532,6 +586,8 @@ def _analisar(
         "texto": documento.extracted_text,
         "phash": None,
         "sha256": documento.sha256,
+        "analise": None,
+        "leitura": None,
         "width": None,
         "height": None,
         "paginas": documento.page_count,
@@ -543,6 +599,7 @@ __all__ = [
     "CATEGORIA_IMAGEM",
     "ArquivoEnviado",
     "EnvioRejeitado",
+    "ImagemProcessada",
     "ResultadoProcessamento",
     "limites_de",
     "processar_envio",

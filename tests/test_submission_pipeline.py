@@ -597,6 +597,132 @@ def test_an_ocr_failure_does_not_invalidate_the_evidence(conexao, opcoes) -> Non
     assert len(gateway.objetos) == 2
 
 
+def test_the_reading_keeps_the_confidence_not_just_the_text(conexao, opcoes) -> None:
+    """As regras pontuam pela confiança do OCR, não só pelo texto.
+
+    `analyze_submission_rules` lê `.confidence` de cada leitura e reprova em
+    REVIEW abaixo de 0,55. Enquanto o pipeline devolvia `str`, esse número se
+    perdia no caminho e a camada acima não tinha como reproduzi-lo.
+    """
+
+    gateway = GatewayFalso()
+
+    resultado = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("print.png", make_png(seed=89))],
+        settings=opcoes,
+    )
+
+    assert len(resultado.imagens) == 1
+    leitura = resultado.imagens[0].leitura
+    assert leitura.text == TEXTO_FALSO
+    assert leitura.confidence == pytest.approx(0.99)
+
+
+def test_an_ocr_failure_yields_an_empty_reading(conexao, opcoes) -> None:
+    """Motor que quebra devolve `OCRResult.empty()`, com confiança `None`.
+
+    É o que `submit_evidence` já fazia. Texto vazio com confiança 0,0 seria
+    outra coisa: entraria na média de confiança do lote e puxaria a nota das
+    imagens que o motor leu bem.
+    """
+
+    class OCRQuebrado:
+        def __call__(self, source):
+            raise RuntimeError("motor caiu")
+
+    gateway = GatewayFalso()
+
+    resultado = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("print.png", make_png(seed=97))],
+        settings=opcoes,
+        ocr_engine=OCRQuebrado(),
+    )
+
+    assert resultado.imagens[0].leitura.text == ""
+    assert resultado.imagens[0].leitura.confidence is None
+
+
+def test_document_texts_come_back_apart_from_the_image_readings(
+    conexao, opcoes
+) -> None:
+    """`analyze_submission_rules` recebe os dois por parâmetros diferentes:
+    `ocr_results` para imagem, `document_texts` para documento."""
+
+    gateway = GatewayFalso()
+
+    resultado = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[
+            ArquivoEnviado("print.png", make_png(seed=101)),
+            ArquivoEnviado("resumo.txt", "resumo em português".encode()),
+        ],
+        settings=opcoes,
+    )
+
+    assert [imagem.leitura.text for imagem in resultado.imagens] == [TEXTO_FALSO]
+    assert resultado.textos_documentos == ["resumo em português"]
+
+
+def test_the_image_record_carries_its_own_file_and_analysis(conexao, opcoes) -> None:
+    """Lote misto, com o **documento primeiro**: a imagem é o item 1 do lote e
+    o item 0 entre as imagens.
+
+    É aqui que o desalinhamento nasce. Quem associar a suspeita pela posição no
+    lote acerta o índice e erra o arquivo — e nada quebra: o painel só mostra a
+    comparação trocada. Manter análise, leitura, sinalizadores e arquivo no
+    mesmo objeto torna o erro impossível de escrever.
+    """
+
+    gateway = GatewayFalso()
+    imagem = make_png(seed=103)
+
+    processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[ArquivoEnviado("original.png", imagem)],
+        settings=opcoes,
+    )
+    segundo = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=OUTRO_ALUNO,
+        arquivos=[
+            ArquivoEnviado("anexo.txt", b"um documento qualquer"),
+            ArquivoEnviado("copia.png", imagem),
+        ],
+        settings=opcoes,
+    )
+
+    assert len(segundo.registrados) == 2
+    assert len(segundo.imagens) == 1
+    suspeita = segundo.imagens[0]
+    assert suspeita.duplicata_exata is True
+    # O registro da imagem aponta para a linha da imagem, não para a do
+    # documento que veio antes dela no lote.
+    assert suspeita.registrado.id == segundo.registrados[1].id
+    assert f"/{CATEGORIA_IMAGEM}/" in suspeita.registrado.storage_key
+    assert suspeita.analise.phash and suspeita.analise.valid is True
+    # E a linha de `duplicate_matches` foi escrita contra esse mesmo arquivo.
+    marcado = conexao.execute(
+        text("select file_id from duplicate_matches")
+    ).scalar()
+    assert marcado == suspeita.registrado.id
+
+
 def _matches(conexao) -> list[tuple]:
     return list(
         conexao.execute(
