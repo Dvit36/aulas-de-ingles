@@ -257,6 +257,9 @@ def processar_envio(
             ocr_text=analisado["texto"] or None,
             phash=analisado["phash"],
             position=posicao,
+            width=analisado["width"],
+            height=analisado["height"],
+            page_count=analisado["paginas"],
         )
         resultado.registrados.append(registrado)
         resultado.checksums.append(registrado.checksum_sha256)
@@ -489,6 +492,9 @@ def _analisar(
             # armazenamento não pode alterar as regras antifraude.
             "phash": analisado.phash,
             "sha256": analisado.sha256,
+            "width": analisado.width,
+            "height": analisado.height,
+            "paginas": None,
         }
 
     opcoes_documento = {
@@ -518,6 +524,9 @@ def _analisar(
         "texto": documento.extracted_text,
         "phash": None,
         "sha256": documento.sha256,
+        "width": None,
+        "height": None,
+        "paginas": documento.page_count,
     }
 
 

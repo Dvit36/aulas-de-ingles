@@ -812,6 +812,37 @@ def test_an_image_does_not_trip_the_document_duplicate_flag(conexao, opcoes) -> 
     assert segundo.documento_duplicado is False
 
 
+def test_dimensions_and_page_count_reach_the_metadata(conexao, opcoes) -> None:
+    """`width` e `height` alimentam a comparação antifraude de evidências, e
+    `page_count` aparece na tela de revisão. O pipeline não gravava nenhum
+    dos três."""
+
+    gateway = GatewayFalso()
+
+    processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[
+            ArquivoEnviado("print.png", make_png(seed=79)),
+            ArquivoEnviado("anexo.pdf", _pdf_em_branco()),
+        ],
+        settings=opcoes,
+    )
+
+    linhas = conexao.execute(
+        text(
+            "select width, height, page_count from submission_files"
+            " order by position"
+        )
+    ).all()
+
+    # `make_png` gera 480x800; imagem não tem página, PDF não tem dimensão.
+    assert linhas[0] == (480, 800, None)
+    assert linhas[1] == (None, None, 1)
+
+
 def test_the_client_filename_is_sanitized_before_becoming_metadata(
     conexao, opcoes
 ) -> None:
