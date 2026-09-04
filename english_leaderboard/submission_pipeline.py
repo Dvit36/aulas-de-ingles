@@ -302,19 +302,25 @@ def _ocr_com_variantes(dados: bytes, engine) -> str:
     fica a leitura com mais texto, e a confiança desempata.
     """
 
-    from .ocr import extract_text
+    from .ocr import OCRExecutionError, extract_text
 
-    # As variantes são arrays em memória: nenhum arquivo é criado no disco.
-    variantes = prepare_ocr_variants(dados)
-    primeira = extract_text(variantes["original"], engine=engine)
-    candidatas = [primeira]
-    if (
-        primeira.confidence or 0.0
-    ) < OCR_CONFIANCA_MINIMA or len(primeira.text.strip()) < OCR_TEXTO_MINIMO:
-        candidatas.extend(
-            extract_text(variantes[nome], engine=engine)
-            for nome in ("contrast", "threshold")
-        )
+    try:
+        # As variantes são arrays em memória: nada é criado no disco.
+        variantes = prepare_ocr_variants(dados)
+        primeira = extract_text(variantes["original"], engine=engine)
+        candidatas = [primeira]
+        if (
+            primeira.confidence or 0.0
+        ) < OCR_CONFIANCA_MINIMA or len(primeira.text.strip()) < OCR_TEXTO_MINIMO:
+            candidatas.extend(
+                extract_text(variantes[nome], engine=engine)
+                for nome in ("contrast", "threshold")
+            )
+    except OCRExecutionError:
+        # Motor de OCR que quebra é problema do motor, não prova inválida. A
+        # imagem segue registrada, sem texto; as regras decidem o que fazer
+        # com uma evidência que não rendeu leitura.
+        return ""
     melhor = max(
         candidatas,
         key=lambda leitura: (len(leitura.text.strip()), leitura.confidence or 0.0),

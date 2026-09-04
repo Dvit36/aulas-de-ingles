@@ -558,6 +558,45 @@ def test_a_good_first_pass_skips_the_variants(conexao, opcoes) -> None:
     assert motor.chamadas == ["original"]
 
 
+def test_an_ocr_failure_does_not_invalidate_the_evidence(conexao, opcoes) -> None:
+    """Motor de OCR que quebra é problema do motor, não prova inválida.
+
+    O pipeline deixava a `OCRExecutionError` subir e derrubar o envio inteiro
+    — inclusive os arquivos que o motor tinha lido sem problema.
+    """
+
+    class OCRQueQuebraNaSegunda:
+        def __init__(self) -> None:
+            self.imagens = 0
+
+        def __call__(self, source):
+            if _nome_da_variante(source) == "original":
+                self.imagens += 1
+            if self.imagens == 2:
+                raise RuntimeError("motor caiu no meio")
+            return ([[None, TEXTO_FALSO, 0.99]], [0.01])
+
+    gateway = GatewayFalso()
+
+    resultado = processar_envio(
+        conexao,
+        gateway,
+        submission_id=uuid4(),
+        student_id=ALUNO,
+        arquivos=[
+            ArquivoEnviado("primeira.png", make_png(seed=61)),
+            ArquivoEnviado("segunda.png", make_png(seed=67)),
+        ],
+        settings=opcoes,
+        ocr_engine=OCRQueQuebraNaSegunda(),
+    )
+
+    # As duas imagens foram registradas; só o texto da segunda ficou vazio.
+    assert len(resultado.registrados) == 2
+    assert resultado.textos_ocr == [TEXTO_FALSO]
+    assert len(gateway.objetos) == 2
+
+
 def _matches(conexao) -> list[tuple]:
     return list(
         conexao.execute(
