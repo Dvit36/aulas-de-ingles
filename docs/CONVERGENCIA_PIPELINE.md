@@ -1,9 +1,9 @@
 # Convergência dos dois fluxos de submissão
 
-**Status:** análise concluída em 3 de setembro de 2026. **Etapa 2 concluída em 4
-de setembro de 2026**, na branch `convergencia-pipeline-etapa2`. A Etapa 3 — a
-delegação — ainda não começou. O que a Etapa 2 entregou e o que ela mudou neste
-documento estão no fim.
+**Status:** análise concluída em 3 de setembro de 2026. **Etapas 2 e 3
+concluídas em 4 de setembro de 2026**, na branch `convergencia-pipeline-etapa2`.
+A convergência está feita: `submit_evidence` delega. O que cada etapa entregou
+está no fim.
 
 ## O problema
 
@@ -166,12 +166,60 @@ Um commit por regra, na ordem proposta, com o teste escrito antes do porte.
 - A análise do lote inteiro acontece antes de qualquer upload. A recusa não
   deixa objeto no bucket nem linha no banco.
 
-### Um ponto a resolver na Etapa 3
+## O que a Etapa 3 entregou
 
-`ResultadoProcessamento.textos_ocr` guarda `str`, mas
-`analyze_submission_rules` recebe `ocr_results` como `OCRResult` — precisa da
-confiança, não só do texto. Delegar exige o pipeline devolver os `OCRResult`
-das imagens, ou a camada acima perde o dado que hoje usa. As listas de
-duplicidade são paralelas **às imagens** do lote na ordem de envio, enquanto
-`submit_evidence` hoje reordena imagens antes de documentos: o alinhamento
-precisa ser conferido na delegação.
+Os dois riscos apontados no fim da Etapa 2 foram resolvidos **antes** da
+delegação, não durante. Os dois eram a mesma falha em roupas diferentes: o
+pipeline devolvia listas paralelas que o chamador tinha de realinhar na mão.
+
+**Perda de dado.** `textos_ocr` guardava `str`, e `analyze_submission_rules` lê
+`.confidence` de cada leitura — reprova em REVIEW abaixo de 0,55 e usa a média
+na nota final. `_ocr_com_variantes` passou a devolver o `OCRResult`, e a falha
+do motor devolve `OCRResult.empty()`: confiança `None`, não 0,0, para uma
+leitura que não aconteceu não entrar na média puxando as outras para baixo.
+
+**Perda de correspondência.** As regras indexam `exact_duplicate_flags` e
+`similar_duplicate_flags` contra a lista `images`, e os `{"indexes": [...]}`
+que saem dali são o que o painel de comparação exibe. `ImagemProcessada` junta
+arquivo, análise, leitura e os dois sinalizadores num objeto por imagem,
+montado numa iteração só — o desalinhamento deixou de ser possível de
+escrever. `duplicatas_exatas` e `duplicatas_similares` viraram propriedades
+derivadas, então nenhum teste da Etapa 2 mudou.
+
+**O teste de alinhamento** (`test_services.py::test_the_duplicate_flag_stays_`
+`tied_to_the_image_it_came_from`) foi escrito antes da delegação e verificado
+contra a versão que ainda não delegava. Com o desalinhamento injetado de
+propósito — sinalizadores indexados pela posição no lote —, **os outros 278
+testes seguiam passando e só ele falhava**. É a razão de ele existir: um erro
+aqui não levanta exceção nem muda status, só troca a evidência na tela do
+revisor.
+
+### Mudanças de comportamento da delegação
+
+- **Divergência 2 resolvida:** lista vazia deixa de criar `Submission` órfã em
+  PROCESSING e passa a ser rejeitada com RuleCheck e auditoria.
+- **Divergência 3 resolvida:** arquivo vazio é recusado antes de qualquer
+  persistência, e não mais dentro de `salvar_arquivo`.
+- **`submission_files.position`** segue a ordem de envio, e não mais
+  imagens-antes-de-documentos. Reordena a revisão em lotes mistos.
+- Os dois limites de lote continuam conferidos **antes** de a `Submission`
+  existir: o pipeline também os confere, mas depois de criá-la, e
+  `test_documents.py` exige que um lote grande demais não deixe linha no banco.
+- Saíram de `services.py` como duplicata: `_duplicate_candidates`,
+  `_record_duplicate_matches` e `_image_policy` — 289 linhas a menos.
+
+### Um terceiro teste existente alterado
+
+`test_documents.py::test_txt_submission_skips_ocr` apontava o monkeypatch para
+`services.create_ocr_engine`, que deixou de existir: quem cria o motor agora é
+o pipeline, que o busca em `english_leaderboard.ocr`. O alvo acompanhou a
+mudança de lugar — a garantia é a mesma, e sem o ajuste o teste passaria a
+vigiar uma função que ninguém mais chama.
+
+Somados aos dois da Etapa 2 (lote parcial e sanitização do nome), são **três**
+testes existentes tocados em toda a convergência.
+
+## Linha final
+
+`280 passed, 4 skipped` · `ruff check .` com **os mesmos 78 achados** da linha
+de base. Os 11 testes de `processar_envio` continuam presentes e passando.
