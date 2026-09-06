@@ -45,6 +45,39 @@ uploads, downloads, OCR ou infraestrutura.
   assinadas no banco; gravar apenas a `storage_key`.
 - Segredos nunca entram no Git. Versionar somente exemplos sem valores reais.
 
+## Verificar contra o banco de produção
+
+A aplicação conecta ao PostgreSQL como `postgres` — dono, que **ignora RLS** —,
+mas `english_leaderboard/rls_session.py` troca a transação para
+`authenticated` com as claims do usuário. Toda consulta disparada por uma tela
+roda sob esse papel, não sob o dono.
+
+**Uma consulta verificada como `postgres` não prova nada sobre o que a
+aplicação consegue fazer.** Quem for conferir uma consulta contra o banco real
+tem de rodá-la sob `rls_session.aplicar_identidade`, com o UUID de um usuário
+de verdade. Conectar com `SUPABASE_DB_URL` e executar direto responde outra
+pergunta.
+
+Isso já custou uma queda: um diagnóstico que lia `auth.users` foi conferido
+como `postgres`, passou, e em produção morreu com `permission denied for table
+users` — porque `authenticated` não enxerga o schema `auth`, nem deve.
+
+Duas consequências práticas:
+
+- O papel `authenticated` não alcança o schema `auth`. Precisou de dado de lá?
+  Função `SECURITY DEFINER` que confira `is_admin()` por dentro e devolva
+  colunas nomeadas, como `public.contas_fora_de_sincronia()`. **Nunca**
+  `GRANT SELECT ON auth.users TO authenticated`, que o PostgreSQL sugere no
+  `HINT` do erro: a tabela guarda hash de senha e token de recuperação, e não
+  tem RLS separando uma linha da outra.
+- No PostgreSQL, um comando que falha **aborta a transação inteira**: todo
+  comando seguinte morre com `current transaction is aborted`, e capturar a
+  exceção em Python não desfaz isso. Consulta acessória — diagnóstico,
+  telemetria, qualquer coisa que a tela não precise para funcionar — vai dentro
+  de `session.begin_nested()` (SAVEPOINT), para a falha não levar junto quem
+  chamou. O SQLite da suíte não reproduz esse comportamento: nenhum teste
+  daqui pega essa classe de erro.
+
 ## Fluxo obrigatório de upload
 
 1. Identificar o usuário pela sessão do Supabase Auth.

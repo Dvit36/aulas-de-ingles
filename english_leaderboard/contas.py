@@ -18,11 +18,12 @@ administrador; esta camada não decide autorização, só executa.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from datetime import UTC, datetime
+from typing import Any, Protocol, runtime_checkable
 
 from . import supabase_auth
 from .config import Settings
-from .supabase_auth import AuthGateway, HttpAuthGateway
+from .supabase_auth import AuthGateway, HttpAuthGateway, username_para_email
 
 
 @runtime_checkable
@@ -280,13 +281,134 @@ def bootstrap_admin(
     return admin
 
 
+# ------------------------------------------------------------- reconciliação
+#
+# Os dois defeitos que motivaram isto tinham a mesma forma: o perfil mudava, o
+# Auth não, e a tela mostrava o lado que não manda. Nenhum levantava exceção e
+# nenhum aparecia até alguém tentar entrar.
+
+
+@dataclass(frozen=True, slots=True)
+class DivergenciaDeConta:
+    """Um perfil cujo lado no Auth não corresponde ao que a tela mostra."""
+
+    user_id: str
+    username: str
+    tipo: str
+    detalhe: str
+
+
+def classificar_divergencias(
+    linhas: list[tuple[str, str, bool, str | None, datetime | None]],
+    *,
+    dominio: str,
+    agora: datetime | None = None,
+) -> list[DivergenciaDeConta]:
+    """Separa a regra da consulta, para ela caber num teste sem PostgreSQL.
+
+    Cada linha é ``(id, username, active, email, banned_until)``. O ``email``
+    vem de ``auth.users`` por ``left join``: ``None`` quer dizer perfil sem
+    conta nenhuma.
+    """
+
+    referencia = agora or datetime.now(UTC)
+    achados: list[DivergenciaDeConta] = []
+    for user_id, username, active, email, banned_until in linhas:
+        if email is None:
+            achados.append(
+                DivergenciaDeConta(
+                    user_id=str(user_id),
+                    username=username,
+                    tipo="sem_conta",
+                    detalhe="Perfil sem conta no Supabase Auth: não há como entrar.",
+                )
+            )
+            continue
+
+        esperado = username_para_email(username, dominio)
+        if email != esperado:
+            achados.append(
+                DivergenciaDeConta(
+                    user_id=str(user_id),
+                    username=username,
+                    tipo="endereco",
+                    detalhe=(
+                        f"O login só aceita {email!r}; a tela mostra {username!r}. "
+                        "Renomear o perfil sem mover a conta separa os dois."
+                    ),
+                )
+            )
+
+        # Ban vencido não bloqueia ninguém; só o que ainda vale conta.
+        if active and banned_until is not None and banned_until > referencia:
+            achados.append(
+                DivergenciaDeConta(
+                    user_id=str(user_id),
+                    username=username,
+                    tipo="acesso_bloqueado",
+                    detalhe=(
+                        "Perfil ativo, conta banida no Auth até "
+                        f"{banned_until:%d/%m/%Y}. A tela mostra ativo e o "
+                        "login recusa — reativar sem levantar o ban."
+                    ),
+                )
+            )
+    return achados
+
+
+def divergencias_de_conta(
+    session: Any, *, dominio: str, agora: datetime | None = None
+) -> list[DivergenciaDeConta]:
+    """Confere perfil contra conta, para todo mundo.
+
+    **Não consulta ``auth.users`` direto.** A aplicação troca a transação para
+    ``authenticated`` (ver ``rls_session``), e esse papel não enxerga o schema
+    ``auth`` — nem deve. Quem lê é
+    ``public.contas_fora_de_sincronia()``, ``SECURITY DEFINER`` como
+    ``is_admin()``, que devolve cinco colunas e confere ``is_admin()`` por
+    dentro. A migração `0009` explica por que o ``GRANT`` que o PostgreSQL
+    sugere na mensagem de erro seria um vazamento.
+
+    **O SAVEPOINT não é zelo excessivo.** Uma consulta que falha no PostgreSQL
+    aborta a transação inteira, e todo comando seguinte morre com "current
+    transaction is aborted" — inclusive os da tela que chamou. Capturar a
+    exceção em Python não desfaz isso; só o rollback até o savepoint desfaz.
+    Foi exatamente assim que este detector derrubou a aba Alunos.
+
+    Por isso ele engole qualquer falha e devolve lista vazia: um diagnóstico
+    que quebra a tela que deveria informar é pior que diagnóstico nenhum. Vale
+    também para o banco onde a migração `0009` ainda não passou.
+    """
+
+    from sqlalchemy import text
+
+    if not exige_conta_no_auth(session):
+        return []
+    try:
+        with session.begin_nested():
+            linhas = session.execute(
+                text(
+                    "select id, username, active, email, banned_until"
+                    " from public.contas_fora_de_sincronia()"
+                )
+            ).all()
+    except Exception:  # noqa: BLE001 - diagnóstico nunca pode ser fatal
+        return []
+    return classificar_divergencias(
+        [tuple(linha) for linha in linhas], dominio=dominio, agora=agora
+    )
+
+
 __all__ = [
     "ContaObrigatoria",
     "Contas",
     "ContasSupabase",
+    "DivergenciaDeConta",
     "bootstrap_admin",
+    "classificar_divergencias",
     "conta_existe_no_auth",
     "contas_de",
     "contas_disponiveis",
+    "divergencias_de_conta",
     "exige_conta_no_auth",
 ]
