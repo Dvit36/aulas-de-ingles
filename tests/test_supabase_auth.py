@@ -20,6 +20,7 @@ from english_leaderboard.supabase_auth import (
     desativar_conta,
     entrar,
     gerar_senha_temporaria,
+    reativar_conta,
     redefinir_senha,
     remover_conta,
     renovar,
@@ -353,6 +354,24 @@ def test_the_http_gateway_really_sends_the_verb_it_promises(monkeypatch) -> None
         f"https://projeto.supabase.co/auth/v1/admin/users/{UID}"
     )
     assert vistos[2][2] is None  # DELETE não leva corpo
+
+
+def test_reactivation_clears_the_ban_instead_of_omitting_it() -> None:
+    """`"none"` é como o GoTrue diz "sem ban".
+
+    Omitir o campo não desfaz nada: a conta seguiria banida e o teste que só
+    olhasse o caminho passaria mesmo assim.
+    """
+
+    gateway = GatewayFalso()
+
+    reativar_conta(gateway, user_id=UID, chave_secreta=SECRETA)
+
+    caminho, corpo, chave = gateway.chamadas[0]
+    assert caminho == f"admin/users/{UID}"
+    assert corpo == {"ban_duration": "none"}
+    assert chave == SECRETA
+    assert gateway.verbos == ["PUT"]
 
 
 def test_account_removal_uses_delete() -> None:

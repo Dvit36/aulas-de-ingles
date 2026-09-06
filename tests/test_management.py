@@ -52,6 +52,7 @@ class ContasFalsas:
     def __init__(self) -> None:
         self.criadas: dict[str, str] = {}
         self.desativadas: list[str] = []
+        self.reativadas: list[str] = []
         self.removidas: list[str] = []
         self.senhas_redefinidas: list[str] = []
         self.renomeadas: list[tuple[str, str]] = []
@@ -74,6 +75,9 @@ class ContasFalsas:
 
     def desativar(self, user_id: str) -> None:
         self.desativadas.append(user_id)
+
+    def reativar(self, user_id: str) -> None:
+        self.reativadas.append(user_id)
 
     def remover(self, user_id: str) -> None:
         self.removidas.append(user_id)
@@ -531,3 +535,60 @@ def test_a_rename_the_auth_refuses_does_not_stick_in_the_profile(
 
     assert session.get(User, alvo.id).username == antes
     assert contas.renomeadas == []
+
+
+def test_reactivating_a_user_lifts_the_ban_at_the_auth(session, users) -> None:
+    """Desativar bane no Auth; reativar tem de levantar o ban.
+
+    Sem o par, o perfil volta a `active`, a tela mostra o aluno ativo e o
+    login segue recusando — a mesma divergência do username, mas sem contorno:
+    não há nome antigo com que entrar.
+    """
+
+    admin = users[Role.ADMIN]
+    contas = ContasFalsas()
+    alvo = users[Role.STUDENT]
+
+    def salvar(ativo: bool) -> None:
+        save_user(
+            session,
+            actor=admin,
+            user_id=alvo.id,
+            username=alvo.username,
+            display_name=alvo.display_name,
+            role=Role.STUDENT,
+            active=ativo,
+            contas=contas,
+        )
+        session.commit()
+
+    salvar(False)
+    assert contas.desativadas == [alvo.id]
+    assert contas.reativadas == []
+
+    salvar(True)
+    assert contas.reativadas == [alvo.id]
+    assert session.get(User, alvo.id).active is True
+
+
+def test_a_role_change_alone_does_not_touch_the_ban(session, users) -> None:
+    """Quem já estava ativo não precisa ser desbanido ao virar admin."""
+
+    admin = users[Role.ADMIN]
+    contas = ContasFalsas()
+    alvo = users[Role.STUDENT]
+
+    save_user(
+        session,
+        actor=admin,
+        user_id=alvo.id,
+        username=alvo.username,
+        display_name=alvo.display_name,
+        role=Role.ADMIN,
+        active=True,
+        contas=contas,
+    )
+    session.commit()
+
+    assert contas.reativadas == []
+    assert contas.desativadas == []

@@ -37,6 +37,8 @@ class Contas(Protocol):
 
     def desativar(self, user_id: str) -> None: ...
 
+    def reativar(self, user_id: str) -> None: ...
+
     def remover(self, user_id: str) -> None: ...
 
 
@@ -90,6 +92,16 @@ class ContasSupabase:
         """
 
         supabase_auth.desativar_conta(
+            self.gateway, user_id=user_id, chave_secreta=self.chave_secreta
+        )
+
+    def reativar(self, user_id: str) -> None:
+        """Devolve o acesso que ``desativar`` tirou.
+
+        O par existe porque só o perfil voltar a ``active`` não desfaz o ban.
+        """
+
+        supabase_auth.reativar_conta(
             self.gateway, user_id=user_id, chave_secreta=self.chave_secreta
         )
 

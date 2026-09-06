@@ -1283,8 +1283,15 @@ def save_user(
             # Mudança de papel ou desativação precisa alcançar a sessão já
             # emitida. Só o Supabase Auth consegue invalidá-la; marcar o perfil
             # deixaria o acesso vivo até o token expirar sozinho.
-            if contas is not None and not active:
-                contas.desativar(user.id)
+            if contas is not None:
+                if not active:
+                    contas.desativar(user.id)
+                elif not before["active"]:
+                    # O par de `desativar`. Voltar o perfil para `active` não
+                    # levanta o ban: sem esta chamada o aluno reativado
+                    # aparece ativo na tela e não entra mais, sem sintoma
+                    # nenhum até ele tentar.
+                    contas.reativar(user.id)
     session.flush()
     if username_mudou and contas is not None:
         # O login traduz o username em endereço a cada tentativa e consulta o

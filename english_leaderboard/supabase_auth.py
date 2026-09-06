@@ -369,6 +369,27 @@ def desativar_conta(
     )
 
 
+def reativar_conta(
+    gateway: AuthGateway, *, user_id: str, chave_secreta: str
+) -> None:
+    """Levanta o ban imposto por :func:`desativar_conta`.
+
+    Marcar o perfil como ativo de novo não devolve o acesso: quem recusa o
+    login é o Auth, e para ele a conta continua banida. Sem esta chamada o
+    aluno reativado aparece ativo na tela e não entra mais — sintoma nenhum
+    até ele tentar.
+
+    ``"none"`` é como o GoTrue expressa "sem ban"; não é o mesmo que omitir o
+    campo, que deixaria o ban de pé.
+    """
+
+    gateway.put(
+        f"admin/users/{user_id}",
+        {"ban_duration": "none"},
+        chave=chave_secreta,
+    )
+
+
 def remover_conta(gateway: AuthGateway, *, user_id: str, chave_secreta: str) -> None:
     """Remove a conta do Auth. O perfil sai por cascade no PostgreSQL."""
 
@@ -389,6 +410,7 @@ __all__ = [
     "entrar",
     "gerar_senha_temporaria",
     "normalize_username",
+    "reativar_conta",
     "redefinir_senha",
     "remover_conta",
     "renovar",

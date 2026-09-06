@@ -62,6 +62,9 @@ class ContasFalsas:
     def desativar(self, user_id: str) -> None:  # pragma: no cover
         raise AssertionError("não deveria ser chamado")
 
+    def reativar(self, user_id: str) -> None:  # pragma: no cover
+        raise AssertionError("não deveria ser chamado")
+
     def remover(self, user_id: str) -> None:  # pragma: no cover
         raise AssertionError("não deveria ser chamado")
 
