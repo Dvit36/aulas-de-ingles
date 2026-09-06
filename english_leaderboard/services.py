@@ -28,7 +28,7 @@ from .image_processing import (
     phash_distance,
     prepare_ocr_variants,
 )
-from .contas import Contas
+from .contas import Contas, exige_conta_no_auth
 from .supabase_auth import normalize_username
 from .schema import (
     Activity,
@@ -1293,16 +1293,33 @@ def save_user(
                     # nenhum até ele tentar.
                     contas.reativar(user.id)
     session.flush()
-    if username_mudou and contas is not None:
-        # O login traduz o username em endereço a cada tentativa e consulta o
-        # Auth; o perfil sozinho não o alcança. Depois do `flush` de propósito:
-        # se o banco for recusar o nome, que recuse antes de a conta mudar.
-        #
-        # A ordem é a mesma da exclusão em `archive_or_delete_user`: o perfil
-        # muda dentro da transação, o Auth logo depois, e quem chama confirma
-        # no fim. Se o Auth recusar, a exceção sobe e o rollback desfaz o
-        # perfil — não há escrita compensatória que possa falhar por sua vez.
-        contas.atualizar_username(user.id, normalized)
+    if username_mudou:
+        if contas is not None:
+            # O login traduz o username em endereço a cada tentativa e consulta
+            # o Auth; o perfil sozinho não o alcança. Depois do `flush` de
+            # propósito: se o banco for recusar o nome, que recuse antes de a
+            # conta mudar.
+            #
+            # A ordem é a mesma da exclusão em `archive_or_delete_user`: o
+            # perfil muda dentro da transação, o Auth logo depois, e quem chama
+            # confirma no fim. Se o Auth recusar, a exceção sobe e o rollback
+            # desfaz o perfil — não há escrita compensatória que possa falhar
+            # por sua vez.
+            contas.atualizar_username(user.id, normalized)
+        elif exige_conta_no_auth(session):
+            # Sem a fachada não há como mover a conta, e gravar só o perfil
+            # recria em silêncio a divergência que a linha acima conserta.
+            # Falhar alto é a única saída honesta: o chamador de hoje sempre
+            # passa `contas`, mas um futuro não tem como saber disso.
+            #
+            # Só no PostgreSQL. No SQLite não existe schema `auth`, renomear um
+            # perfil solto é legítimo, e não há nada para manter em passo —
+            # exigir a fachada ali quebraria desenvolvimento para proteger um
+            # caso que não existe.
+            raise ValueError(
+                "Renomear exige a fachada de contas: sem ela o login "
+                "continuaria aceitando só o nome antigo."
+            )
     add_audit(
         session,
         actor_id=actor.id,

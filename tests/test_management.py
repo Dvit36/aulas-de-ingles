@@ -592,3 +592,59 @@ def test_a_role_change_alone_does_not_touch_the_ban(session, users) -> None:
 
     assert contas.reativadas == []
     assert contas.desativadas == []
+
+
+def test_renaming_without_the_accounts_facade_fails_loudly_on_postgres(
+    session, users, monkeypatch
+) -> None:
+    """Sem a fachada não há como mover a conta; gravar só o perfil divergiria.
+
+    O chamador de hoje sempre passa `contas`, mas um futuro não tem como saber
+    disso — e o modo de falha seria silencioso, que é justamente o que tornou
+    estes defeitos difíceis de achar.
+    """
+
+    import english_leaderboard.services as servicos
+
+    monkeypatch.setattr(servicos, "exige_conta_no_auth", lambda _s: True)
+    alvo = users[Role.STUDENT]
+    antes = alvo.username
+
+    with pytest.raises(ValueError, match="fachada de contas"):
+        save_user(
+            session,
+            actor=users[Role.ADMIN],
+            user_id=alvo.id,
+            username="nome.sem.fachada",
+            display_name=alvo.display_name,
+            role=Role.STUDENT,
+            active=True,
+        )
+    session.rollback()
+
+    assert session.get(User, alvo.id).username == antes
+
+
+def test_renaming_without_the_facade_is_fine_where_there_is_no_auth(
+    session, users
+) -> None:
+    """No SQLite não existe schema `auth`: o perfil solto é legítimo.
+
+    Exigir a fachada aqui quebraria desenvolvimento e a suíte para proteger um
+    caso que só existe no PostgreSQL.
+    """
+
+    alvo = users[Role.STUDENT]
+
+    save_user(
+        session,
+        actor=users[Role.ADMIN],
+        user_id=alvo.id,
+        username="nome.local",
+        display_name=alvo.display_name,
+        role=Role.STUDENT,
+        active=True,
+    )
+    session.commit()
+
+    assert session.get(User, alvo.id).username == "nome.local"
