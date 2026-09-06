@@ -93,6 +93,8 @@ class AuthGateway(Protocol):
 
     def post(self, caminho: str, corpo: dict[str, Any], *, chave: str) -> dict[str, Any]: ...
 
+    def put(self, caminho: str, corpo: dict[str, Any], *, chave: str) -> dict[str, Any]: ...
+
     def delete(self, caminho: str, *, chave: str) -> dict[str, Any]: ...
 
 
@@ -125,6 +127,9 @@ class HttpAuthGateway:
 
     def post(self, caminho: str, corpo: dict[str, Any], *, chave: str) -> dict[str, Any]:
         return self._requisitar(caminho, corpo, "POST", chave)
+
+    def put(self, caminho: str, corpo: dict[str, Any], *, chave: str) -> dict[str, Any]:
+        return self._requisitar(caminho, corpo, "PUT", chave)
 
     def delete(self, caminho: str, *, chave: str) -> dict[str, Any]:
         return self._requisitar(caminho, None, "DELETE", chave)
@@ -290,7 +295,7 @@ def redefinir_senha(
     """
 
     senha = password or gerar_senha_temporaria()
-    gateway.post(
+    gateway.put(
         f"admin/users/{user_id}",
         {"password": senha},
         chave=chave_secreta,
@@ -317,9 +322,14 @@ def desativar_conta(
 
     A revogação precisa acontecer no Supabase: desativar só o perfil deixaria
     a sessão em curso continuar válida até expirar.
+
+    ``PUT`` é o verbo documentado para atualizar conta. O GoTrue também roteia
+    ``POST`` no mesmo caminho — foi assim que esta função nasceu, e ela não
+    estava quebrada por causa disso —, mas manter um verbo só evita a dúvida
+    de qual dos dois vale.
     """
 
-    gateway.post(
+    gateway.put(
         f"admin/users/{user_id}",
         {"ban_duration": "876000h"},
         chave=chave_secreta,

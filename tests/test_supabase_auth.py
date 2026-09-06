@@ -36,22 +36,34 @@ UID = "11111111-1111-1111-1111-111111111111"
 
 
 class GatewayFalso:
+    """Duplo do gateway HTTP.
+
+    ``verbos`` fica separado de ``chamadas`` de propósito: o verbo é o que
+    diferencia atualizar conta de criar conta no mesmo caminho, e um duplo que
+    só guarda corpo e chave não consegue provar qual dos dois foi enviado.
+    """
+
     def __init__(self) -> None:
         self.chamadas: list[tuple[str, dict, str]] = []
+        self.verbos: list[str] = []
         self.respostas: dict[str, dict] = {}
         self.erros: dict[str, Exception] = {}
 
-    def post(self, caminho: str, corpo: dict, *, chave: str) -> dict:
+    def _registrar(self, verbo: str, caminho: str, corpo: dict, chave: str) -> dict:
         self.chamadas.append((caminho, corpo, chave))
+        self.verbos.append(verbo)
         if caminho in self.erros:
             raise self.erros[caminho]
         return self.respostas.get(caminho, {})
 
+    def post(self, caminho: str, corpo: dict, *, chave: str) -> dict:
+        return self._registrar("POST", caminho, corpo, chave)
+
+    def put(self, caminho: str, corpo: dict, *, chave: str) -> dict:
+        return self._registrar("PUT", caminho, corpo, chave)
+
     def delete(self, caminho: str, *, chave: str) -> dict:
-        self.chamadas.append((caminho, {}, chave))
-        if caminho in self.erros:
-            raise self.erros[caminho]
-        return {}
+        return self._registrar("DELETE", caminho, {}, chave)
 
 
 def _resposta_sessao(expires_in: int = 3600) -> dict:
@@ -245,6 +257,8 @@ def test_account_creation_uses_the_privileged_key_and_confirms_the_email() -> No
     # Sem endereço real não há link de confirmação: a conta nasce confirmada.
     assert corpo["email_confirm"] is True
     assert corpo["email"] == f"ana.silva@{DOMINIO}"
+    # Criar é POST em `admin/users`; atualizar é PUT em `admin/users/{id}`.
+    assert gateway.verbos == ["POST"]
 
 
 def test_password_reset_replaces_recovery_by_email() -> None:
@@ -257,6 +271,7 @@ def test_password_reset_replaces_recovery_by_email() -> None:
     assert caminho == f"admin/users/{UID}"
     assert corpo == {"password": senha}
     assert chave == SECRETA
+    assert gateway.verbos == ["PUT"]
 
 
 def test_user_changes_own_password_with_their_own_token() -> None:
@@ -292,6 +307,52 @@ def test_deactivation_revokes_at_the_auth_service() -> None:
     assert caminho == f"admin/users/{UID}"
     assert "ban_duration" in corpo
     assert chave == SECRETA
+    # `admin/users/{id}` serve criação e atualização; só o verbo os separa.
+    assert gateway.verbos == ["PUT"]
+
+
+def test_the_http_gateway_really_sends_the_verb_it_promises(monkeypatch) -> None:
+    """O duplo prova a intenção; só aqui o verbo vira requisição de verdade.
+
+    `admin/users/{id}` responde a POST e a PUT no GoTrue, então um erro de
+    verbo não apareceria como 405 — passaria batido. O teste olha o método na
+    requisição montada, antes de ela sair.
+    """
+
+    import urllib.request
+
+    from english_leaderboard.supabase_auth import HttpAuthGateway
+
+    vistos: list[tuple[str, str, bytes | None]] = []
+
+    class RespostaFalsa:
+        def read(self) -> bytes:
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def urlopen_falso(requisicao, timeout=None):
+        vistos.append(
+            (requisicao.get_method(), requisicao.full_url, requisicao.data)
+        )
+        return RespostaFalsa()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen_falso)
+    gateway = HttpAuthGateway("https://projeto.supabase.co")
+
+    gateway.put(f"admin/users/{UID}", {"ban_duration": "none"}, chave=SECRETA)
+    gateway.post("admin/users", {"email": "a@b.invalid"}, chave=SECRETA)
+    gateway.delete(f"admin/users/{UID}", chave=SECRETA)
+
+    assert [verbo for verbo, _, _ in vistos] == ["PUT", "POST", "DELETE"]
+    assert vistos[0][1] == (
+        f"https://projeto.supabase.co/auth/v1/admin/users/{UID}"
+    )
+    assert vistos[2][2] is None  # DELETE não leva corpo
 
 
 def test_account_removal_uses_delete() -> None:
