@@ -28,6 +28,7 @@ from english_leaderboard.services import (
     save_user,
     set_activity_active,
 )
+from english_leaderboard.supabase_auth import AuthError
 
 
 def test_administrative_operations_do_not_accept_reason_parameters() -> None:
@@ -53,6 +54,8 @@ class ContasFalsas:
         self.desativadas: list[str] = []
         self.removidas: list[str] = []
         self.senhas_redefinidas: list[str] = []
+        self.renomeadas: list[tuple[str, str]] = []
+        self.falhar_ao_renomear = False
 
     def criar(self, *, username: str, display_name: str) -> tuple[str, str]:
         identificador = str(uuid4())
@@ -62,6 +65,12 @@ class ContasFalsas:
     def redefinir_senha(self, user_id: str) -> str:
         self.senhas_redefinidas.append(user_id)
         return "outra-senha-temporaria"
+
+    def atualizar_username(self, user_id: str, username: str) -> str:
+        if self.falhar_ao_renomear:
+            raise AuthError("Supabase Auth recusou a troca de endereço")
+        self.renomeadas.append((user_id, username))
+        return f"{username}@exemplo.invalid"
 
     def desativar(self, user_id: str) -> None:
         self.desativadas.append(user_id)
@@ -436,3 +445,89 @@ def test_replacing_resources_is_a_full_rewrite(session, users) -> None:
     )
     assert entry is not None
     assert entry.after_json["titles"] == ["Novo"]
+
+
+# ------------------------------------------- username: perfil e Auth juntos
+
+def test_renaming_a_user_also_moves_the_auth_account(session, users) -> None:
+    """A tela lê de `profiles`; o login lê do Auth. Renomear só um separa os dois.
+
+    Era o defeito: `save_user` gravava `profiles.username` e não tocava a
+    conta, então o login continuava aceitando só o nome antigo.
+    """
+
+    admin = users[Role.ADMIN]
+    contas = ContasFalsas()
+    alvo = users[Role.STUDENT]
+
+    save_user(
+        session,
+        actor=admin,
+        user_id=alvo.id,
+        username="nome.novo",
+        display_name=alvo.display_name,
+        role=Role.STUDENT,
+        active=True,
+        contas=contas,
+    )
+    session.commit()
+
+    assert contas.renomeadas == [(alvo.id, "nome.novo")]
+    assert session.get(User, alvo.id).username == "nome.novo"
+
+
+def test_editing_without_touching_the_username_leaves_the_auth_alone(
+    session, users
+) -> None:
+    """Só o nome de exibição mudou: não há motivo para falar com o Auth."""
+
+    admin = users[Role.ADMIN]
+    contas = ContasFalsas()
+    alvo = users[Role.STUDENT]
+
+    save_user(
+        session,
+        actor=admin,
+        user_id=alvo.id,
+        username=alvo.username,
+        display_name="Outro Nome",
+        role=Role.STUDENT,
+        active=True,
+        contas=contas,
+    )
+    session.commit()
+
+    assert contas.renomeadas == []
+
+
+def test_a_rename_the_auth_refuses_does_not_stick_in_the_profile(
+    session, users
+) -> None:
+    """O rollback é a compensação: sem ele, voltaríamos à divergência.
+
+    O perfil muda dentro da transação e o Auth logo depois. Se o Auth recusa,
+    a exceção sobe e o `rollback` de quem chama desfaz o perfil — não existe
+    escrita compensatória que possa, ela mesma, falhar.
+    """
+
+    admin = users[Role.ADMIN]
+    contas = ContasFalsas()
+    contas.falhar_ao_renomear = True
+    alvo = users[Role.STUDENT]
+    antes = alvo.username
+
+    with pytest.raises(AuthError):
+        save_user(
+            session,
+            actor=admin,
+            user_id=alvo.id,
+            username="nome.que.nao.vai.valer",
+            display_name=alvo.display_name,
+            role=Role.STUDENT,
+            active=True,
+            contas=contas,
+        )
+    session.rollback()
+
+    assert session.get(User, alvo.id).username == antes
+    assert contas.renomeadas == []

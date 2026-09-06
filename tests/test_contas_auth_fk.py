@@ -56,6 +56,9 @@ class ContasFalsas:
     def redefinir_senha(self, user_id: str) -> str:  # pragma: no cover
         raise AssertionError("não deveria ser chamado")
 
+    def atualizar_username(self, user_id: str, username: str) -> str:  # pragma: no cover
+        raise AssertionError("não deveria ser chamado")
+
     def desativar(self, user_id: str) -> None:  # pragma: no cover
         raise AssertionError("não deveria ser chamado")
 

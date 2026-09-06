@@ -1221,6 +1221,7 @@ def save_user(
         else session.scalar(select(User).where(User.username == normalized))
     )
     before = None
+    username_mudou = False
     if user is None:
         # O id do perfil é o mesmo da conta no Supabase Auth. Quem já criou a
         # conta passa o identificador; sem ele o perfil nasceria sem login.
@@ -1270,6 +1271,7 @@ def save_user(
                 raise ValueError(
                     "Não é permitido desativar o último administrador ativo"
                 )
+        username_mudou = user.username != normalized
         user.username = normalized
         user.display_name = display_name.strip() or user.display_name
         user.role = requested_role
@@ -1284,6 +1286,16 @@ def save_user(
             if contas is not None and not active:
                 contas.desativar(user.id)
     session.flush()
+    if username_mudou and contas is not None:
+        # O login traduz o username em endereço a cada tentativa e consulta o
+        # Auth; o perfil sozinho não o alcança. Depois do `flush` de propósito:
+        # se o banco for recusar o nome, que recuse antes de a conta mudar.
+        #
+        # A ordem é a mesma da exclusão em `archive_or_delete_user`: o perfil
+        # muda dentro da transação, o Auth logo depois, e quem chama confirma
+        # no fim. Se o Auth recusar, a exceção sobe e o rollback desfaz o
+        # perfil — não há escrita compensatória que possa falhar por sua vez.
+        contas.atualizar_username(user.id, normalized)
     add_audit(
         session,
         actor_id=actor.id,

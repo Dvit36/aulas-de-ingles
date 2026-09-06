@@ -119,7 +119,10 @@ class HttpAuthGateway:
                 return json.loads(bruto) if bruto else {}
         except urllib.error.HTTPError as erro:
             detalhe = erro.read().decode("utf-8", "replace")[:300]
-            if erro.code in (400, 401, 403):
+            # 422 é o que o GoTrue devolve para endereço já registrado, e é
+            # o caso comum ao renomear alguém para um usuário que já existe.
+            # Sem ele a tela mostraria "Supabase Auth respondeu 422".
+            if erro.code in (400, 401, 403, 422):
                 raise CredenciaisInvalidas(_mensagem_amigavel(detalhe)) from erro
             raise AuthError(f"Supabase Auth respondeu {erro.code}") from erro
         except urllib.error.URLError as erro:  # pragma: no cover - rede indisponível
@@ -281,6 +284,36 @@ def criar_conta(
     return str(identificador), senha
 
 
+def atualizar_username(
+    gateway: AuthGateway,
+    *,
+    user_id: str,
+    username: str,
+    chave_secreta: str,
+    dominio: str,
+) -> str:
+    """Move o endereço interno da conta para acompanhar o username.
+
+    O login não guarda o username: ele o traduz em endereço a cada tentativa,
+    por ``username_para_email``. Mudar só ``profiles.username`` deixa a conta
+    acessível apenas pelo nome antigo, e a tela passa a mostrar um valor que
+    não serve para entrar.
+
+    ``email_confirm`` volta aqui pelo mesmo motivo da criação: trocar o
+    endereço reabre a confirmação, e endereço interno não recebe link.
+
+    Devolve o endereço novo, para quem chamar poder registrá-lo.
+    """
+
+    email = username_para_email(username, dominio)
+    gateway.put(
+        f"admin/users/{user_id}",
+        {"email": email, "email_confirm": True},
+        chave=chave_secreta,
+    )
+    return email
+
+
 def redefinir_senha(
     gateway: AuthGateway,
     *,
@@ -350,6 +383,7 @@ __all__ = [
     "HttpAuthGateway",
     "Sessao",
     "SessaoExpirada",
+    "atualizar_username",
     "criar_conta",
     "desativar_conta",
     "entrar",

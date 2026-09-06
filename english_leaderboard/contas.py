@@ -33,6 +33,8 @@ class Contas(Protocol):
 
     def redefinir_senha(self, user_id: str) -> str: ...
 
+    def atualizar_username(self, user_id: str, username: str) -> str: ...
+
     def desativar(self, user_id: str) -> None: ...
 
     def remover(self, user_id: str) -> None: ...
@@ -64,6 +66,20 @@ class ContasSupabase:
     def redefinir_senha(self, user_id: str) -> str:
         return supabase_auth.redefinir_senha(
             self.gateway, user_id=user_id, chave_secreta=self.chave_secreta
+        )
+
+    def atualizar_username(self, user_id: str, username: str) -> str:
+        """Leva o username novo ao Auth, que é quem o login consulta.
+
+        O perfil sozinho não basta: o e-mail da conta é o que autentica.
+        """
+
+        return supabase_auth.atualizar_username(
+            self.gateway,
+            user_id=user_id,
+            username=username,
+            chave_secreta=self.chave_secreta,
+            dominio=self.dominio,
         )
 
     def desativar(self, user_id: str) -> None:
