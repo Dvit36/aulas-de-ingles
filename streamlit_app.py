@@ -35,11 +35,7 @@ from english_leaderboard.exporter import (
     ledger_to_xlsx,
 )
 from english_leaderboard.google_sheets import sync_leaderboard_and_ledger
-from english_leaderboard.contas import (
-    contas_de,
-    contas_disponiveis,
-    divergencias_de_conta,
-)
+from english_leaderboard.contas import contas_de, contas_disponiveis
 from english_leaderboard.storage import (
     URL_EXPIRA_SEGUNDOS,
     StorageError,
@@ -1874,40 +1870,8 @@ def _student_account_counts(users: Sequence[User]) -> tuple[int, int, int]:
     )
 
 
-def _mostrar_divergencias_de_conta(session, settings: Settings | None) -> None:
-    """Avisa quando o perfil e a conta no Auth deixaram de corresponder.
-
-    A tela lê `profiles`; o login lê o Supabase Auth. Quando os dois discordam
-    nada estoura: o administrador vê o valor do perfil e o aluno é recusado no
-    login, sem ninguém ligar uma coisa à outra. Este bloco existe para o
-    desencontro aparecer aqui, e não numa mensagem de "usuário ou senha
-    incorretos".
-    """
-
-    if settings is None:
-        return
-    try:
-        achados = divergencias_de_conta(
-            session, dominio=settings.supabase_username_domain
-        )
-    except Exception:  # noqa: BLE001 - diagnóstico não pode derrubar a tela
-        # Sem o schema `auth` ou sem permissão, a tela segue sem o aviso: o
-        # detector é diagnóstico, e falhar nele não pode impedir a gestão.
-        return
-    if not achados:
-        return
-    st.warning(
-        f"{len(achados)} conta(s) com perfil e login fora de sincronia. "
-        "Quem está nesta lista não entra com o que a tela mostra."
-    )
-    with st.expander("Ver divergências", expanded=True):
-        for achado in achados:
-            st.markdown(f"**{achado.username}** — {achado.detalhe}")
-
-
 def users_view(session, actor: User, settings: Settings | None = None) -> None:
     st.header("Alunos e administradores")
-    _mostrar_divergencias_de_conta(session, settings)
     users = list(session.scalars(select(User).order_by(User.display_name)).all())
     active_count, inactive_count, archived_count = _student_account_counts(users)
     summary = st.columns(3)
