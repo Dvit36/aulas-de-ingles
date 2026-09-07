@@ -44,6 +44,11 @@ uploads, downloads, OCR ou infraestrutura.
 - URLs de arquivos privados devem ser temporárias/presigned. Não gravar URLs
   assinadas no banco; gravar apenas a `storage_key`.
 - Segredos nunca entram no Git. Versionar somente exemplos sem valores reais.
+- Apagar uma conta é operação de banco, não de interface: a exclusão pela
+  tela não funciona em produção, por causa desconhecida. Remova pelo
+  Supabase Auth, que leva o perfil por cascade. **Nunca apague só de
+  `public.profiles`**: sobra uma conta que ainda autentica e que o detector
+  da aba Alunos não consegue ver. Ver `docs/EXCLUSAO_DE_CONTA.md`.
 
 ## Verificar contra o banco de produção
 
