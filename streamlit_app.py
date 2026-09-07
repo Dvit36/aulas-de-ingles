@@ -1907,6 +1907,76 @@ def _mostrar_divergencias_de_conta(session, settings: Settings | None) -> None:
             st.markdown(f"**{achado.username}** — {achado.detalhe}")
 
 
+def _confirm_user_delete(
+    session,
+    actor: User,
+    alvo: User,
+    referencias: int,
+    settings: Settings | None,
+) -> None:
+    """Pergunta antes de excluir, dizendo se o efeito será arquivar ou remover.
+
+    Mesma forma de `_confirm_activity_delete`: dois botões com chave própria, e
+    não um formulário.
+
+    A troca não é estética. O formulário que havia aqui não chegava a executar
+    o ramo do submit em produção — nem a mensagem de sucesso, nem a de
+    confirmação incorreta, nem o erro. O `reset_password_form`, no expander
+    vizinho e com a mesma estrutura de `st.form`, funcionava. A causa não foi
+    encontrada; o que se sabe é que este era o único formulário da tela cujo
+    `text_input` tinha **rótulo dinâmico** — e, sem `key=` explícita, o rótulo
+    é o que dá identidade ao widget no Streamlit. Aqui não há widget de
+    identidade variável: os dois botões têm chave própria, derivada do id.
+    """
+
+    if referencias:
+        st.warning(
+            f"**{alvo.display_name}** possui {referencias} registro(s) no "
+            "histórico. A conta será arquivada: sai da lista e perde o acesso, "
+            "mas as submissões e os pontos já lançados permanecem. Confirmar?"
+        )
+    else:
+        st.warning(
+            f"**{alvo.display_name}** nunca foi utilizada e será removida "
+            "permanentemente, do perfil e do login. Esta ação não pode ser "
+            "desfeita. Confirmar?"
+        )
+    acoes = st.columns(2)
+    if acoes[0].button(
+        "Sim, arquivar" if referencias else "Sim, excluir",
+        key=f"confirm_delete_user_{alvo.id}",
+        type="primary",
+        width="stretch",
+    ):
+        try:
+            result = archive_or_delete_user(
+                session,
+                actor=actor,
+                contas=contas_de(settings),
+                user_id=alvo.id,
+            )
+            session.commit()
+        except Exception as error:
+            session.rollback()
+            show_operation_error("delete_user", error)
+        else:
+            st.session_state.pop("pending_user_delete", None)
+            # Pelo `session_state`, e desenhada fora do expander: o `rerun`
+            # logo abaixo descarta esta passada inteira, e também fecha o
+            # expander.
+            st.session_state["user_delete_notice"] = (
+                "Conta arquivada." if result == "archived" else "Conta excluída."
+            )
+            st.rerun()
+    if acoes[1].button(
+        "Cancelar",
+        key=f"cancel_delete_user_{alvo.id}",
+        width="stretch",
+    ):
+        st.session_state.pop("pending_user_delete", None)
+        st.rerun()
+
+
 def users_view(session, actor: User, settings: Settings | None = None) -> None:
     st.header("Alunos e administradores")
     _mostrar_divergencias_de_conta(session, settings)
@@ -2038,52 +2108,28 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
                     st.session_state["generated_temp_password"] = temporary_password
                     st.rerun()
 
-    with st.expander("Excluir ou arquivar conta"):
+    # `expanded` importa: pedir a exclusão dispara uma rerun, e a rerun devolve
+    # o expander ao estado fechado — a confirmação apareceria escondida, e o
+    # clique pareceria não ter feito nada.
+    confirmando = st.session_state.get("pending_user_delete") == current.id
+    with st.expander("Excluir ou arquivar conta", expanded=confirmando):
         # A mesma contagem que `archive_or_delete_user` usa para decidir. Dizer
         # qual dos dois vai acontecer, e para esta conta, é o que separa uma
-        # ação reversível de uma definitiva — quem confirma precisa saber em
-        # qual das duas está antes de clicar, não depois.
+        # ação reversível de uma definitiva.
         referencias = count_user_references(session, current.id)
-        if referencias:
-            st.warning(
-                f"**{current.display_name}** possui {referencias} registro(s) "
-                "no histórico. A conta será **arquivada**: sai da lista e perde "
-                "o acesso, mas as submissões e os pontos já lançados "
-                "permanecem. Confirmar?"
-            )
+        if not confirmando:
+            # A pendência guarda o id, e não um booleano: trocar de conta no
+            # seletor cancela a confirmação em vez de transferi-la para outra
+            # pessoa.
+            if st.button(
+                "Excluir ou arquivar esta conta",
+                key=f"ask_delete_user_{current.id}",
+                width="stretch",
+            ):
+                st.session_state["pending_user_delete"] = current.id
+                st.rerun()
         else:
-            st.warning(
-                f"**{current.display_name}** nunca foi utilizada e será "
-                "**removida permanentemente**, do perfil e do login. Esta ação "
-                "não pode ser desfeita. Confirmar?"
-            )
-        with st.form("delete_user_form"):
-            confirmation = st.text_input(
-                f'Digite "{current.username}" para confirmar'
-            )
-            delete_submitted = st.form_submit_button("Confirmar exclusão")
-        if delete_submitted:
-            if confirmation.strip().lower() != current.username.lower():
-                st.error("A confirmação não corresponde ao usuário da conta.")
-            else:
-                try:
-                    result = archive_or_delete_user(
-                        session,
-                        actor=actor,
-                        contas=contas_de(settings),
-                        user_id=current.id,
-                    )
-                    session.commit()
-                except Exception as error:
-                    session.rollback()
-                    show_operation_error("delete_user", error)
-                else:
-                    st.session_state["user_delete_notice"] = (
-                        "Conta arquivada."
-                        if result == "archived"
-                        else "Conta excluída."
-                    )
-                    st.rerun()
+            _confirm_user_delete(session, actor, current, referencias, settings)
 
 
 def _confirm_activity_delete(

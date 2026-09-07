@@ -1,14 +1,18 @@
-"""A tela de gestão precisa dizer o que fez.
+"""A tela de gestão precisa dizer o que fez, e perguntar antes do irreversível.
 
-Dois defeitos moraram aqui, e os dois eram silêncio, não erro:
+Três defeitos moraram aqui, e os três eram silêncio:
 
 * a confirmação da exclusão era desenhada e destruída no mesmo instante, por um
-  `st.rerun()` logo depois — quem excluía uma conta não via nada acontecer;
-* o aviso do formulário era genérico e nunca dizia se **aquela** conta seria
-  arquivada ou removida para sempre.
+  `st.rerun()` logo depois;
+* o aviso era genérico e nunca dizia se **aquela** conta seria arquivada ou
+  removida para sempre;
+* o formulário de exclusão não chegava a executar o ramo do submit em produção,
+  enquanto o de redefinir senha, no expander vizinho, funcionava. A confirmação
+  passou a ser dois botões com chave própria, como no catálogo de atividades.
 
-O duplo de `st` aqui não desenha nada: ele guarda o que a tela pediu para
-desenhar, que é o que estes testes precisam afirmar.
+O duplo de `st` não desenha nada: guarda o que a tela pediu para desenhar. E o
+`rerun` dele **interrompe** a passada, como o de verdade — sem isso um teste
+afirmaria coisas sobre código que o Streamlit nunca executaria.
 """
 
 from __future__ import annotations
@@ -27,6 +31,10 @@ from english_leaderboard.schema import (
     User,
     new_id,
 )
+
+
+class _Rerun(Exception):
+    """O que `st.rerun()` faz: aborta a passada corrente."""
 
 
 class ContasFalsas:
@@ -54,21 +62,18 @@ class ContasFalsas:
 
 
 class StFalso:
-    """Guarda o que a tela pediu para desenhar, e dirige um único formulário.
+    """Guarda o que a tela desenhou e clica em um botão por passada."""
 
-    ``submeter`` é o rótulo do botão que deve responder ``True``; todos os
-    outros respondem ``False``, para um teste exercitar um caminho de cada vez.
-    """
-
-    def __init__(self, *, submeter: str | None = None, confirmacao: str = "") -> None:
-        self.submeter = submeter
-        self.confirmacao = confirmacao
+    def __init__(self, estado: dict) -> None:
+        self.session_state = estado
+        self.clicar: str | None = None
+        self.alvo_id: str | None = None
         self.sucessos: list[str] = []
         self.erros: list[str] = []
         self.avisos: list[str] = []
-        self.session_state: dict = {}
-        self.alvo_id: str | None = None
+        self.botoes: list[str] = []
 
+    # --- o que a tela desenha -------------------------------------------
     def success(self, texto, **_):
         self.sucessos.append(str(texto))
 
@@ -78,13 +83,22 @@ class StFalso:
     def warning(self, texto, **_):
         self.avisos.append(str(texto))
 
+    # --- o que a tela pergunta ------------------------------------------
+    def button(self, rotulo, **_):
+        self.botoes.append(rotulo)
+        return rotulo == self.clicar
+
     def form_submit_button(self, rotulo, **_):
-        return rotulo == self.submeter
+        self.botoes.append(rotulo)
+        return rotulo == self.clicar
 
-    def text_input(self, rotulo, value="", **_):
-        return self.confirmacao if "confirmar" in rotulo else value
+    def text_input(self, _rotulo, value="", **_):
+        return value
 
-    def selectbox(self, rotulo, opcoes=(), **_):
+    def checkbox(self, *_a, **_k):
+        return False
+
+    def selectbox(self, _rotulo, opcoes=(), **_):
         opcoes = list(opcoes)
         if self.alvo_id is not None and self.alvo_id in opcoes:
             return self.alvo_id
@@ -94,11 +108,8 @@ class StFalso:
         n = quantidade if isinstance(quantidade, int) else len(quantidade)
         return [self for _ in range(n)]
 
-    def checkbox(self, *_a, **_k):
-        return False
-
-    def button(self, *_a, **_k):
-        return False
+    def rerun(self, *_a, **_k):
+        raise _Rerun
 
     @contextmanager
     def _bloco(self, *_a, **_k):
@@ -112,69 +123,98 @@ class StFalso:
 
 @pytest.fixture
 def tela(monkeypatch):
+    """Renderiza `users_view` quantas vezes o teste precisar, com estado vivo."""
+
     contas = ContasFalsas()
     monkeypatch.setattr(streamlit_app, "contas_de", lambda _s: contas)
     monkeypatch.setattr(streamlit_app, "persist_committed_changes", lambda *a, **k: None)
+    estado: dict = {}
 
-    def montar(**kwargs) -> StFalso:
-        falso = StFalso(**kwargs)
+    def render(session, actor, settings, *, clicar=None, alvo=None) -> StFalso:
+        falso = StFalso(estado)
+        falso.clicar = clicar
+        falso.alvo_id = alvo
         monkeypatch.setattr(streamlit_app, "st", falso)
+        try:
+            streamlit_app.users_view(session, actor, settings)
+        except _Rerun:
+            falso.reiniciou = True
+        else:
+            falso.reiniciou = False
         return falso
 
-    montar.contas = contas
-    return montar
+    render.contas = contas
+    render.estado = estado
+    return render
 
 
-def _aluno(session, users) -> User:
-    return users[Role.STUDENT]
+# ------------------------------------------------------ os dois passos
 
-
-# ------------------------------------- a confirmação precisa sobreviver à rerun
-
-def test_the_deletion_notice_survives_the_rerun_that_follows_it(
+def test_deleting_an_account_takes_two_deliberate_clicks(
     session, users, settings, tela
 ) -> None:
-    """`st.rerun()` descarta o que foi desenhado antes dele.
+    """Pedir e confirmar são passadas distintas, como no catálogo.
 
-    Era o defeito: a conta sumia e a tela não dizia nada. A mensagem atravessa
-    no `session_state` e é desenhada na passada seguinte, fora do expander —
-    o mesmo caminho que a senha temporária já usava.
+    O formulário que havia aqui não executava o ramo do submit em produção.
+    Estes botões têm chave própria e nenhum widget de identidade variável.
     """
 
-    alvo = _aluno(session, users)
-    st_falso = tela(submeter="Confirmar exclusão", confirmacao=alvo.username)
-    st_falso.alvo_id = alvo.id
+    admin, alvo = users[Role.ADMIN], users[Role.STUDENT]
 
-    streamlit_app.users_view(session, users[Role.ADMIN], settings)
+    primeira = tela(session, admin, settings, alvo=alvo.id)
+    assert "Excluir ou arquivar esta conta" in primeira.botoes
+    assert tela.contas.removidas == []
 
-    # Nada é desenhado nesta passada: a rerun a descartaria.
-    assert st_falso.sucessos == []
-    assert st_falso.session_state["user_delete_notice"] == "Conta excluída."
+    pedido = tela(
+        session, admin, settings, alvo=alvo.id, clicar="Excluir ou arquivar esta conta"
+    )
+    assert pedido.reiniciou
+    assert tela.estado["pending_user_delete"] == alvo.id
+    assert tela.contas.removidas == []
+
+    confirmado = tela(session, admin, settings, alvo=alvo.id, clicar="Sim, excluir")
+    assert confirmado.reiniciou
     assert tela.contas.removidas == [alvo.id]
+    # A mensagem atravessa a rerun no estado, em vez de morrer com a passada.
+    assert confirmado.sucessos == []
+    assert tela.estado["user_delete_notice"] == "Conta excluída."
 
-    # E na passada seguinte, a mensagem aparece.
-    seguinte = tela()
-    seguinte.session_state = st_falso.session_state
-    streamlit_app.users_view(session, users[Role.ADMIN], settings)
-
-    assert seguinte.sucessos == ["Conta excluída."]
-    assert "user_delete_notice" not in seguinte.session_state
+    depois = tela(session, admin, settings)
+    assert depois.sucessos == ["Conta excluída."]
+    assert "user_delete_notice" not in tela.estado
 
 
-def test_a_mismatched_confirmation_says_so_and_deletes_nothing(
-    session, users, settings, tela
-) -> None:
-    """O ramo que recusa não tem rerun, então desenha o erro na hora."""
+def test_cancelling_leaves_the_account_alone(session, users, settings, tela) -> None:
+    admin, alvo = users[Role.ADMIN], users[Role.STUDENT]
 
-    alvo = _aluno(session, users)
-    st_falso = tela(submeter="Confirmar exclusão", confirmacao="nao-e-o-usuario")
-    st_falso.alvo_id = alvo.id
+    tela(session, admin, settings, alvo=alvo.id, clicar="Excluir ou arquivar esta conta")
+    cancelado = tela(session, admin, settings, alvo=alvo.id, clicar="Cancelar")
 
-    streamlit_app.users_view(session, users[Role.ADMIN], settings)
-
-    assert "A confirmação não corresponde ao usuário da conta." in st_falso.erros
+    assert cancelado.reiniciou
+    assert "pending_user_delete" not in tela.estado
     assert tela.contas.removidas == []
     assert session.get(User, alvo.id) is not None
+
+
+def test_switching_accounts_cancels_a_pending_confirmation(
+    session, users, settings, tela
+) -> None:
+    """A pendência guarda o id, não um booleano.
+
+    Um booleano transferiria para outra pessoa a confirmação que se pediu para
+    esta — e o clique seguinte apagaria a conta errada.
+    """
+
+    admin, alvo = users[Role.ADMIN], users[Role.STUDENT]
+
+    tela(session, admin, settings, alvo=alvo.id, clicar="Excluir ou arquivar esta conta")
+    assert tela.estado["pending_user_delete"] == alvo.id
+
+    outra = tela(session, admin, settings, alvo=admin.id)
+
+    # Com outra conta selecionada, a tela volta a pedir, não a confirmar.
+    assert "Excluir ou arquivar esta conta" in outra.botoes
+    assert "Sim, excluir" not in outra.botoes
 
 
 # ------------------- o aviso precisa dizer qual dos dois efeitos vai acontecer
@@ -182,30 +222,25 @@ def test_a_mismatched_confirmation_says_so_and_deletes_nothing(
 def test_an_unused_account_is_announced_as_a_permanent_removal(
     session, users, settings, tela
 ) -> None:
-    """Sem histórico, `archive_or_delete_user` apaga de vez — inclusive o login.
+    """Sem histórico, `archive_or_delete_user` apaga de vez — inclusive o login."""
 
-    O aviso genérico de antes descrevia os dois casos e não dizia em qual você
-    estava. Quem vai cadastrar sete alunos precisa saber se o clique é
-    reversível **antes** de clicar.
-    """
+    admin, alvo = users[Role.ADMIN], users[Role.STUDENT]
+    tela(session, admin, settings, alvo=alvo.id, clicar="Excluir ou arquivar esta conta")
 
-    alvo = _aluno(session, users)
-    st_falso = tela()
-    st_falso.alvo_id = alvo.id
+    confirmacao = tela(session, admin, settings, alvo=alvo.id)
 
-    streamlit_app.users_view(session, users[Role.ADMIN], settings)
-
-    aviso = next(a for a in st_falso.avisos if alvo.display_name in a)
+    aviso = next(a for a in confirmacao.avisos if alvo.display_name in a)
     assert "removida permanentemente" in aviso
     assert "arquivada" not in aviso
+    assert "Sim, excluir" in confirmacao.botoes
 
 
 def test_an_account_with_history_is_announced_as_an_archive(
     session, users, settings, tela
 ) -> None:
-    """Com histórico o efeito é outro, e o aviso tem de mudar junto."""
+    """Com histórico o efeito é outro, e o aviso e o botão mudam junto."""
 
-    alvo = _aluno(session, users)
+    admin, alvo = users[Role.ADMIN], users[Role.STUDENT]
     atividade = session.scalars(select(Activity)).first()
     session.add(
         Submission(
@@ -217,14 +252,13 @@ def test_an_account_with_history_is_announced_as_an_archive(
     )
     session.flush()
 
-    st_falso = tela()
-    st_falso.alvo_id = alvo.id
+    tela(session, admin, settings, alvo=alvo.id, clicar="Excluir ou arquivar esta conta")
+    confirmacao = tela(session, admin, settings, alvo=alvo.id)
 
-    streamlit_app.users_view(session, users[Role.ADMIN], settings)
-
-    aviso = next(a for a in st_falso.avisos if alvo.display_name in a)
+    aviso = next(a for a in confirmacao.avisos if alvo.display_name in a)
     assert "arquivada" in aviso
     assert "removida permanentemente" not in aviso
+    assert "Sim, arquivar" in confirmacao.botoes
 
 
 def test_the_screen_and_the_decision_count_the_same_thing(
