@@ -1933,6 +1933,13 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
         width="stretch",
         hide_index=True,
     )
+    # Mesma razão do `generated_temp_password` logo abaixo: quem escreve a
+    # mensagem termina com `st.rerun()`, e a rerun descarta tudo o que foi
+    # desenhado antes dela. A mensagem precisa atravessar no `session_state` e
+    # ser desenhada aqui, fora do expander — que a rerun também fecha.
+    aviso_exclusao = st.session_state.pop("user_delete_notice", None)
+    if aviso_exclusao:
+        st.success(aviso_exclusao)
     generated = st.session_state.pop("generated_temp_password", None)
     if generated:
         st.success(
@@ -2056,7 +2063,7 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
                     session.rollback()
                     show_operation_error("delete_user", error)
                 else:
-                    st.success(
+                    st.session_state["user_delete_notice"] = (
                         "Conta arquivada."
                         if result == "archived"
                         else "Conta excluída."
