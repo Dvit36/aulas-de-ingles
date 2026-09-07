@@ -16,9 +16,17 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 import pytest
+from sqlalchemy import select
 
 import streamlit_app
-from english_leaderboard.schema import Role, User
+from english_leaderboard.schema import (
+    Activity,
+    Role,
+    Submission,
+    SubmissionStatus,
+    User,
+    new_id,
+)
 
 
 class ContasFalsas:
@@ -167,3 +175,69 @@ def test_a_mismatched_confirmation_says_so_and_deletes_nothing(
     assert "A confirmação não corresponde ao usuário da conta." in st_falso.erros
     assert tela.contas.removidas == []
     assert session.get(User, alvo.id) is not None
+
+
+# ------------------- o aviso precisa dizer qual dos dois efeitos vai acontecer
+
+def test_an_unused_account_is_announced_as_a_permanent_removal(
+    session, users, settings, tela
+) -> None:
+    """Sem histórico, `archive_or_delete_user` apaga de vez — inclusive o login.
+
+    O aviso genérico de antes descrevia os dois casos e não dizia em qual você
+    estava. Quem vai cadastrar sete alunos precisa saber se o clique é
+    reversível **antes** de clicar.
+    """
+
+    alvo = _aluno(session, users)
+    st_falso = tela()
+    st_falso.alvo_id = alvo.id
+
+    streamlit_app.users_view(session, users[Role.ADMIN], settings)
+
+    aviso = next(a for a in st_falso.avisos if alvo.display_name in a)
+    assert "removida permanentemente" in aviso
+    assert "arquivada" not in aviso
+
+
+def test_an_account_with_history_is_announced_as_an_archive(
+    session, users, settings, tela
+) -> None:
+    """Com histórico o efeito é outro, e o aviso tem de mudar junto."""
+
+    alvo = _aluno(session, users)
+    atividade = session.scalars(select(Activity)).first()
+    session.add(
+        Submission(
+            id=new_id(),
+            student_id=alvo.id,
+            activity_id=atividade.id,
+            status=SubmissionStatus.APPROVED_AUTO,
+        )
+    )
+    session.flush()
+
+    st_falso = tela()
+    st_falso.alvo_id = alvo.id
+
+    streamlit_app.users_view(session, users[Role.ADMIN], settings)
+
+    aviso = next(a for a in st_falso.avisos if alvo.display_name in a)
+    assert "arquivada" in aviso
+    assert "removida permanentemente" not in aviso
+
+
+def test_the_screen_and_the_decision_count_the_same_thing(
+    session, users, settings
+) -> None:
+    """A tela prevê pela mesma função que a decisão usa.
+
+    Se fossem duas contagens, o aviso poderia prometer arquivamento e o banco
+    apagar a conta — e a divergência só apareceria depois.
+    """
+
+    import inspect
+
+    from english_leaderboard.services import archive_or_delete_user
+
+    assert "count_user_references" in inspect.getsource(archive_or_delete_user)

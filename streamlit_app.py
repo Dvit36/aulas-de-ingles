@@ -91,6 +91,7 @@ from english_leaderboard.services import (
     archive_or_delete_user,
     PAGINA_PADRAO,
     count_activity_references,
+    count_user_references,
     count_submissions,
     create_activity,
     create_points_adjustment,
@@ -2038,10 +2039,24 @@ def users_view(session, actor: User, settings: Settings | None = None) -> None:
                     st.rerun()
 
     with st.expander("Excluir ou arquivar conta"):
-        st.warning(
-            "Contas com histórico serão arquivadas. Contas nunca utilizadas "
-            "podem ser removidas permanentemente."
-        )
+        # A mesma contagem que `archive_or_delete_user` usa para decidir. Dizer
+        # qual dos dois vai acontecer, e para esta conta, é o que separa uma
+        # ação reversível de uma definitiva — quem confirma precisa saber em
+        # qual das duas está antes de clicar, não depois.
+        referencias = count_user_references(session, current.id)
+        if referencias:
+            st.warning(
+                f"**{current.display_name}** possui {referencias} registro(s) "
+                "no histórico. A conta será **arquivada**: sai da lista e perde "
+                "o acesso, mas as submissões e os pontos já lançados "
+                "permanecem. Confirmar?"
+            )
+        else:
+            st.warning(
+                f"**{current.display_name}** nunca foi utilizada e será "
+                "**removida permanentemente**, do perfil e do login. Esta ação "
+                "não pode ser desfeita. Confirmar?"
+            )
         with st.form("delete_user_form"):
             confirmation = st.text_input(
                 f'Digite "{current.username}" para confirmar'

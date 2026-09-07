@@ -1413,6 +1413,39 @@ def reset_user_password(
     return temporary_password
 
 
+def count_user_references(session: Session, user_id: str) -> int:
+    """Conta o histórico que impede a exclusão física de uma conta.
+
+    A interface usa esta contagem para dizer, **antes** da confirmação, se a
+    conta será arquivada ou removida de vez, e ``archive_or_delete_user`` usa a
+    mesma para decidir. É de propósito que seja a mesma função: se a tela
+    contasse por um critério e a decisão por outro, o aviso prometeria uma
+    coisa e o banco faria outra — e o erro só apareceria depois de a conta ter
+    sumido.
+
+    Espelha ``count_activity_references``, que já resolvia isso no catálogo.
+    """
+
+    return sum(
+        int(value or 0)
+        for value in (
+            session.scalar(
+                select(func.count(Submission.id)).where(
+                    Submission.student_id == user_id
+                )
+            ),
+            session.scalar(
+                select(func.count(LedgerTransaction.id)).where(
+                    LedgerTransaction.student_id == user_id
+                )
+            ),
+            session.scalar(
+                select(func.count(AuditLog.id)).where(AuditLog.actor_id == user_id)
+            ),
+        )
+    )
+
+
 def archive_or_delete_user(
     session: Session,
     *,
@@ -1440,24 +1473,7 @@ def archive_or_delete_user(
         )
         if other_admins == 0:
             raise ValueError("Não é permitido excluir o último administrador ativo")
-    references = sum(
-        int(value or 0)
-        for value in (
-            session.scalar(
-                select(func.count(Submission.id)).where(
-                    Submission.student_id == user.id
-                )
-            ),
-            session.scalar(
-                select(func.count(LedgerTransaction.id)).where(
-                    LedgerTransaction.student_id == user.id
-                )
-            ),
-            session.scalar(
-                select(func.count(AuditLog.id)).where(AuditLog.actor_id == user.id)
-            ),
-        )
-    )
+    references = count_user_references(session, user.id)
     add_audit(
         session,
         actor_id=actor.id,
