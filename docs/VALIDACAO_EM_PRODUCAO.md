@@ -17,7 +17,7 @@ resposta a cada conversa.
 |---|---|---|
 | `77edf51` | `PUT` nas atualizações de conta no Auth | Redefinir senha do `enzo.souza` funcionou pela tela; desativar/reativar também usa `PUT` e funcionou |
 | `437e2ff` | Renomear chega ao Auth | Sete `user_updated` na auditoria, `profiles.username` e `auth.users.email` em sincronia, e a operação segue sendo feita pela tela com o nome novo |
-| `54bc859` | `reativar` levanta o ban | **Desativado: o login recusou. Reativado: o login voltou.** |
+| `54bc859` | `reativar` levanta o ban | **Desativado: o login recusou. Reativado: o login voltou.** Exercitado no `enzo.souza`, que foi apagado depois na limpeza das contas de teste — a confirmação vale, a conta não existe mais |
 | migração `0009` | `contas_fora_de_sincronia()` | Aplicada; responde 2 linhas sob claims de admin e 0 sob claims de aluno, pelo papel `authenticated` real |
 | migração `0010` | `must_change_password` | Aplicada; os três perfis existentes ficaram `false`, lido pelo papel real |
 
@@ -26,10 +26,43 @@ resposta a cada conversa.
 | Commit | O quê | Por quê |
 |---|---|---|
 | `8cdba07` | O aviso de divergência na aba Alunos | A consulta está validada; o banner nunca apareceu porque não há divergência — é o resultado certo, mas não prova o caminho de renderização |
+| `a30f424` | Troca de senha e revogação de sessão no logout | Corrigido a partir do diagnóstico, mas ainda não exercitado pela tela |
 | `24da0c0` | Guarda do `contas=None` ao renomear | Nenhum chamador atual omite `contas`; só dispara para código futuro |
 | `3046389` | Troca obrigatória de senha | Deploy quebrado desde 7/set |
 | `7d092ac` | Tolerância a motor de OCR ausente | Deploy quebrado |
 | `convergencia-pipeline-etapa2` | Convergência dos dois fluxos de submissão | Não mesclada; o roteiro de quatro envios depende do app no ar |
+
+## Defeitos que só a validação em produção encontrou
+
+Vale a lista, porque ela é o argumento deste documento — nenhum destes seria
+pego por teste, e todos foram achados usando o aplicativo:
+
+- chave de coluna renomeada; regex de token de sessão; `.value` sobre StrEnum
+  vinda do banco; promoção de booleano do TOML;
+- perfil renomeado sem mover a conta no Auth, e reativação que não levantava o
+  ban;
+- o papel `authenticated` sem acesso ao schema `auth`, que derrubou a aba
+  Alunos inteira;
+- **o `apikey` levando o token do usuário** (`a30f424`), que impedia a troca de
+  senha e fazia o logout nunca revogar sessão nenhuma.
+
+## Estado das contas
+
+Em 8/set/2026 as contas de teste foram apagadas pelo Supabase Auth — o cascade
+de `profiles.id` levou os perfis. Restou só `luiz.brito`
+(`e8e0b934-5c10-4fe6-9c32-3318eb2a8df1`), administrador.
+
+Na mesma ocasião, todas as sessões e refresh tokens foram revogados: 18 sessões
+e 34 tokens apagados de `auth.sessions`, `auth.refresh_tokens` e
+`auth.mfa_amr_claims`. O motivo é o defeito acima — como o logout nunca
+revogou nada, havia sessões vivas emitidas ao longo de semanas, e preservar
+qualquer uma delas seria preservar exatamente o que a correção veio matar.
+
+Não há endpoint administrativo de logout no GoTrue (`POST
+admin/users/{id}/logout` responde `404 page not found`); a revogação foi por
+SQL nas tabelas de sessão do schema `auth`, em transação conferida antes do
+commit. É exceção consciente ao hábito de não tocar schema gerenciado por SQL,
+e o schema `storage` continua fora de alcance, como o AGENTS.md exige.
 
 ## Defeito aberto
 
