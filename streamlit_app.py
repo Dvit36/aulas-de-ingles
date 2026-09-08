@@ -515,6 +515,7 @@ def account_view(session, actor: User, settings: Settings) -> None:
                             _auth_gateway(settings.supabase_url),
                             access_token=sessao.access_token,
                             nova_senha=new_password,
+                            chave_publica=settings.supabase_publishable_key,
                         )
                     except (AuthError, ValueError) as error:
                         st.error(str(error))
@@ -778,6 +779,7 @@ def _troca_obrigatoria_view(session, settings: Settings, actor: User) -> None:
                         _auth_gateway(settings.supabase_url),
                         access_token=sessao.access_token,
                         nova_senha=nova,
+                        chave_publica=settings.supabase_publishable_key,
                     )
                 except (AuthError, ValueError) as error:
                     st.error(str(error))

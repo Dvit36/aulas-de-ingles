@@ -47,24 +47,31 @@ class GatewayFalso:
     def __init__(self) -> None:
         self.chamadas: list[tuple[str, dict, str]] = []
         self.verbos: list[str] = []
+        self.credenciais: list[tuple[str, str]] = []
         self.respostas: dict[str, dict] = {}
         self.erros: dict[str, Exception] = {}
 
-    def _registrar(self, verbo: str, caminho: str, corpo: dict, chave: str) -> dict:
+    def _registrar(
+        self, verbo: str, caminho: str, corpo: dict, chave: str, autorizacao: str | None
+    ) -> dict:
         self.chamadas.append((caminho, corpo, chave))
         self.verbos.append(verbo)
+        # `apikey` e `Authorization` respondem a perguntas diferentes, e um
+        # duplo que guardasse só uma não conseguiria provar que não voltaram a
+        # ser a mesma coisa.
+        self.credenciais.append((chave, autorizacao or chave))
         if caminho in self.erros:
             raise self.erros[caminho]
         return self.respostas.get(caminho, {})
 
-    def post(self, caminho: str, corpo: dict, *, chave: str) -> dict:
-        return self._registrar("POST", caminho, corpo, chave)
+    def post(self, caminho, corpo, *, chave, autorizacao=None) -> dict:
+        return self._registrar("POST", caminho, corpo, chave, autorizacao)
 
-    def put(self, caminho: str, corpo: dict, *, chave: str) -> dict:
-        return self._registrar("PUT", caminho, corpo, chave)
+    def put(self, caminho, corpo, *, chave, autorizacao=None) -> dict:
+        return self._registrar("PUT", caminho, corpo, chave, autorizacao)
 
-    def delete(self, caminho: str, *, chave: str) -> dict:
-        return self._registrar("DELETE", caminho, {}, chave)
+    def delete(self, caminho, *, chave, autorizacao=None) -> dict:
+        return self._registrar("DELETE", caminho, {}, chave, autorizacao)
 
 
 def _resposta_sessao(expires_in: int = 3600) -> dict:
@@ -225,13 +232,23 @@ def test_refusing_the_refresh_token_means_the_session_expired() -> None:
         renovar(gateway, refresh_token="", chave_publica=PUBLICA)
 
 
-def test_logout_failure_does_not_trap_the_user() -> None:
-    """A sessão local é descartada de qualquer jeito."""
+def test_logout_failure_does_not_trap_the_user(caplog) -> None:
+    """A sessão local é descartada de qualquer jeito — mas o erro é registrado.
+
+    Não relançar é certo: uma sessão já expirada recusa aqui, e prender alguém
+    dentro do aplicativo por causa disso seria pior. O que estava errado era o
+    silêncio — este `except` escondeu por semanas que o logout nunca revogava
+    nada, porque o `apikey` ia com o token do usuário.
+    """
 
     gateway = GatewayFalso()
     gateway.erros["logout"] = AuthError("servidor fora do ar")
 
-    sair(gateway, access_token="token", chave_publica=PUBLICA)  # não levanta
+    with caplog.at_level("WARNING", logger="english_leaderboard.supabase_auth"):
+        sair(gateway, access_token="token", chave_publica=PUBLICA)  # não levanta
+
+    assert any("não revogou a sessão" in r.message for r in caplog.records)
+    assert any(r.exc_info for r in caplog.records), "sem o traceback não há o que depurar"
 
     sair(gateway, access_token="", chave_publica=PUBLICA)
 
@@ -278,21 +295,31 @@ def test_password_reset_replaces_recovery_by_email() -> None:
 def test_user_changes_own_password_with_their_own_token() -> None:
     gateway = GatewayFalso()
 
-    trocar_senha(gateway, access_token="token-do-aluno", nova_senha="nova")
+    trocar_senha(
+        gateway,
+        access_token="token-do-aluno",
+        nova_senha="nova",
+        chave_publica=PUBLICA,
+    )
 
-    caminho, corpo, chave = gateway.chamadas[0]
+    caminho, corpo, _ = gateway.chamadas[0]
     assert caminho == "user"
-    assert chave == "token-do-aluno"  # não a chave privilegiada
     assert corpo == {"password": "nova"}
+    # A chave privilegiada não participa: a troca é do próprio usuário.
+    apikey, autorizacao = gateway.credenciais[0]
+    assert apikey == PUBLICA
+    assert autorizacao == "token-do-aluno"
 
 
 def test_changing_password_without_a_session_is_refused() -> None:
     gateway = GatewayFalso()
 
     with pytest.raises(SessaoExpirada):
-        trocar_senha(gateway, access_token="", nova_senha="nova")
+        trocar_senha(
+            gateway, access_token="", nova_senha="nova", chave_publica=PUBLICA
+        )
     with pytest.raises(ValueError, match="nova senha"):
-        trocar_senha(gateway, access_token="t", nova_senha="")
+        trocar_senha(gateway, access_token="t", nova_senha="", chave_publica=PUBLICA)
 
     assert gateway.chamadas == []
 
@@ -372,6 +399,69 @@ def test_reactivation_clears_the_ban_instead_of_omitting_it() -> None:
     assert corpo == {"ban_duration": "none"}
     assert chave == SECRETA
     assert gateway.verbos == ["PUT"]
+
+
+def test_the_apikey_header_never_carries_a_user_token(monkeypatch) -> None:
+    """`apikey` é chave de API; `Authorization` é quem age. Nunca a mesma coisa.
+
+    Enquanto os dois cabeçalhos levavam o mesmo valor, uma operação feita com o
+    token do próprio usuário punha um JWT no lugar da chave de API, e o GoTrue
+    recusava com `Invalid API key` **antes de olhar o token**. Duas chamadas
+    caíam nisso: `trocar_senha`, que falhava à vista, e `sair`, que falhava em
+    silêncio — nenhuma sessão era revogada no servidor.
+
+    O duplo não alcança isto: é aqui que os cabeçalhos viram requisição.
+    """
+
+    import urllib.request
+
+    from english_leaderboard.supabase_auth import HttpAuthGateway
+
+    vistos: list[tuple[str, str, str]] = []
+
+    class RespostaFalsa:
+        def read(self) -> bytes:
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def urlopen_falso(requisicao, timeout=None):
+        vistos.append(
+            (
+                requisicao.full_url,
+                requisicao.get_header("Apikey"),
+                requisicao.get_header("Authorization"),
+            )
+        )
+        return RespostaFalsa()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen_falso)
+    gateway = HttpAuthGateway("https://projeto.supabase.co")
+    TOKEN = "token-do-aluno"
+
+    # Operação do próprio usuário: chave de API na porta, token na autorização.
+    trocar_senha(
+        gateway, access_token=TOKEN, nova_senha="nova", chave_publica=PUBLICA
+    )
+    sair(gateway, access_token=TOKEN, chave_publica=PUBLICA)
+
+    # Operação administrativa: a secret responde pelas duas coisas.
+    desativar_conta(gateway, user_id=UID, chave_secreta=SECRETA)
+
+    for url, apikey, autorizacao in vistos:
+        assert apikey in (PUBLICA, SECRETA), f"{url} mandou {apikey!r} como apikey"
+        assert apikey != TOKEN, f"{url} pôs o token do usuário no apikey"
+
+    assert vistos[0][1] == PUBLICA
+    assert vistos[0][2] == f"Bearer {TOKEN}"
+    assert vistos[1][1] == PUBLICA
+    assert vistos[1][2] == f"Bearer {TOKEN}"
+    assert vistos[2][1] == SECRETA
+    assert vistos[2][2] == f"Bearer {SECRETA}"
 
 
 def test_account_removal_uses_delete() -> None:

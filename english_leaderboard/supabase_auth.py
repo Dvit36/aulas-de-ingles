@@ -18,6 +18,7 @@ usado para renovar.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import secrets
 import string
@@ -26,6 +27,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
+
+LOGGER = logging.getLogger(__name__)
 
 # Aceita o arroba porque contas migradas do modelo antigo têm um e-mail aqui.
 USERNAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._@-]{2,149}")
@@ -91,11 +94,27 @@ class Sessao:
 class AuthGateway(Protocol):
     """Superfície do Supabase Auth, para os testes injetarem um duplo."""
 
-    def post(self, caminho: str, corpo: dict[str, Any], *, chave: str) -> dict[str, Any]: ...
+    def post(
+        self,
+        caminho: str,
+        corpo: dict[str, Any],
+        *,
+        chave: str,
+        autorizacao: str | None = None,
+    ) -> dict[str, Any]: ...
 
-    def put(self, caminho: str, corpo: dict[str, Any], *, chave: str) -> dict[str, Any]: ...
+    def put(
+        self,
+        caminho: str,
+        corpo: dict[str, Any],
+        *,
+        chave: str,
+        autorizacao: str | None = None,
+    ) -> dict[str, Any]: ...
 
-    def delete(self, caminho: str, *, chave: str) -> dict[str, Any]: ...
+    def delete(
+        self, caminho: str, *, chave: str, autorizacao: str | None = None
+    ) -> dict[str, Any]: ...
 
 
 class HttpAuthGateway:
@@ -103,13 +122,30 @@ class HttpAuthGateway:
         self._base = base_url.rstrip("/")
 
     def _requisitar(
-        self, caminho: str, corpo: dict[str, Any] | None, metodo: str, chave: str
+        self,
+        caminho: str,
+        corpo: dict[str, Any] | None,
+        metodo: str,
+        chave: str,
+        autorizacao: str | None = None,
     ) -> dict[str, Any]:
+        """Monta a requisição. Os dois cabeçalhos respondem a perguntas distintas.
+
+        ``apikey`` diz *qual projeto* está falando, e o GoTrue só aceita ali uma
+        chave de API — a publishable ou a secret. ``Authorization`` diz *quem*
+        age: a mesma chave, nas operações anônimas e administrativas, ou o token
+        do próprio usuário, quando a operação é dele.
+
+        Enquanto os dois carregavam o mesmo valor, passar o token de um aluno
+        punha um JWT no lugar da chave de API, e o GoTrue recusava com
+        ``Invalid API key`` antes sequer de olhar o token.
+        """
+
         url = f"{self._base}/auth/v1/{caminho.lstrip('/')}"
         dados = json.dumps(corpo).encode("utf-8") if corpo is not None else None
         requisicao = urllib.request.Request(url, data=dados, method=metodo)
         requisicao.add_header("apikey", chave)
-        requisicao.add_header("Authorization", f"Bearer {chave}")
+        requisicao.add_header("Authorization", f"Bearer {autorizacao or chave}")
         requisicao.add_header("Content-Type", "application/json")
         try:
             with urllib.request.urlopen(
@@ -128,14 +164,30 @@ class HttpAuthGateway:
         except urllib.error.URLError as erro:  # pragma: no cover - rede indisponível
             raise AuthError("Não foi possível falar com o Supabase Auth") from erro
 
-    def post(self, caminho: str, corpo: dict[str, Any], *, chave: str) -> dict[str, Any]:
-        return self._requisitar(caminho, corpo, "POST", chave)
+    def post(
+        self,
+        caminho: str,
+        corpo: dict[str, Any],
+        *,
+        chave: str,
+        autorizacao: str | None = None,
+    ) -> dict[str, Any]:
+        return self._requisitar(caminho, corpo, "POST", chave, autorizacao)
 
-    def put(self, caminho: str, corpo: dict[str, Any], *, chave: str) -> dict[str, Any]:
-        return self._requisitar(caminho, corpo, "PUT", chave)
+    def put(
+        self,
+        caminho: str,
+        corpo: dict[str, Any],
+        *,
+        chave: str,
+        autorizacao: str | None = None,
+    ) -> dict[str, Any]:
+        return self._requisitar(caminho, corpo, "PUT", chave, autorizacao)
 
-    def delete(self, caminho: str, *, chave: str) -> dict[str, Any]:
-        return self._requisitar(caminho, None, "DELETE", chave)
+    def delete(
+        self, caminho: str, *, chave: str, autorizacao: str | None = None
+    ) -> dict[str, Any]:
+        return self._requisitar(caminho, None, "DELETE", chave, autorizacao)
 
 
 def _mensagem_amigavel(detalhe: str) -> str:
@@ -148,6 +200,14 @@ def _mensagem_amigavel(detalhe: str) -> str:
         return "Já existe uma conta com esse usuário"
     if "weak" in baixo or "password" in baixo and "short" in baixo:
         return "Senha recusada pelo servidor de autenticação"
+    if "invalid api key" in baixo:
+        # Defeito de configuração, não credencial de quem está na tela. Dizer
+        # "autenticação recusada" mandava o usuário conferir a própria senha —
+        # foi o que atrasou o diagnóstico deste erro.
+        return (
+            "Configuração de acesso ao Supabase inválida. "
+            "Procure o administrador; não é a sua senha."
+        )
     return "Autenticação recusada"
 
 
@@ -230,10 +290,21 @@ def sair(gateway: AuthGateway, *, access_token: str, chave_publica: str) -> None
     if not access_token:
         return
     try:
-        gateway.post("logout", {}, chave=access_token or chave_publica)
+        gateway.post("logout", {}, chave=chave_publica, autorizacao=access_token)
     except AuthError:
-        # A sessão local é descartada de qualquer forma; insistir só
-        # impediria o logout de acontecer.
+        # Não relançar continua certo: a sessão local é descartada de qualquer
+        # forma, e insistir só impediria o logout de acontecer. Uma sessão já
+        # expirada recusa aqui, e isso é esperado.
+        #
+        # O que estava errado era o silêncio. Este `except` escondeu por semanas
+        # que a chamada nunca funcionava — o `apikey` ia com o token do usuário
+        # e o GoTrue recusava tudo. Nenhuma sessão era revogada e ninguém tinha
+        # como saber. Agora a falha fica no log, sem virar erro de tela.
+        LOGGER.warning(
+            "Logout não revogou a sessão no Supabase Auth; "
+            "a sessão local foi descartada assim mesmo.",
+            exc_info=True,
+        )
         return
 
 
@@ -337,15 +408,30 @@ def redefinir_senha(
 
 
 def trocar_senha(
-    gateway: AuthGateway, *, access_token: str, nova_senha: str
+    gateway: AuthGateway,
+    *,
+    access_token: str,
+    nova_senha: str,
+    chave_publica: str,
 ) -> None:
-    """Troca a senha do próprio usuário, com o token dele."""
+    """Troca a senha do próprio usuário, com o token dele.
+
+    ``chave_publica`` vai no ``apikey`` e o token no ``Authorization``: são
+    coisas diferentes, e mandar o token nos dois fazia o GoTrue recusar com
+    ``Invalid API key`` antes de olhar a senha. A chave privilegiada não
+    participa — a troca é do próprio usuário.
+    """
 
     if not nova_senha:
         raise ValueError("Informe a nova senha")
     if not access_token:
         raise SessaoExpirada("Sessão ausente")
-    gateway.post("user", {"password": nova_senha}, chave=access_token)
+    gateway.post(
+        "user",
+        {"password": nova_senha},
+        chave=chave_publica,
+        autorizacao=access_token,
+    )
 
 
 def desativar_conta(
