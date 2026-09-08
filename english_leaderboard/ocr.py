@@ -91,6 +91,35 @@ def create_ocr_engine(
         raise OCRUnavailableError("Could not initialize the local OCR engine.") from exc
 
 
+def motor_opcional(
+    factory: Callable[..., OCREngine] | None = None,
+    **engine_options: Any,
+) -> OCREngine | None:
+    """O motor local, ou ``None`` quando não há motor a ter.
+
+    ``create_ocr_engine`` levanta ``OCRUnavailableError`` em duas situações, e
+    a segunda é de produção: o pacote ausente, e o RapidOCR **falhando ao
+    inicializar** — modelo ONNX corrompido, memória insuficiente, extra do
+    deploy que não subiu junto. Nenhuma das duas era tratada: o erro chegava
+    inteiro a `submit_evidence`, e o envio era recusado. Uma falha do servidor
+    apagava a prova do aluno.
+
+    Aqui a ausência vira ``None``, e quem chama decide. O desenho da camada de
+    envio é que motor ausente rende leitura vazia, nunca envio recusado: o
+    aluno não tem como saber que o servidor está degradado, e a evidência é
+    dele.
+
+    Falha de *execução* continua sendo ``OCRExecutionError``, que é outra
+    coisa — ali o motor existe e falhou numa imagem específica, e já era
+    tratada.
+    """
+
+    try:
+        return create_ocr_engine(factory, **engine_options)
+    except OCRUnavailableError:
+        return None
+
+
 def extract_text(
     source: ImageSource | Any,
     *,
@@ -410,4 +439,5 @@ __all__ = [
     "OCRUnavailableError",
     "create_ocr_engine",
     "extract_text",
+    "motor_opcional",
 ]

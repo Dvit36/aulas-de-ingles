@@ -50,7 +50,7 @@ from .schema import (
     new_id,
     utcnow,
 )
-from .ocr import OCRExecutionError, OCRResult, create_ocr_engine, extract_text
+from .ocr import OCRExecutionError, OCRResult, extract_text, motor_opcional
 from .storage import URL_EXPIRA_SEGUNDOS, StorageGateway
 from .storage_service import (
     ArquivoNaoAutorizado,
@@ -367,9 +367,14 @@ def submit_evidence(
                 max_document_expanded_bytes=settings.max_document_expanded_bytes,
                 max_pdf_render_pixels=settings.max_pdf_render_pixels,
             )
-            if document.file_kind == "pdf" and not document.extracted_text:
-                if ocr_engine is None:
-                    ocr_engine = create_ocr_engine()
+            # PDF escaneado é o único documento que depende de OCR. Sem motor
+            # ele fica sem texto extraído, em vez de o envio ser recusado.
+            precisa_de_ocr = (
+                document.file_kind == "pdf" and not document.extracted_text
+            )
+            if precisa_de_ocr and ocr_engine is None:
+                ocr_engine = motor_opcional()
+            if precisa_de_ocr and ocr_engine is not None:
                 document = process_document_bytes(
                     upload.data,
                     upload.filename,
@@ -498,9 +503,17 @@ def submit_evidence(
     )
 
     if ocr_engine is None and analyses:
-        ocr_engine = create_ocr_engine()
+        # `motor_opcional` devolve `None` quando não há motor a ter — pacote
+        # ausente ou RapidOCR que não inicializou. Antes o erro subia daqui e
+        # recusava o envio inteiro: uma falha do servidor apagava a prova do
+        # aluno. Agora cada imagem rende leitura vazia e a submissão segue
+        # para revisão humana.
+        ocr_engine = motor_opcional()
     ocr_results: list[OCRResult] = []
     for analysis in analyses:
+        if ocr_engine is None:
+            ocr_results.append(OCRResult.empty())
+            continue
         try:
             variants = prepare_ocr_variants(analysis)
             primary = extract_text(variants["original"], engine=ocr_engine)

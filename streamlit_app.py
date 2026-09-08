@@ -70,7 +70,7 @@ from english_leaderboard.schema import (
     User,
     utcnow,
 )
-from english_leaderboard.ocr import create_ocr_engine
+from english_leaderboard.ocr import motor_opcional
 from english_leaderboard.scoring import (
     LESSON_ACTIVITY_CODE,
     activities_closing_gap,
@@ -273,9 +273,14 @@ def runtime(schema_fingerprint: str):
 
 @st.cache_resource(show_spinner="Carregando OCR local…")
 def cached_ocr_engine():
-    """Uma única instância ONNX por processo Streamlit."""
+    """Uma única instância ONNX por processo Streamlit, ou ``None``.
 
-    return create_ocr_engine()
+    ``None`` quando o RapidOCR não está instalado — o modo de emergência sem
+    `packages.txt`. A tela precisa continuar aceitando envio; quem trata a
+    ausência é `submit_evidence`, que transforma cada imagem em leitura vazia.
+    """
+
+    return motor_opcional()
 
 
 SESSAO_KEY = "supabase_sessao"

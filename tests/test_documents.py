@@ -119,7 +119,7 @@ def test_txt_submission_skips_ocr(
         "e compartilhar o aprendizado com meus colegas durante o treinamento."
     )
     monkeypatch.setattr(
-        "english_leaderboard.services.create_ocr_engine",
+        "english_leaderboard.services.motor_opcional",
         lambda: pytest.fail("OCR não deveria ser carregado para TXT"),
     )
     result = submit_evidence(
