@@ -80,6 +80,35 @@ Auth não aparece em lista nenhuma.
 Depois de apagar, a aba Alunos não deve acusar divergência. Se acusar, os dois
 lados saíram de passo e a correção é reconciliar pelo Auth.
 
+## Saída de emergência: destravar a troca obrigatória de senha
+
+Desde a migração `0010`, uma conta com `must_change_password = true` cai direto
+na tela de troca e não navega até trocar. Criar conta e redefinir senha marcam
+essa coluna.
+
+Se alguém ficar preso ali — troca que não conclui, conta marcada por engano —,
+destrave pelo banco:
+
+```sql
+update public.profiles set must_change_password = false where id = '<uuid>';
+```
+
+Pelo nome de usuário, se o id não estiver à mão:
+
+```sql
+update public.profiles set must_change_password = false where username = 'luiz';
+```
+
+Para conferir quem está marcado:
+
+```sql
+select id, username, must_change_password from public.profiles order by username;
+```
+
+Perfis criados antes da `0010` nasceram com `false` e não são afetados — a
+migração não tem backfill, de propósito. O administrador não corre risco de se
+trancar fora só por aplicar a migração.
+
 ## Se alguém retomar
 
 O que falta é saber se o clique chega ao servidor. O caminho é o navegador, não

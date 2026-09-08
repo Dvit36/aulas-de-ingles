@@ -90,6 +90,7 @@ from english_leaderboard.services import (
     archive_or_delete_activity,
     archive_or_delete_user,
     PAGINA_PADRAO,
+    concluir_troca_de_senha,
     count_activity_references,
     count_user_references,
     count_submissions,
@@ -719,10 +720,90 @@ def _root_view(
     actor = auth_state.actor
     if actor is None:
         _render_login_state(session, settings, auth_state)
-    elif actor.role == Role.ADMIN:
+        return
+    # A troca termina com `st.rerun()`, que descarta a passada onde ela
+    # aconteceu. O recado atravessa no `session_state`, como o da exclusão.
+    saudacao = st.session_state.pop("password_changed_notice", None)
+    if saudacao:
+        st.success(saudacao)
+    if actor.role == Role.ADMIN:
         admin_dashboard(session, actor)
     else:
         student_dashboard(session, actor)
+
+
+def _troca_obrigatoria_view(session, settings: Settings, actor: User) -> None:
+    """Tela única de quem ainda usa a senha temporária.
+
+    Não navega, não envia, não vê o leaderboard até trocar. O desvio está em
+    `_guarded_route`, por onde toda rota autenticada passa — assim não existe
+    rota que alguém tenha esquecido de proteger.
+
+    O botão Sair fica aqui de propósito: `account_view` também está travado, e
+    trancar a navegação não pode trancar a saída.
+    """
+
+    st.header("Troque sua senha")
+    with st.container(border=True, key="must_change_card"):
+        st.warning(
+            "A senha que você recebeu é temporária. Escolha uma nova para "
+            "continuar — o restante do aplicativo abre logo depois."
+        )
+        sessao = st.session_state.get(SESSAO_KEY)
+        with st.form("must_change_password_form"):
+            nova = st.text_input(
+                "Nova senha", type="password", key="must_change_new_password"
+            )
+            confirmacao = st.text_input(
+                "Confirmar nova senha",
+                type="password",
+                key="must_change_password_confirmation",
+            )
+            enviado = st.form_submit_button("Trocar senha e continuar", type="primary")
+        if enviado:
+            if nova != confirmacao:
+                st.error("As novas senhas não coincidem.")
+            elif sessao is None:
+                st.error("Sessão expirada. Entre novamente.")
+            else:
+                try:
+                    # Token do próprio aluno: a chave privilegiada não
+                    # participa da troca.
+                    trocar_senha(
+                        _auth_gateway(settings.supabase_url),
+                        access_token=sessao.access_token,
+                        nova_senha=nova,
+                    )
+                except (AuthError, ValueError) as error:
+                    st.error(str(error))
+                else:
+                    # Só depois de o Auth confirmar. Se a ordem fosse a
+                    # inversa, uma troca recusada liberaria a navegação com a
+                    # senha temporária ainda valendo.
+                    try:
+                        concluir_troca_de_senha(session, actor=actor)
+                        session.commit()
+                    except Exception as error:
+                        session.rollback()
+                        show_operation_error("must_change_password", error)
+                    else:
+                        # A sessão continua valendo: `trocar_senha` não a
+                        # revoga, e obrigar a entrar de novo com a senha que se
+                        # acabou de criar seria atrito sem ganho.
+                        st.session_state["password_changed_notice"] = (
+                            "Senha alterada. Bem-vindo!"
+                        )
+                        st.rerun()
+
+        if st.button("Sair", type="secondary", key="must_change_logout"):
+            if sessao is not None:
+                sair(
+                    _auth_gateway(settings.supabase_url),
+                    access_token=sessao.access_token,
+                    chave_publica=settings.supabase_publishable_key,
+                )
+            _esquecer_sessao()
+            st.rerun()
 
 
 def _guarded_route(
@@ -737,6 +818,11 @@ def _guarded_route(
         actor = auth_state.actor
         if actor is None:
             _render_login_state(session, settings, auth_state)
+            return
+        if actor.must_change_password:
+            # Antes da checagem de papel: enquanto a senha for temporária, não
+            # importa para onde a pessoa estava indo.
+            _troca_obrigatoria_view(session, settings, actor)
             return
         if actor.role not in allowed_roles:
             st.error("Você não tem acesso a esta página.")
@@ -812,6 +898,9 @@ def _visible_routes(
         return []
     if actor is None:
         return _public_routes(session, settings, auth_state)
+    if actor.must_change_password:
+        # A barra não oferece o que não abre: toda rota cairia na mesma tela.
+        return []
     routes = (
         _admin_routes(session, actor, settings)
         if actor.role == Role.ADMIN
