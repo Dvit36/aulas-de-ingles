@@ -2,7 +2,25 @@ streamlit[auth]>=1.61.1,<2
 SQLAlchemy>=2.0,<3
 psycopg[binary]>=3.2,<4
 supabase>=2.15,<3
-rapidocr-onnxruntime==1.4.4
+# ===== CONTINGÊNCIA — desativado em 8/set/2026, para reverter =====
+#
+# rapidocr-onnxruntime exige `opencv-python`, que precisa de `libgl1`, que
+# obriga um `packages.txt`, que faz o Streamlit Cloud rodar `apt` no build.
+# A imagem base deles está servindo metadados vencidos e esse `apt` falha,
+# abortando o deploy inteiro. Sem `packages.txt` o passo não acontece.
+#
+# PARA REVERTER, quando o Cloud consertar a imagem:
+#   1. descomente a linha abaixo;
+#   2. recrie o packages.txt com estas três linhas:
+#        libgl1
+#        libglib2.0-0t64
+#        libgomp1
+#
+# O código não precisa mudar: a tolerância a motor ausente (7d092ac) é
+# correção de defeito e vale nos dois modos.
+#
+# rapidocr-onnxruntime==1.4.4
+# ==================================================================
 onnxruntime>=1.17,<2
 opencv-python-headless>=4.10,<5
 Pillow>=10,<13
