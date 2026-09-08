@@ -55,6 +55,25 @@ uploads, downloads, OCR ou infraestrutura.
   Criar conta e redefinir senha marcam essa coluna; a tela a limpa depois
   da troca confirmada pelo Auth.
 
+## Linha de base de qualidade
+
+Hoje: **`ruff check .` com 79 achados** e **287 passed, 4 skipped**.
+
+O número não é meta de zero — são padrões que o projeto aceita, sobretudo
+`BLE001` (o `except Exception` que faz `rollback` e chama
+`show_operation_error`, repetido em toda tela) e `DTZ011`. O que ele serve para
+detectar é **crescimento silencioso**: se subir sem que alguém saiba por quê,
+entrou coisa nova junto.
+
+Ele muda com motivo declarado, não por acidente. Foi 78 até a troca obrigatória
+de senha, que acrescentou a décima quinta ocorrência do mesmo `except Exception`
+das outras catorze telas — silenciar só essa com `noqa` a tornaria a única
+marcada, e por isso não foi feito.
+
+O 78 que aparece em `docs/CONVERGENCIA_PIPELINE.md` é registro histórico
+daquele trabalho e continua correto para a época. Não atualize aquele número:
+atualize este.
+
 ## Verificar contra o banco de produção
 
 A aplicação conecta ao PostgreSQL como `postgres` — dono, que **ignora RLS** —,
