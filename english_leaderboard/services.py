@@ -1381,6 +1381,9 @@ def create_user_account(
         # ocupando o nome de usuário sem nada do outro lado.
         contas.remover(auth_user_id)
         raise
+    # A senha devolvida acima é temporária e passa pela mão do administrador.
+    # A conta nasce devendo a troca; quem libera é `concluir_troca_de_senha`.
+    user.must_change_password = True
     return user, temporary_password
 
 
@@ -1402,6 +1405,10 @@ def reset_user_password(
     if user is None or user.archived_at is not None:
         raise LookupError("Usuário não encontrado")
     temporary_password = contas.redefinir_senha(user.id)
+    # Redefinir devolve o aluno à mesma situação da criação: a senha em uso
+    # voltou a ser temporária, e a obrigação de trocar volta com ela. É por
+    # isso que a marca é "senha temporária" e não "primeiro acesso".
+    user.must_change_password = True
     add_audit(
         session,
         actor_id=actor.id,
@@ -1411,6 +1418,29 @@ def reset_user_password(
         reason=None,
     )
     return temporary_password
+
+
+def concluir_troca_de_senha(session: Session, *, actor: User) -> None:
+    """Libera o ator depois de a senha temporária ter sido substituída.
+
+    Chamada só quando o Supabase Auth confirmou a troca. A senha em si nunca
+    passa por aqui: quem a altera é `supabase_auth.trocar_senha`, com o token
+    do próprio usuário, e esta função só desfaz a obrigação que a senha
+    temporária tinha criado.
+
+    O ator é o dono da própria marca — não há `require_admin`. Limpar a marca
+    de outra pessoa não é uma operação que exista.
+    """
+
+    actor.must_change_password = False
+    add_audit(
+        session,
+        actor_id=actor.id,
+        action="user_password_changed",
+        entity_type="user",
+        entity_id=actor.id,
+        reason=None,
+    )
 
 
 def count_user_references(session: Session, user_id: str) -> int:
