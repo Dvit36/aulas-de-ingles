@@ -70,6 +70,10 @@ de senha, que acrescentou a décima quinta ocorrência do mesmo `except Exceptio
 das outras catorze telas — silenciar só essa com `noqa` a tornaria a única
 marcada, e por isso não foi feito.
 
+O que já foi exercitado contra o ambiente real — e o que só passou na suíte —
+fica em `docs/VALIDACAO_EM_PRODUCAO.md`. Passar na suíte e funcionar em
+produção são afirmações diferentes.
+
 O 78 que aparece em `docs/CONVERGENCIA_PIPELINE.md` é registro histórico
 daquele trabalho e continua correto para a época. Não atualize aquele número:
 atualize este.
