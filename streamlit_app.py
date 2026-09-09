@@ -1182,7 +1182,7 @@ def _manual_points_panel(session, actor: User) -> None:
     lancamentos = lancamentos_manuais(session, actor=actor, student_id=actor.id)
     if not lancamentos:
         return
-    st.subheader("Pontos lançados pela administração")
+    st.subheader("Pontos lançados pelos mentores")
     st.caption(
         "Estes pontos não vieram de um envio: foram lançados à mão, com o "
         "motivo escrito por quem lançou."
@@ -2573,7 +2573,7 @@ def manual_points_view(session, actor: User, settings: Settings | None = None) -
         )
         motivo = st.text_area(
             "Motivo (o aluno vai ler este texto)",
-            placeholder="Ex.: Apresentação oral na aula do dia 3.",
+            placeholder="Ex.: English time realizado durante treino",
         )
         st.caption(AVISO_DO_MOTIVO)
         lancar = st.form_submit_button(

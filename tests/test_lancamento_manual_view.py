@@ -361,7 +361,7 @@ def test_o_aluno_ve_o_lancamento_marcado_com_o_motivo(
     assert "Estorno: eram 5." in tudo
     assert "O valor certo." in tudo
     # Marcado como manual, e o par identificado nos dois sentidos.
-    assert "Pontos lançados pela administração" in tudo
+    assert "Pontos lançados pelos mentores" in tudo
     assert "· estornado" in tudo
     assert "· estorno" in tudo
     # A tela do aluno não oferece controle nenhum sobre o ledger.

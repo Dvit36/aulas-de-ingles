@@ -359,13 +359,19 @@ main img,
 
 /* O Streamlit desenha a borda do campo no invólucro, não no <input>, e ela
    nasce branca sobre fundo branco. Definir só `border-color` no elemento
-   interno não produzia contorno nenhum: o campo ficava invisível. */
+   interno não produzia contorno nenhum: o campo ficava invisível.
+
+   1rem para o campo deixar de destoar. Não existe um raio único nesta folha:
+   botão e crachá são pílula (999px), os contêineres grandes são 1.5rem, e
+   1rem é a família das superfícies retangulares de trabalho — alerta,
+   expander, dropzone, tabela, métrica. O campo estava sozinho em 0.65rem, e
+   era isso que aparecia como canto mais quadrado que o resto. */
 [data-testid="stTextInputRootElement"],
 [data-testid="stTextAreaRootElement"],
 [data-baseweb="select"] > div,
 [data-testid="stNumberInput"] > div > div {
   border: 2px solid var(--robo-ink) !important;
-  border-radius: 0.65rem !important;
+  border-radius: 1rem !important;
   background: var(--robo-white) !important;
 }
 
