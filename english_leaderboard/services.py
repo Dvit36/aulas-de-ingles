@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -132,21 +133,121 @@ def _client_filename(filename: str) -> str:
     return safe[:255] or "upload"
 
 
+def _sob_rls(session: Session) -> bool:
+    """A escrita desta sessão passa por Row Level Security?
+
+    No PostgreSQL passa: `rls_session` troca a transação para `authenticated`
+    com as claims do usuário, e o pipeline de envio roda sob o papel do aluno.
+    Cinco das tabelas que ele escreve não têm política de insert para ele, e a
+    saída é a função `SECURITY DEFINER` — ver `0014`.
+
+    No SQLite da suíte não há RLS nem função, e o ORM escreve direto. É a
+    mesma bifurcação de `concluir_troca_de_senha`, e a mesma razão de a suíte
+    sozinha nunca ter pego este defeito.
+    """
+
+    return session.get_bind().dialect.name == "postgresql"
+
+
+def _chamar(session: Session, sql: str, params: dict[str, Any]) -> None:
+    """Executa SQL nomeado, com o cuidado que já custou tempo aqui.
+
+    `text()` interpreta `:nome` como parâmetro, e `:nome::jsonb` quebra o
+    parser — o cast tem de ser `cast(:nome as jsonb)`. E `%` no texto vira
+    marcador do driver. As duas coisas falham de formas que não citam a causa.
+    """
+
+    from sqlalchemy import text
+
+    session.execute(text(sql), params)
+
+
 def _persist_rule_checks(
     session: Session, submission: Submission, checks: Iterable[RuleResult]
 ) -> None:
-    for check in checks:
+    linhas = [
+        {
+            "name": check.name,
+            "outcome": (
+                check.outcome.value
+                if hasattr(check.outcome, "value")
+                else str(check.outcome)
+            ),
+            "required": bool(check.required),
+            "score": float(check.score),
+            "message": check.message,
+            "details": check.details or {},
+        }
+        for check in checks
+    ]
+    if not linhas:
+        return
+    if _sob_rls(session):
+        # `rule_checks` não aceita insert do aluno. A função confere que o
+        # envio é dele e está em `processing` antes de gravar.
+        _chamar(
+            session,
+            "select public.registrar_analise_do_envio("
+            "cast(:envio as uuid), cast(:checks as jsonb), '[]'::jsonb)",
+            {"envio": str(submission.id), "checks": json.dumps(linhas)},
+        )
+        return
+    for linha in linhas:
         session.add(
             RuleCheck(
                 submission_id=submission.id,
-                rule_name=check.name,
-                outcome=check.outcome,
-                required=check.required,
-                score=check.score,
-                message=check.message,
-                details_json=check.details,
+                rule_name=linha["name"],
+                outcome=linha["outcome"],
+                required=linha["required"],
+                score=linha["score"],
+                message=linha["message"],
+                details_json=linha["details"],
             )
         )
+
+
+def _registrar_auditoria_do_envio(
+    session: Session,
+    *,
+    actor_id: str,
+    submission_id: str,
+    acao: str,
+    motivo: str | None = None,
+    depois: dict[str, Any] | None = None,
+) -> None:
+    """A auditoria de um envio, que o aluno também dispara.
+
+    `audit_logs` tem política só de administrador, e `add_audit` roda tanto no
+    envio quanto no cancelamento pelo aluno. O insert recusado abortava a
+    transação e levava junto o trabalho legítimo — os dois caminhos estavam
+    quebrados em produção por isso.
+
+    A função do banco deriva o ator de `auth.uid()` e a entidade do envio, e
+    só aceita as duas ações abaixo: o aluno não escreve auditoria arbitrária.
+    """
+
+    if _sob_rls(session):
+        _chamar(
+            session,
+            "select public.registrar_auditoria_do_envio("
+            "cast(:envio as uuid), :acao, :motivo, cast(:depois as jsonb))",
+            {
+                "envio": str(submission_id),
+                "acao": acao,
+                "motivo": motivo,
+                "depois": json.dumps(depois) if depois is not None else None,
+            },
+        )
+        return
+    add_audit(
+        session,
+        actor_id=actor_id,
+        action=acao,
+        entity_type="submission",
+        entity_id=submission_id,
+        reason=motivo,
+        after=depois,
+    )
 
 
 def _claim_approved_evidence(session: Session, submission: Submission) -> None:
@@ -224,67 +325,78 @@ def _record_duplicate_matches(
 ) -> tuple[list[bool], list[bool]]:
     exact_flags = [False] * len(analyzed)
     similar_flags = [False] * len(analyzed)
+    # As linhas são acumuladas e gravadas de uma vez no fim. `duplicate_matches`
+    # não aceita insert do aluno, e a função do banco recebe a lista inteira —
+    # de quebra, uma chamada em vez de uma por coincidência.
+    encontros: list[dict[str, Any]] = []
+
+    def anotar(file_id: str, matched_id: str, kind: DuplicateKind, distance: int,
+               same_student: bool) -> None:
+        encontros.append(
+            {
+                "file_id": str(file_id),
+                "matched_file_id": str(matched_id),
+                "kind": kind.value if hasattr(kind, "value") else str(kind),
+                "distance": int(distance),
+                "same_student": bool(same_student),
+            }
+        )
+
     for index, (current_model, current_analysis) in enumerate(
         zip(stored_files, analyzed, strict=True)
     ):
         for candidate, candidate_student_id in prior_candidates:
             if current_analysis.sha256 == candidate.checksum_sha256:
                 exact_flags[index] = True
-                session.add(
-                    DuplicateMatch(
-                        submission_id=submission.id,
-                        file_id=current_model.id,
-                        matched_file_id=candidate.id,
-                        kind=DuplicateKind.EXACT,
-                        distance=0,
-                        same_student=candidate_student_id == submission.student_id,
-                    )
+                anotar(
+                    current_model.id, candidate.id, DuplicateKind.EXACT, 0,
+                    candidate_student_id == submission.student_id,
                 )
                 continue
             distance = phash_distance(current_analysis.phash, candidate.phash)
             if distance <= max_distance:
                 similar_flags[index] = True
-                session.add(
-                    DuplicateMatch(
-                        submission_id=submission.id,
-                        file_id=current_model.id,
-                        matched_file_id=candidate.id,
-                        kind=DuplicateKind.SIMILAR,
-                        distance=distance,
-                        same_student=candidate_student_id == submission.student_id,
-                    )
+                anotar(
+                    current_model.id, candidate.id, DuplicateKind.SIMILAR, distance,
+                    candidate_student_id == submission.student_id,
                 )
         for previous_index in range(index):
             previous_model = stored_files[previous_index]
             previous_analysis = analyzed[previous_index]
             if current_analysis.sha256 == previous_analysis.sha256:
                 exact_flags[index] = True
-                session.add(
-                    DuplicateMatch(
-                        submission_id=submission.id,
-                        file_id=current_model.id,
-                        matched_file_id=previous_model.id,
-                        kind=DuplicateKind.EXACT,
-                        distance=0,
-                        same_student=True,
-                    )
-                )
+                anotar(current_model.id, previous_model.id, DuplicateKind.EXACT, 0, True)
             else:
                 distance = phash_distance(
                     current_analysis.phash, previous_analysis.phash
                 )
                 if distance <= max_distance:
                     similar_flags[index] = True
-                    session.add(
-                        DuplicateMatch(
-                            submission_id=submission.id,
-                            file_id=current_model.id,
-                            matched_file_id=previous_model.id,
-                            kind=DuplicateKind.SIMILAR,
-                            distance=distance,
-                            same_student=True,
-                        )
+                    anotar(
+                        current_model.id, previous_model.id, DuplicateKind.SIMILAR,
+                        distance, True,
                     )
+
+    if encontros:
+        if _sob_rls(session):
+            _chamar(
+                session,
+                "select public.registrar_analise_do_envio("
+                "cast(:envio as uuid), '[]'::jsonb, cast(:duplicatas as jsonb))",
+                {"envio": str(submission.id), "duplicatas": json.dumps(encontros)},
+            )
+        else:
+            for encontro in encontros:
+                session.add(
+                    DuplicateMatch(
+                        submission_id=submission.id,
+                        file_id=encontro["file_id"],
+                        matched_file_id=encontro["matched_file_id"],
+                        kind=encontro["kind"],
+                        distance=encontro["distance"],
+                        same_student=encontro["same_student"],
+                    )
+                )
     return exact_flags, similar_flags
 
 
@@ -586,14 +698,13 @@ def submit_evidence(
     if decision.status == SubmissionStatus.APPROVED_AUTO:
         _claim_approved_evidence(session, submission)
         award = award_approved_submission(session, submission)
-    add_audit(
+    _registrar_auditoria_do_envio(
         session,
         actor_id=actor.id,
-        action="submission_processed",
-        entity_type="submission",
-        entity_id=submission.id,
-        reason=decision.reason,
-        after={
+        submission_id=submission.id,
+        acao="submission_processed",
+        motivo=decision.reason,
+        depois={
             "status": submission.status.value,
             "confidence": submission.confidence,
             "recognized_units": submission.recognized_units,
@@ -909,13 +1020,12 @@ def cancel_submission(
         decided_by_id=actor.id,
         reason=reason,
     )
-    add_audit(
+    _registrar_auditoria_do_envio(
         session,
         actor_id=actor.id,
-        action="submission_cancelled",
-        entity_type="submission",
-        entity_id=submission.id,
-        reason=reason,
+        submission_id=submission.id,
+        acao="submission_cancelled",
+        motivo=reason,
     )
     return submission
 
