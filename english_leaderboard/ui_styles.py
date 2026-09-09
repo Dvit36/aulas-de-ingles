@@ -373,6 +373,13 @@ main img,
   border: 2px solid var(--robo-ink) !important;
   border-radius: 1rem !important;
   background: var(--robo-white) !important;
+  /* O `<textarea>` interno tem raio 0 e fundo branco opaco, e fica a 2px da
+     borda: sem clipe ele pinta o canto quadrado por cima do canto redondo do
+     invólucro, e o campo parece mais quadrado que o resto mesmo com o raio
+     aplicado. O Streamlit já clipa o invólucro do `text_input` — medido,
+     `overflow: hidden` — e é justamente por isso que só as áreas de texto
+     destoavam. Isto estende o mesmo clipe a elas. */
+  overflow: hidden !important;
 }
 
 input,
