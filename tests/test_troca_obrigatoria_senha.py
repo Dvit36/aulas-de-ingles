@@ -205,6 +205,98 @@ def test_the_navigation_bar_offers_nothing_while_the_change_is_owed(
     assert streamlit_app._visible_routes(session, settings, estado) == []
 
 
+# ------------------- a prova por enumeração: nenhuma rota escapa do guarda
+
+def test_every_registered_route_is_covered_by_the_lock(
+    session, users, settings, st_falso
+) -> None:
+    """Percorre as rotas registradas de verdade, uma a uma.
+
+    O commit que criou a trava afirmou que "toda rota autenticada passa pelo
+    `_guarded_route`". Era falso: a raiz entrava na lista sem embrulho, e um
+    aluno que devia a troca via o dashboard sem barra de navegação. A
+    afirmação foi feita por leitura do código, e leitura não é prova.
+
+    Este teste não lê nada. Ele monta a lista que a aplicação monta, renderiza
+    cada rota com uma conta marcada, e exige que todas parem na tela de troca.
+    Uma rota nova que esqueça o guarda reprova aqui, mesmo que ninguém se
+    lembre desta regra.
+    """
+
+    alvo = users[Role.STUDENT]
+    alvo.must_change_password = True
+    session.flush()
+    estado = streamlit_app.AuthenticationState(actor=alvo)
+
+    rotas = streamlit_app._registered_routes(session, settings, estado)
+    assert rotas, "sem rotas registradas não há o que provar"
+
+    escaparam = []
+    for rota in rotas:
+        st_falso.cabecalhos.clear()
+        rota.render()
+        if "Troque sua senha" not in st_falso.cabecalhos:
+            escaparam.append(rota.url_path)
+
+    assert not escaparam, (
+        f"{len(escaparam)} rota(s) renderizaram conteúdo para quem ainda deve a "
+        f"troca de senha: {escaparam}"
+    )
+
+
+def test_the_root_route_does_not_render_the_dashboard_while_the_change_is_owed(
+    session, users, settings, st_falso
+) -> None:
+    """A raiz especificamente — foi ela que escapou, e é a que o aluno abre.
+
+    O sintoma em produção: dashboard do aluno visível, barra de navegação
+    ausente. `_visible_routes` já devolvia vazio; a raiz é que renderizava
+    assim mesmo.
+    """
+
+    alvo = users[Role.STUDENT]
+    alvo.must_change_password = True
+    session.flush()
+    estado = streamlit_app.AuthenticationState(actor=alvo)
+
+    raiz = next(
+        r for r in streamlit_app._registered_routes(session, settings, estado)
+        if r.url_path == "root"
+    )
+    raiz.render()
+
+    assert "Troque sua senha" in st_falso.cabecalhos
+
+
+def test_navigation_comes_back_once_the_change_is_done(
+    session, users, settings, st_falso
+) -> None:
+    """A marca caindo no banco não basta: a barra tem de voltar e a raiz abrir.
+
+    O teste que existia parava na marca e na saudação. Quem estava travado
+    precisa é de navegação de volta — foi o que o aluno não teve.
+    """
+
+    alvo = users[Role.STUDENT]
+    alvo.must_change_password = True
+    session.flush()
+    estado = streamlit_app.AuthenticationState(actor=alvo)
+
+    assert streamlit_app._visible_routes(session, settings, estado) == []
+
+    concluir_troca_de_senha(session, actor=alvo)
+    session.flush()
+
+    assert streamlit_app._visible_routes(session, settings, estado) != []
+    raiz = next(
+        r for r in streamlit_app._registered_routes(session, settings, estado)
+        if r.url_path == "root"
+    )
+    st_falso.cabecalhos.clear()
+    raiz.render()
+    assert "Troque sua senha" not in st_falso.cabecalhos
+
+
 # ------------------------- o cenário que não pode acontecer: perder o próprio app
 
 def test_a_profile_created_before_the_migration_navigates_normally(

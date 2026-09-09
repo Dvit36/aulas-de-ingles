@@ -857,7 +857,21 @@ def _registered_routes(
         ":material/home:",
         lambda: _root_view(session, settings, auth_state),
     )
-    registered = [root_route]
+    # A raiz passa pelo guarda como qualquer outra. Ela ficou de fora até
+    # 9/set/2026, e o efeito era um híbrido: a barra de navegação sumia, mas o
+    # dashboard renderizava assim mesmo para quem ainda devia a troca de senha.
+    # Quem afirmar de novo que "toda rota passa pelo guarda" deve conferir na
+    # lista, não na memória — `test_login_navigation.py` tem o teste que faz
+    # isso por enumeração.
+    registered = [
+        _guarded_route(
+            root_route,
+            session=session,
+            settings=settings,
+            auth_state=auth_state,
+            allowed_roles=frozenset({Role.ADMIN, Role.STUDENT}),
+        )
+    ]
     registered.extend(
         _guarded_route(
             route,

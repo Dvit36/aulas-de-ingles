@@ -1443,8 +1443,30 @@ def concluir_troca_de_senha(session: Session, *, actor: User) -> None:
 
     O ator é o dono da própria marca — não há `require_admin`. Limpar a marca
     de outra pessoa não é uma operação que exista.
+
+    **No PostgreSQL quem escreve é o banco.** Fazer as duas escritas pelo ORM
+    funcionava em SQLite e falhava em produção: o aluno pode atualizar o
+    próprio perfil, mas `audit_logs` só aceita administrador, e o insert
+    recusado derrubava a transação inteira — inclusive a limpeza da marca. O
+    aluno trocava a senha e continuava trancado.
+
+    `public.concluir_troca_de_senha()` é `SECURITY DEFINER` e age sobre
+    `auth.uid()`: sem parâmetro, não há como limpar a marca de outra pessoa. A
+    migração `0011` explica o resto.
     """
 
+    if exige_conta_no_auth(session):
+        from sqlalchemy import text
+
+        session.execute(text("select public.concluir_troca_de_senha()"))
+        # A função escreveu por fora do ORM: o objeto em memória ainda diz que
+        # a marca está de pé, e quem ler `actor` nesta mesma passada decidiria
+        # pelo valor velho.
+        session.expire(actor, ["must_change_password"])
+        return
+
+    # SQLite não tem RLS nem a função; o caminho do ORM continua servindo ao
+    # desenvolvimento e à suíte.
     actor.must_change_password = False
     add_audit(
         session,

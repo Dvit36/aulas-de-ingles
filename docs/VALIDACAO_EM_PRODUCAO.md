@@ -69,6 +69,36 @@ e o schema `storage` continua fora de alcance, como o AGENTS.md exige.
 A exclusão de conta pela interface não funciona em produção, por causa
 desconhecida. Ver [EXCLUSAO_DE_CONTA.md](EXCLUSAO_DE_CONTA.md).
 
+## Regra: escrita sob o papel do aluno se verifica em produção
+
+**Qualquer operação que escreva em tabela com RLS, feita sob o papel do aluno,
+precisa ser exercitada contra o PostgreSQL antes de ser considerada pronta. A
+suíte nunca vai pegar.**
+
+O motivo é estrutural, não descuido: a suíte roda em SQLite, que não tem RLS.
+Toda escrita passa lá. Em produção a mesma escrita corre como `authenticated`,
+sob políticas, e pode ser recusada.
+
+Já mordeu três vezes:
+
+1. o papel `authenticated` sem acesso ao schema `auth`, que derrubou a aba
+   Alunos inteira;
+2. `insert into duplicate_matches` sem política para aluno — que só não
+   quebrou porque a conexão do app é dona e ignora RLS;
+3. `concluir_troca_de_senha` inserindo em `audit_logs`, que tem política só de
+   administrador. O insert era recusado, a transação caía, e o rollback levava
+   junto a limpeza da marca — o aluno trocava a senha e continuava trancado.
+
+A saída usada nos casos 1 e 3 é a mesma: função `SECURITY DEFINER` sem
+parâmetro, agindo sobre `auth.uid()`, com `revoke` de `public` e `grant` a
+`authenticated`. O aluno não ganha permissão; quem escreve é o banco.
+
+**Ao verificar, cuidado com o que a leitura devolve.** Sob RLS, o que você não
+pode ver aparece como zero linhas ou `NULL` — não como erro. Contar
+`audit_logs` sob o papel do aluno devolve `0` mesmo com as linhas gravadas, e
+ler o perfil alheio devolve `None` mesmo com ele intacto. Faça a escrita sob o
+papel do aluno e a **conferência** como dono, senão a medição mente.
+
 ## Duas armadilhas que já custaram tempo
 
 **Estado velho no Cloud.** Erro que não corresponde ao código quase sempre é
