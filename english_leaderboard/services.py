@@ -13,6 +13,7 @@ from .authz import (
     AuthorizationError,
     require_active,
     require_admin,
+    require_self_or_admin,
     require_submission_access,
 )
 from .config import Settings
@@ -1626,28 +1627,56 @@ def archive_or_delete_activity(
     return "deleted"
 
 
+MOTIVO_OBRIGATORIO = (
+    "O motivo é obrigatório: é o texto que o aluno lê na tela dele."
+)
+
+
+def _motivo_valido(reason: str | None) -> str:
+    motivo = (reason or "").strip()
+    if not motivo:
+        raise ValueError(MOTIVO_OBRIGATORIO)
+    return motivo
+
+
 def create_points_adjustment(
     session: Session,
     *,
     actor: User,
     student_id: str,
     points: int,
+    reason: str,
 ) -> LedgerTransaction:
+    """Lançamento manual de pontos: sempre positivo, sempre justificado.
+
+    Não existe valor negativo aqui. Tirar pontos é estornar o lançamento que
+    os deu, com `estornar_lancamento`: um número negativo solto não diz o que
+    desfaz, e o aluno veria a perda sem ver a causa.
+    """
+
     require_admin(actor)
+    points = int(points)
     if not points:
-        raise ValueError("O ajuste não pode ser zero")
+        raise ValueError("O lançamento não pode ser zero")
+    if points < 0:
+        raise ValueError(
+            "Lançamento manual não aceita valor negativo. Para tirar pontos, "
+            "estorne o lançamento que os concedeu."
+        )
+    motivo = _motivo_valido(reason)
     student = session.get(User, student_id)
     if student is None or student.role != Role.STUDENT:
         raise LookupError("Aluno não encontrado")
     adjustment_id = new_id()
     transaction = LedgerTransaction(
         student_id=student.id,
-        points=int(points),
+        points=points,
         kind=LedgerKind.ADJUSTMENT,
         source_type="adjustment",
         source_id=adjustment_id,
         source_key=f"adjustment:{adjustment_id}",
-        description="Ajuste administrativo de pontos",
+        description="Lançamento manual de pontos",
+        reason=motivo,
         created_by_id=actor.id,
     )
     session.add(transaction)
@@ -1658,10 +1687,149 @@ def create_points_adjustment(
         action="points_adjusted",
         entity_type="ledger_transaction",
         entity_id=transaction.id,
-        reason=None,
-        after={"student_id": student.id, "points": int(points)},
+        reason=motivo,
+        after={"student_id": student.id, "points": points},
     )
     return transaction
+
+
+def estornar_lancamento(
+    session: Session,
+    *,
+    actor: User,
+    transaction_id: str,
+    reason: str,
+) -> LedgerTransaction:
+    """Desfaz um lançamento manual com outro, de sinal oposto, que o aponta.
+
+    O ledger é imutável por gatilho: nada se corrige no lugar, nem o motivo.
+    O estorno é linha nova com `reverses_id` preenchido — é isso que permite
+    mostrar o par ao aluno, em vez de dois números soltos que só a
+    administradora sabe relacionar.
+
+    As duas travas existem porque o ledger não tem volta. Estornar um estorno
+    devolveria os pontos sem que ninguém conseguisse ler a história; estornar
+    duas vezes o mesmo lançamento tiraria o dobro. O índice único parcial
+    `ledger_um_estorno_por_lancamento` repete a segunda no banco, para o caso
+    de dois cliques simultâneos passarem pela verificação juntos.
+    """
+
+    require_admin(actor)
+    motivo = _motivo_valido(reason)
+    original = session.get(LedgerTransaction, transaction_id)
+    if original is None:
+        raise LookupError("Lançamento não encontrado")
+    if original.kind != LedgerKind.ADJUSTMENT:
+        raise ValueError(
+            "Só lançamentos manuais podem ser estornados. Pontos de envio "
+            "aprovado se corrigem revendo o envio."
+        )
+    if original.reverses_id is not None:
+        raise ValueError(
+            "Este lançamento já é um estorno, e um estorno não se estorna. "
+            "Faça um lançamento manual novo."
+        )
+    ja_estornado = session.scalar(
+        select(func.count(LedgerTransaction.id)).where(
+            LedgerTransaction.reverses_id == original.id
+        )
+    )
+    if ja_estornado:
+        raise ValueError("Este lançamento já foi estornado.")
+    estorno_id = new_id()
+    estorno = LedgerTransaction(
+        student_id=original.student_id,
+        points=-int(original.points),
+        kind=LedgerKind.ADJUSTMENT,
+        source_type="adjustment_reversal",
+        source_id=estorno_id,
+        source_key=f"adjustment_reversal:{estorno_id}",
+        description="Estorno de lançamento manual",
+        reason=motivo,
+        reverses_id=original.id,
+        created_by_id=actor.id,
+    )
+    session.add(estorno)
+    session.flush()
+    add_audit(
+        session,
+        actor_id=actor.id,
+        action="points_adjustment_reversed",
+        entity_type="ledger_transaction",
+        entity_id=estorno.id,
+        reason=motivo,
+        before={"lancamento": original.id, "points": int(original.points)},
+        after={"student_id": original.student_id, "points": int(estorno.points)},
+    )
+    return estorno
+
+
+@dataclass(frozen=True)
+class LancamentoManual:
+    """Um lançamento manual junto com o que aconteceu depois dele."""
+
+    id: str
+    occurred_at: datetime
+    points: int
+    reason: str | None
+    # Preenchido quando esta linha é o estorno de outra.
+    estorna_id: str | None
+    # Preenchido quando outra linha estornou esta.
+    estornado_por_id: str | None
+
+    @property
+    def e_estorno(self) -> bool:
+        return self.estorna_id is not None
+
+    @property
+    def estornado(self) -> bool:
+        return self.estornado_por_id is not None
+
+    @property
+    def estornavel(self) -> bool:
+        """As duas travas de `estornar_lancamento`, para a tela não oferecer
+        um botão que o serviço vai recusar."""
+
+        return not self.e_estorno and not self.estornado
+
+
+def lancamentos_manuais(
+    session: Session, *, actor: User, student_id: str
+) -> list[LancamentoManual]:
+    """Os lançamentos manuais de um aluno, do mais recente ao mais antigo.
+
+    Serve às duas telas: a da administradora, que precisa escolher o que
+    estornar, e a do aluno, que precisa ler o motivo do que mexeu na
+    pontuação dele.
+    """
+
+    require_self_or_admin(actor, student_id)
+    linhas = list(
+        session.scalars(
+            select(LedgerTransaction)
+            .where(
+                LedgerTransaction.student_id == student_id,
+                LedgerTransaction.kind == LedgerKind.ADJUSTMENT,
+            )
+            .order_by(
+                LedgerTransaction.occurred_at.desc(), LedgerTransaction.id.desc()
+            )
+        ).all()
+    )
+    estorno_de = {
+        linha.reverses_id: linha.id for linha in linhas if linha.reverses_id
+    }
+    return [
+        LancamentoManual(
+            id=linha.id,
+            occurred_at=linha.occurred_at,
+            points=int(linha.points),
+            reason=linha.reason,
+            estorna_id=linha.reverses_id,
+            estornado_por_id=estorno_de.get(linha.id),
+        )
+        for linha in linhas
+    ]
 
 
 def list_review_queue(session: Session, *, actor: User) -> list[Submission]:
@@ -1711,6 +1879,7 @@ def admin_student_submissions(
 
 
 __all__ = [
+    "LancamentoManual",
     "ReviewResult",
     "SubmissionResult",
     "UploadPayload",
@@ -1725,9 +1894,11 @@ __all__ = [
     "create_activity",
     "create_points_adjustment",
     "create_user_account",
+    "estornar_lancamento",
     "get_goal_configuration",
     "get_submission_file_url_for_user",
     "get_submission_for_user",
+    "lancamentos_manuais",
     "list_resources",
     "list_review_queue",
     "list_submissions",

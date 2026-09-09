@@ -20,7 +20,6 @@ from english_leaderboard.services import (
     archive_or_delete_user,
     count_activity_references,
     create_activity,
-    create_points_adjustment,
     create_user_account,
     reset_user_password,
     review_submission,
@@ -32,6 +31,16 @@ from english_leaderboard.supabase_auth import AuthError
 
 
 def test_administrative_operations_do_not_accept_reason_parameters() -> None:
+    """Decidir não exige redigir: a auditoria já guarda ator, ação e antes/depois.
+
+    `create_points_adjustment` saiu desta lista quando passou a exigir motivo,
+    e a exceção é de natureza, não de conveniência. Nas operações acima o
+    texto seria justificativa burocrática, lida por ninguém. No lançamento
+    manual ele é **conteúdo**: aparece na tela do aluno, ao lado dos pontos que
+    apareceram do nada. Ver `test_lancamento_manual.py`, que trava o outro
+    lado — motivo em branco é recusado.
+    """
+
     for operation in (
         review_submission,
         save_activity_changes,
@@ -40,7 +49,6 @@ def test_administrative_operations_do_not_accept_reason_parameters() -> None:
         archive_or_delete_user,
         archive_or_delete_activity,
         create_activity,
-        create_points_adjustment,
         create_user_account,
     ):
         assert "reason" not in signature(operation).parameters
