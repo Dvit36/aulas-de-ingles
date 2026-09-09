@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, select, text
 from sqlalchemy.orm import Session
 
 from .schema import (
@@ -446,14 +446,43 @@ def _period_bounds(
     return start, end
 
 
-def leaderboard_rows(
-    session: Session,
-    *,
-    start: date | datetime | None = None,
-    end: date | datetime | None = None,
-    include_inactive: bool = False,
-) -> list[dict[str, object]]:
-    start_dt, end_dt = _period_bounds(start, end)
+def _ranking_no_banco(session: Session) -> bool:
+    """No PostgreSQL o agregado vem de `public.ranking()`; no SQLite, da consulta.
+
+    A diferença não é de gosto. Em produção o aluno não pode mais ler o ledger
+    dos colegas nem o perfil deles — `ledger_leitura_propria` e
+    `perfil_proprio_leitura` —, então a consulta abaixo, rodando sob o papel
+    dele, devolveria uma linha só: a dele. `public.ranking()` é `SECURITY
+    DEFINER` e existe exatamente para isso: soma e nome, nunca a linha.
+
+    No SQLite não há RLS nem a função, e a consulta responde a mesma coisa.
+    """
+
+    return session.get_bind().dialect.name == "postgresql"
+
+
+def _totais_por_aluno(
+    session: Session, start_dt: datetime | None, end_dt: datetime | None
+) -> list[tuple[str, str, int]]:
+    """`(id, nome, pontos)` de cada aluno ativo, pelos dois caminhos."""
+
+    if _ranking_no_banco(session):
+        # `student_id::text` de propósito: o ORM devolve o UUID já como texto
+        # (`Uuid(as_uuid=False)`), e o driver devolveria objeto `UUID`. Sem o
+        # cast, `row["student_id"] == actor.id` passaria a ser falso em toda
+        # comparação — o crachá "Você" sumiria do ranking e `next_rival` nunca
+        # acharia o próprio aluno, os dois em silêncio.
+        linhas = session.execute(
+            text(
+                "select student_id::text as student_id, display_name, points "
+                "from public.ranking(:inicio, :fim)"
+            ),
+            {"inicio": start_dt, "fim": end_dt},
+        ).all()
+        return [
+            (linha.student_id, linha.display_name, int(linha.points))
+            for linha in linhas
+        ]
     ledger_join = [LedgerTransaction.student_id == User.id]
     if start_dt is not None:
         ledger_join.append(LedgerTransaction.occurred_at >= start_dt)
@@ -463,31 +492,46 @@ def leaderboard_rows(
         select(
             User.id,
             User.display_name,
-            User.username,
             func.coalesce(func.sum(LedgerTransaction.points), 0).label("points"),
         )
         .outerjoin(LedgerTransaction, and_(*ledger_join))
-        .where(User.role == Role.STUDENT)
-        .group_by(User.id, User.display_name, User.username)
+        .where(User.role == Role.STUDENT, User.active.is_(True))
+        .group_by(User.id, User.display_name)
     )
-    if not include_inactive:
-        statement = statement.where(User.active.is_(True))
+    return [
+        (linha.id, linha.display_name, int(linha.points))
+        for linha in session.execute(statement).all()
+    ]
+
+
+def leaderboard_rows(
+    session: Session,
+    *,
+    start: date | datetime | None = None,
+    end: date | datetime | None = None,
+) -> list[dict[str, object]]:
+    """Ranking ordenado, com empate ocupando a mesma posição.
+
+    A ordenação e o cálculo de posição ficam aqui, e não no banco, para os
+    dois caminhos de `_totais_por_aluno` produzirem o mesmo resultado a partir
+    da mesma regra.
+    """
+
+    start_dt, end_dt = _period_bounds(start, end)
     rows = sorted(
-        session.execute(statement).all(),
-        key=lambda row: (-int(row.points), row.display_name.casefold()),
+        _totais_por_aluno(session, start_dt, end_dt),
+        key=lambda linha: (-linha[2], linha[1].casefold()),
     )
     output: list[dict[str, object]] = []
     previous_points: int | None = None
     previous_position = 0
-    for index, row in enumerate(rows, start=1):
-        points = int(row.points)
+    for index, (student_id, display_name, points) in enumerate(rows, start=1):
         position = previous_position if points == previous_points else index
         output.append(
             {
                 "position": position,
-                "student_id": row.id,
-                "student": row.display_name,
-                "username": row.username,
+                "student_id": student_id,
+                "student": display_name,
                 "points": points,
             }
         )
