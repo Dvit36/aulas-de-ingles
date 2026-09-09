@@ -194,11 +194,23 @@ Já mordeu três vezes:
 
 1. o papel `authenticated` sem acesso ao schema `auth`, que derrubou a aba
    Alunos inteira;
-2. `insert into duplicate_matches` sem política para aluno — que só não
-   quebrou porque a conexão do app é dona e ignora RLS;
-3. `concluir_troca_de_senha` inserindo em `audit_logs`, que tem política só de
+2. `concluir_troca_de_senha` inserindo em `audit_logs`, que tem política só de
    administrador. O insert era recusado, a transação caía, e o rollback levava
-   junto a limpeza da marca — o aluno trocava a senha e continuava trancado.
+   junto a limpeza da marca — o aluno trocava a senha e continuava trancado;
+3. **o envio inteiro**, que nunca funcionou em produção. Ver a seção abaixo.
+
+### Correção de um registro que estava errado
+
+Este documento afirmava, no item 2 desta lista, que o `insert into
+duplicate_matches` "só não quebrou porque a conexão do app é dona e ignora
+RLS". **Isso é falso, e foi medido como falso em 9/set/2026.** A conexão é
+dona, mas `rls_session` troca a transação para `authenticated` antes de
+qualquer consulta de tela — é o módulo inteiro existir para isso. O insert
+quebra, e quebrou.
+
+Um documento que afirma que algo funciona quando não funciona é pior que
+silêncio: ele encerra a investigação antes de ela começar. O registro errado
+ficou aqui por dias, ao lado da regra que teria evitado o defeito.
 
 A saída usada nos casos 1 e 3 é a mesma: função `SECURITY DEFINER` sem
 parâmetro, agindo sobre `auth.uid()`, com `revoke` de `public` e `grant` a
@@ -217,6 +229,50 @@ pode ver aparece como zero linhas ou `NULL` — não como erro. Contar
 `audit_logs` sob o papel do aluno devolve `0` mesmo com as linhas gravadas, e
 ler o perfil alheio devolve `None` mesmo com ele intacto. Faça a escrita sob o
 papel do aluno e a **conferência** como dono, senão a medição mente.
+
+## O envio nunca funcionou em produção
+
+O primeiro envio real do sistema — 9/set/2026, conta `teste` — falhou com "A
+operação falhou. Consulte o log com a referência ad21e46da6". `submissions`
+estava em 0 até então: tudo que existia no banco tinha entrado por semeadura
+ou importação, feitas como dono ou como administrador. O caminho que os alunos
+vão usar nunca tinha sido percorrido por ninguém.
+
+Medido sob as claims reais da conta `teste`, cada insert em transação própria e
+desfeita:
+
+| tabela | resultado |
+|---|---|
+| `submissions` | passa |
+| `submission_files` | passa |
+| `rule_checks` | **recusado pela RLS** |
+| `duplicate_matches` | **recusado pela RLS** |
+| `lesson_units` | **recusado pela RLS** |
+| `lesson_batches` | **recusado pela RLS** |
+| `approved_evidence` | **recusado pela RLS** |
+| `ledger_transactions` | **recusado pela RLS** |
+
+As seis recusadas só têm política `ALL` para administrador e `SELECT` para
+autenticado. Nenhuma tem INSERT para o aluno. E `submit_evidence` grava
+`rule_checks` em **todo** envio, então todo envio falha — não é caso de borda.
+
+A parte de baixo da tabela é pior do que parece: `duolingo_beconfident` é
+`auto_approvable`, e a atividade principal do sistema. Com OCR ligado, um envio
+dela pode aprovar sozinho **dentro da transação do aluno**, e aí o código
+escreve unidade, lote e ledger — as três recusadas. Hoje isso está mascarado
+porque estamos sem OCR e nada alcança a confiança de aprovação automática. É
+sorte, não desenho: quando o OCR voltar, o caminho feliz da atividade principal
+encontra outra parede.
+
+Duas coisas ficaram claras aqui, e as duas são sobre método:
+
+- **A tabela de políticas não foi lida junto com o código que escreve.** As
+  políticas foram escritas para "aluno lê o próprio, admin escreve", e o
+  pipeline escreve seis tabelas sob o papel do aluno. Ninguém confrontou as
+  duas listas.
+- **Contador em zero é sinal, não silêncio.** `submissions` em 0 depois de
+  semanas de sistema no ar era a evidência de que o caminho principal nunca
+  tinha rodado.
 
 ## Duas armadilhas que já custaram tempo
 
