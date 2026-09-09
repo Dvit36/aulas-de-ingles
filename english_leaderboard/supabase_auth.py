@@ -58,7 +58,16 @@ MARGEM_RENOVACAO_SEGUNDOS = 60
 
 
 class AuthError(RuntimeError):
-    """Falha ao falar com o Supabase Auth."""
+    """Falha ao falar com o Supabase Auth.
+
+    ``codigo`` guarda o status HTTP quando houve um. Existe para quem precisa
+    decidir com base nele não ter de interpretar o texto da mensagem — o texto
+    é para quem lê na tela, e muda.
+    """
+
+    def __init__(self, mensagem: str, *, codigo: int | None = None) -> None:
+        super().__init__(mensagem)
+        self.codigo = codigo
 
 
 class CredenciaisInvalidas(AuthError):
@@ -159,8 +168,12 @@ class HttpAuthGateway:
             # o caso comum ao renomear alguém para um usuário que já existe.
             # Sem ele a tela mostraria "Supabase Auth respondeu 422".
             if erro.code in (400, 401, 403, 422):
-                raise CredenciaisInvalidas(_mensagem_amigavel(detalhe)) from erro
-            raise AuthError(f"Supabase Auth respondeu {erro.code}") from erro
+                raise CredenciaisInvalidas(
+                    _mensagem_amigavel(detalhe), codigo=erro.code
+                ) from erro
+            raise AuthError(
+                _mensagem_por_codigo(erro.code), codigo=erro.code
+            ) from erro
         except urllib.error.URLError as erro:  # pragma: no cover - rede indisponível
             raise AuthError("Não foi possível falar com o Supabase Auth") from erro
 
@@ -188,6 +201,28 @@ class HttpAuthGateway:
         self, caminho: str, *, chave: str, autorizacao: str | None = None
     ) -> dict[str, Any]:
         return self._requisitar(caminho, None, "DELETE", chave, autorizacao)
+
+
+def _mensagem_por_codigo(codigo: int) -> str:
+    """Traduz o status HTTP sem saber qual operação falhou.
+
+    Fica genérica de propósito: `_requisitar` serve login, criação de conta,
+    troca de senha e as operações administrativas. Dizer aqui o que aconteceu
+    com a senha de alguém seria mentira na metade dos casos — quem tem esse
+    contexto acrescenta a frase, como `trocar_senha` faz.
+    """
+
+    if codigo == 429:
+        return (
+            "Muitas tentativas seguidas no servidor de autenticação. "
+            "Espere alguns minutos e tente de novo."
+        )
+    if codigo >= 500:
+        return (
+            "O servidor de autenticação está instável no momento. "
+            "Tente de novo em instantes."
+        )
+    return f"Supabase Auth respondeu {codigo}"
 
 
 def _mensagem_amigavel(detalhe: str) -> str:
@@ -426,12 +461,33 @@ def trocar_senha(
         raise ValueError("Informe a nova senha")
     if not access_token:
         raise SessaoExpirada("Sessão ausente")
-    gateway.post(
-        "user",
-        {"password": nova_senha},
-        chave=chave_publica,
-        autorizacao=access_token,
-    )
+    try:
+        gateway.post(
+            "user",
+            {"password": nova_senha},
+            chave=chave_publica,
+            autorizacao=access_token,
+        )
+    except AuthError as erro:
+        # Numa troca obrigatória, a tranquilização importa mais que o
+        # diagnóstico: quem não sabe se a senha mudou não sabe com qual entrar,
+        # e fica sem caminho nenhum. Só aqui dá para afirmar isso — o gateway
+        # não sabe qual operação falhou.
+        codigo = getattr(erro, "codigo", None)
+        if codigo == 429:
+            raise AuthError(
+                "Muitas tentativas seguidas. Sua senha NÃO foi alterada — "
+                "continue usando a atual e tente de novo em alguns minutos.",
+                codigo=codigo,
+            ) from erro
+        if codigo is not None and codigo >= 500:
+            raise AuthError(
+                "O servidor de autenticação está instável. Sua senha NÃO foi "
+                "alterada — continue usando a atual e tente de novo em "
+                "instantes.",
+                codigo=codigo,
+            ) from erro
+        raise
 
 
 def desativar_conta(

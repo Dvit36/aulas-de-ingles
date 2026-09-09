@@ -244,6 +244,52 @@ def test_a_confirmed_change_clears_the_mark(session, users, tela) -> None:
     assert falso.session_state["password_changed_notice"]
 
 
+# ---------------- 3b. as falhas passageiras dizem que a senha não mudou
+
+@pytest.mark.parametrize(
+    ("codigo", "trecho"),
+    [
+        (429, "Muitas tentativas"),
+        (503, "instável"),
+    ],
+)
+def test_a_transient_failure_says_the_password_was_not_changed(
+    session, users, tela, codigo, trecho
+) -> None:
+    """Numa troca obrigatória, não saber com qual senha entrar é o pior estado.
+
+    `Supabase Auth respondeu 429` é verdade e não serve para ninguém: o aluno
+    fica sem saber se a senha mudou, e a tela que deveria destravá-lo é a
+    mesma que o deixa sem caminho. A mensagem precisa dizer, em primeiro
+    lugar, que a senha atual continua valendo.
+
+    429 acontece com uso normal — vários alunos entrando e trocando a senha no
+    mesmo dia batem no limite do GoTrue —, e 5xx é instabilidade do serviço.
+    Nenhum dos dois é erro de quem está na tela.
+    """
+
+    alvo = _aluno_marcado(session, users)
+    falso, espiao = tela(
+        senhas={"nova": "SenhaNova!123", "confirmacao": "SenhaNova!123"},
+        clicar="Trocar senha e continuar",
+        erro_do_auth=AuthError(f"resposta {codigo}", codigo=codigo),
+    )
+
+    streamlit_app._troca_obrigatoria_view(session, SettingsFalso(), alvo)
+
+    assert espiao.chamadas, "chegou a tentar"
+    assert len(falso.erros) == 1
+    mensagem = falso.erros[0]
+    assert "NÃO foi alterada" in mensagem, mensagem
+    assert trecho in mensagem, mensagem
+    # E o código cru não vaza para a tela do aluno.
+    assert str(codigo) not in mensagem, mensagem
+
+    # A trava continua de pé: a senha temporária ainda é a que vale.
+    assert session.get(User, alvo.id).must_change_password is True
+    assert "password_changed_notice" not in falso.session_state
+
+
 # ------------------------------ 4. senha divergente não fala com o Auth
 
 def test_mismatched_passwords_never_reach_the_auth_service(
