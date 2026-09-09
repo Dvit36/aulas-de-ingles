@@ -97,8 +97,10 @@ from english_leaderboard.services import (
     create_activity,
     create_points_adjustment,
     create_user_account,
+    estornar_lancamento,
     get_goal_configuration,
     get_submission_file_url_for_user,
+    lancamentos_manuais,
     list_resources,
     list_submissions,
     replace_resources,
@@ -661,6 +663,12 @@ def _admin_routes(session, actor: User | None, settings: Settings) -> list[PageR
             "users",
             ":material/group:",
             lambda: users_view(session, actor, settings),
+        ),
+        PageRoute(
+            "Pontos",
+            "points",
+            ":material/exposure_plus_1:",
+            lambda: manual_points_view(session, actor, settings),
         ),
         PageRoute(
             "Catálogo",
@@ -2463,6 +2471,161 @@ def catalog_view(session, actor: User, settings: Settings | None = None) -> None
             show_operation_error("save_activity", error)
 
 
+AVISO_DO_MOTIVO = (
+    "O aluno vai ler este texto na tela dele. Depois de gravado ele **não pode "
+    "ser editado**: o ledger é imutável, e a única correção possível é estornar "
+    "o lançamento e refazê-lo."
+)
+
+
+def manual_points_view(session, actor: User, settings: Settings | None = None) -> None:
+    """Lançamento manual de pontos, e o estorno de quem errou.
+
+    Vive numa aba própria em vez de dentro dos relatórios porque é operação de
+    escrita no ledger, não consulta: quem entra aqui veio para mexer na
+    pontuação de alguém, e precisa ver o saldo antes de mexer.
+    """
+
+    st.header("Lançar pontos")
+    aviso = st.session_state.pop("manual_points_notice", None)
+    if aviso:
+        st.success(aviso)
+    students = list(
+        session.scalars(
+            select(User)
+            .where(User.role == Role.STUDENT, User.archived_at.is_(None))
+            .order_by(User.display_name)
+        ).all()
+    )
+    if not students:
+        st.info("Não há alunos para lançar pontos.")
+        return
+    student_id = st.selectbox(
+        "Aluno",
+        [student.id for student in students],
+        format_func=lambda value: next(
+            student.display_name for student in students if student.id == value
+        ),
+        key="manual_points_student",
+    )
+    aluno = next(student for student in students if student.id == student_id)
+    saldo = student_total(session, aluno.id)
+    # O saldo fica acima do formulário porque é a informação que decide o
+    # valor: 20 pontos são muito ou pouco dependendo do que já existe.
+    st.metric(f"Saldo atual de {aluno.display_name}", saldo)
+    st.caption(
+        "O lançamento manual é sempre positivo. Para tirar pontos, estorne o "
+        "lançamento que os concedeu, na lista abaixo."
+    )
+    with st.form("manual_points_form"):
+        pontos = st.number_input(
+            "Pontos a lançar",
+            min_value=1,
+            max_value=10000,
+            value=1,
+            step=1,
+        )
+        motivo = st.text_area(
+            "Motivo (o aluno vai ler este texto)",
+            placeholder="Ex.: Apresentação oral na aula do dia 3.",
+        )
+        st.caption(AVISO_DO_MOTIVO)
+        lancar = st.form_submit_button(
+            f"Lançar para {aluno.display_name}", type="primary"
+        )
+    if lancar:
+        try:
+            create_points_adjustment(
+                session,
+                actor=actor,
+                student_id=aluno.id,
+                points=int(pontos),
+                reason=motivo,
+            )
+            session.commit()
+            if settings is not None:
+                persist_committed_changes(session, settings)
+        except Exception as error:
+            session.rollback()
+            show_operation_error("manual_points", error)
+        else:
+            st.session_state["manual_points_notice"] = (
+                f"{int(pontos)} ponto(s) lançados para {aluno.display_name}. "
+                f"Saldo agora: {saldo + int(pontos)}."
+            )
+            st.rerun()
+    _manual_points_history(session, actor, aluno, settings)
+
+
+def _manual_points_history(
+    session, actor: User, aluno: User, settings: Settings | None
+) -> None:
+    """A lista de onde se estorna — com o motivo escrito à vista.
+
+    O motivo aparece no corpo do cartão, e não escondido atrás do botão,
+    porque é por ele que se identifica o lançamento a estornar: a data e o
+    valor não distinguem dois lançamentos do mesmo dia.
+    """
+
+    st.subheader("Lançamentos manuais deste aluno")
+    lancamentos = lancamentos_manuais(session, actor=actor, student_id=aluno.id)
+    if not lancamentos:
+        st.caption("Nenhum lançamento manual para este aluno.")
+        return
+    for lancamento in lancamentos:
+        with st.container(border=True):
+            data = lancamento.occurred_at.strftime("%d/%m/%Y")
+            if lancamento.e_estorno:
+                situacao = " · estorno"
+            elif lancamento.estornado:
+                situacao = " · estornado"
+            else:
+                situacao = ""
+            st.markdown(f"**{lancamento.points:+d} pontos** · {data}{situacao}")
+            st.write(lancamento.reason or "—")
+            if lancamento.estornavel:
+                _manual_points_reversal_form(session, actor, lancamento, settings)
+
+
+def _manual_points_reversal_form(
+    session, actor: User, lancamento, settings: Settings | None
+) -> None:
+    with st.expander("Estornar este lançamento"):
+        st.warning(
+            f"O estorno lança {-lancamento.points:+d} pontos para desfazer "
+            "este. Nenhum dos dois pode ser apagado depois."
+        )
+        with st.form(f"manual_points_reversal_{lancamento.id}"):
+            motivo = st.text_area(
+                "Motivo do estorno (o aluno vai ler este texto)",
+                placeholder="Ex.: Estorno: os pontos eram de outro aluno.",
+                key=f"manual_points_reversal_reason_{lancamento.id}",
+            )
+            st.caption(AVISO_DO_MOTIVO)
+            estornar = st.form_submit_button("Confirmar estorno", type="primary")
+        if estornar:
+            try:
+                estornar_lancamento(
+                    session,
+                    actor=actor,
+                    transaction_id=lancamento.id,
+                    reason=motivo,
+                )
+                session.commit()
+                if settings is not None:
+                    persist_committed_changes(session, settings)
+            except Exception as error:
+                session.rollback()
+                show_operation_error("manual_points_reversal", error)
+            else:
+                # Pelo `session_state` e fora do expander: o `rerun` descarta
+                # esta passada inteira e fecha o expander junto.
+                st.session_state["manual_points_notice"] = (
+                    "Lançamento estornado."
+                )
+                st.rerun()
+
+
 def ledger_view(session, actor: User, settings: Settings | None = None) -> None:
     st.header("Ledger e sincronização")
     if settings is not None and settings.google_sheets_auto_sync:
@@ -2536,45 +2699,6 @@ def ledger_view(session, actor: User, settings: Settings | None = None) -> None:
         st.caption(
             f"{len(submissions)} submissão(ões) no histórico; detalhes em Envios."
         )
-
-    st.subheader("Ajuste auditado de pontos")
-    if students:
-        with st.form("points_adjustment_form"):
-            adjustment_student = st.selectbox(
-                "Aluno do ajuste",
-                [student.id for student in students],
-                format_func=lambda value: next(
-                    student.display_name for student in students if student.id == value
-                ),
-            )
-            adjustment_points = st.number_input(
-                "Pontos (use valor negativo para remover)",
-                min_value=-10000,
-                max_value=10000,
-                value=0,
-            )
-            adjustment_confirm = st.checkbox("Confirmo o ajuste no ledger")
-            adjustment_submit = st.form_submit_button("Registrar ajuste")
-        if adjustment_submit:
-            if not adjustment_confirm:
-                st.error("Confirme o ajuste.")
-            else:
-                try:
-                    create_points_adjustment(
-                        session,
-                        actor=actor,
-                        student_id=adjustment_student,
-                        points=int(adjustment_points),
-                    )
-                    session.commit()
-                    if settings is not None:
-                        persist_committed_changes(session, settings)
-                except Exception as error:
-                    session.rollback()
-                    show_operation_error("points_adjustment", error)
-                else:
-                    st.success("Ajuste registrado como nova transação imutável.")
-
 
 def admin_dashboard(session, actor: User | None = None) -> None:
     st.header("Visão geral")

@@ -204,6 +204,7 @@ def test_public_and_authenticated_navigation_expose_account_routes(
         "Visão geral",
         "Envios",
         "Alunos",
+        "Pontos",
         "Catálogo",
     }
     assert "Relatórios" not in {route.label for route in admin}
@@ -266,6 +267,7 @@ def test_registered_navigation_is_stable_across_authentication_states(
         "root",
         "submissions",
         "users",
+        "points",
         "catalog",
         "submit",
         "history",
@@ -300,6 +302,7 @@ def test_visible_navigation_changes_without_changing_registered_pages(
         "Visão geral",
         "Envios",
         "Alunos",
+        "Pontos",
         "Catálogo",
         "Recursos",
         "Minha conta",
