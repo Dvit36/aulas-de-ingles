@@ -166,7 +166,7 @@ def show_operation_error(context: str, error: Exception) -> None:
         # afastaria o texto da fonte.
         LOGGER.warning("%s: orçamento de storage esgotado (%s)", context, error)
         st.error(
-            f"{error} Fale com a administração: o limite é do mês inteiro e "
+            f"{error} Fale com os mentores: o limite é do mês inteiro e "
             "não se recupera sozinho antes da virada."
         )
         return
@@ -419,7 +419,7 @@ def authenticate(
         _esquecer_sessao()
         return AuthenticationState(
             actor=None,
-            error="Sua conta não está mais ativa. Procure o administrador.",
+            error="Sua conta não está mais ativa. Procure os mentores.",
             browser_storage_available=browser_storage_available,
         )
     return AuthenticationState(
@@ -1344,7 +1344,7 @@ def submission_form(session, actor: User, settings: Settings) -> None:
     elif result.status == SubmissionStatus.REJECTED:
         st.error(f"Rejeitada: {result.reason}")
     else:
-        st.warning("Recebida e encaminhada para revisão administrativa.")
+        st.warning("Recebida e encaminhada para revisão.")
     st.caption(f"Confiança: {result.confidence:.0%} · ID {result.submission_id}")
 
 
@@ -1592,7 +1592,7 @@ def _render_submission_timeline(submission: Submission) -> None:
     else:
         st.write("⏳ Processamento em andamento")
     if submission.status == SubmissionStatus.NEEDS_REVIEW:
-        st.write("👀 Aguardando decisão administrativa")
+        st.write("👀 Aguardando revisão")
     elif submission.decided_at:
         icon, label, _ = STATUS_VISUAL[submission.status]
         st.write(f"{icon} {label} · {submission.decided_at:%d/%m/%Y %H:%M}")

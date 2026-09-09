@@ -44,7 +44,7 @@ def test_cota_estourada_diz_que_o_espaco_acabou(coletor) -> None:
     (mensagem,) = coletor.erros
     assert "egress do mês" in mensagem
     assert "2048" in mensagem
-    assert "administração" in mensagem
+    assert "mentores" in mensagem
     assert "referência" not in mensagem.lower(), (
         "cota esgotada não é um defeito a investigar no log"
     )
