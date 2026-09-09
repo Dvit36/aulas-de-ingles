@@ -55,6 +55,25 @@ uploads, downloads, OCR ou infraestrutura.
   Criar conta e redefinir senha marcam essa coluna; a tela a limpa depois
   da troca confirmada pelo Auth.
 
+## Depois de um deploy: reboote antes de investigar
+
+Se o erro observado **não corresponde ao código** — traceback numa linha que já
+foi corrigida, `TypeError` de assinatura que o repositório não tem, mensagem de
+uma versão anterior —, a primeira hipótese é estado velho no Streamlit Cloud, e
+não defeito.
+
+O Cloud reexecuta o script principal quando ele muda, mas módulos já importados
+seguem em `sys.modules` até o processo reiniciar. Dá para acabar com
+`streamlit_app.py` novo chamando um `english_leaderboard.*` antigo — e o
+sintoma é exatamente um erro que o código não explica.
+
+**Reboote o app e reproduza antes de abrir investigação.** Isso já custou duas
+investigações num dia só: uma migração aplicada que a aplicação não enxergava,
+e uma chamada com assinatura nova contra um módulo velho.
+
+Se depois do reboot o erro persistir, aí sim é código — e o traceback passa a
+valer.
+
 ## Linha de base de qualidade
 
 Hoje: **`ruff check .` com 79 achados** e **287 passed, 4 skipped**.

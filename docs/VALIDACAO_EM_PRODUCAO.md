@@ -69,7 +69,23 @@ e o schema `storage` continua fora de alcance, como o AGENTS.md exige.
 A exclusão de conta pela interface não funciona em produção, por causa
 desconhecida. Ver [EXCLUSAO_DE_CONTA.md](EXCLUSAO_DE_CONTA.md).
 
-## Como manter isto honesto
+## Duas armadilhas que já custaram tempo
+
+**Estado velho no Cloud.** Erro que não corresponde ao código quase sempre é
+processo não reiniciado, não defeito. Reboote e reproduza antes de investigar —
+está em [AGENTS.md](../AGENTS.md).
+
+**Cobertura que para na porta.** A suíte chamava `trocar_senha` **zero vezes em
+291 testes**: os duplos de `st` nunca apertavam o botão, então os testes
+provavam a trava e não o fluxo. Dois defeitos passaram por aí. Hoje
+`tests/test_troca_de_senha_fluxo.py` percorre o submit inteiro, e um guarda em
+`tests/conftest.py` reprova a suíte completa que volte a não exercitar essa
+chamada.
+
+Vale a pergunta sempre que um teste "cobre uma tela": ele chega a executar a
+operação, ou só monta a tela e verifica o que ficou desenhado?
+
+## Como manter isto honesto## Como manter isto honesto
 
 Uma linha só sai de "não exercitado" para "confirmado" quando alguém **fez a
 coisa em produção e viu o efeito**. Migração aplicada não é o mesmo que

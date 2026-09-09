@@ -17,6 +17,58 @@ from english_leaderboard.database import (
 from english_leaderboard.schema import Role, User, new_id
 from english_leaderboard.storage import StorageError
 
+# --------------------------------------------------------------- o guarda
+#
+# A troca de senha ficou sem cobertura por semanas sem ninguém notar: a suíte
+# chamava `trocar_senha` **zero vezes em 291 testes**, porque os duplos de `st`
+# nunca apertavam o botão. Dois defeitos passaram por essa fresta.
+#
+# Este contador existe para que a fresta não volte em silêncio. Ele só cobra
+# numa execução da suíte inteira — dirigir o pytest a um arquivo continua
+# funcionando, senão o guarda atrapalharia o trabalho que ele deveria proteger.
+
+_TROCAS_DE_SENHA: list[dict] = []
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _contar_trocas_de_senha():
+    """Conta as chamadas reais a `trocar_senha` durante a execução."""
+
+    import streamlit_app
+
+    original = streamlit_app.trocar_senha
+
+    def espiao(*args, **kwargs):
+        _TROCAS_DE_SENHA.append(kwargs)
+        return original(*args, **kwargs)
+
+    streamlit_app.trocar_senha = espiao
+    try:
+        yield
+    finally:
+        streamlit_app.trocar_senha = original
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Reprova a suíte completa que nunca exercitou a troca de senha.
+
+    "Execução completa" é a que não recebeu caminho nenhum na linha de comando.
+    Assim `pytest tests/test_ocr.py` não é cobrado por algo que nem coletou.
+    """
+
+    argumentos = list(getattr(session.config.invocation_params, "args", ()))
+    dirigida = any(not a.startswith("-") for a in argumentos)
+    if dirigida or exitstatus != 0:
+        return
+    if not _TROCAS_DE_SENHA:
+        print(
+            "\nGUARDA: a suíte inteira rodou sem chamar `trocar_senha` uma vez."
+            "\nO caminho que o aluno percorre no primeiro acesso ficou sem"
+            "\ncobertura — é assim que os dois últimos defeitos dessa tela"
+            "\npassaram. Ver tests/test_troca_de_senha_fluxo.py."
+        )
+        session.exitstatus = 1
+
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
