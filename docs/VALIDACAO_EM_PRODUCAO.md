@@ -1,6 +1,6 @@
 # O que já foi exercitado contra o ambiente real
 
-**Atualizado:** 8 de setembro de 2026.
+**Atualizado:** 9 de setembro de 2026.
 
 A suíte roda offline, em SQLite. Vários defeitos desta semana só apareceram em
 produção — chave de coluna renomeada, regex de token, `.value` sobre StrEnum
@@ -20,6 +20,9 @@ resposta a cada conversa.
 | `54bc859` | `reativar` levanta o ban | **Desativado: o login recusou. Reativado: o login voltou.** Exercitado no `enzo.souza`, que foi apagado depois na limpeza das contas de teste — a confirmação vale, a conta não existe mais |
 | migração `0009` | `contas_fora_de_sincronia()` | Aplicada; responde 2 linhas sob claims de admin e 0 sob claims de aluno, pelo papel `authenticated` real |
 | migração `0010` | `must_change_password` | Aplicada; os três perfis existentes ficaram `false`, lido pelo papel real |
+| `3046389` + `a6f66e5` | Troca obrigatória de senha, fim a fim | A conta `teste` gravou `user_password_changed` **como ela mesma** em 9/set 02:05 UTC, e `must_change_password` voltou a `false`. Essa linha só existe por `public.concluir_troca_de_senha()`: a marca caiu pelo caminho previsto, sob RLS |
+| `b857f65` | Exclusão pela tela, no ramo que arquiva | `user_archived` na auditoria em 9/set 02:07 UTC e `profiles.archived_at` da conta `teste` no mesmo instante — a primeira linha dessas que já existiu em produção |
+| migração `0012` + `fa135af` | Lançamento manual, estorno e leitura pelo aluno | Exercitados contra o banco real em transação desfeita, sob `authenticated`: o insert passa com claims de admin; o estorno passa; o segundo estorno é recusado pela aplicação e, por fora dela, pelo índice único; o aluno lê o par com os dois motivos; e o insert cru sob o papel do aluno é recusado pela RLS |
 
 ## Ainda não exercitado
 
@@ -28,9 +31,9 @@ resposta a cada conversa.
 | `8cdba07` | O aviso de divergência na aba Alunos | A consulta está validada; o banner nunca apareceu porque não há divergência — é o resultado certo, mas não prova o caminho de renderização |
 | `a30f424` | Troca de senha e revogação de sessão no logout | Corrigido a partir do diagnóstico, mas ainda não exercitado pela tela |
 | `24da0c0` | Guarda do `contas=None` ao renomear | Nenhum chamador atual omite `contas`; só dispara para código futuro |
-| `3046389` | Troca obrigatória de senha | Deploy quebrado desde 7/set |
 | `7d092ac` | Tolerância a motor de OCR ausente | Deploy quebrado |
 | `convergencia-pipeline-etapa2` | Convergência dos dois fluxos de submissão | Não mesclada; o roteiro de quatro envios depende do app no ar |
+| `7fa0ffb` + `7a4a7f1` | As duas telas do lançamento manual | Os serviços estão exercitados contra o banco real, as telas não: ninguém abriu a aba Pontos em produção. E hoje não dá para abrir com efeito — o único aluno, `teste`, está arquivado, e o seletor não mostra arquivados |
 
 ## Estado de operação: sem OCR, por tempo indeterminado
 
@@ -107,10 +110,25 @@ SQL nas tabelas de sessão do schema `auth`, em transação conferida antes do
 commit. É exceção consciente ao hábito de não tocar schema gerenciado por SQL,
 e o schema `storage` continua fora de alcance, como o AGENTS.md exige.
 
-## Defeito aberto
+## Defeito que se resolveu sozinho — e como se soube
 
-A exclusão de conta pela interface não funciona em produção, por causa
-desconhecida. Ver [EXCLUSAO_DE_CONTA.md](EXCLUSAO_DE_CONTA.md).
+A exclusão de conta pela interface não fazia nada em produção. A investigação
+foi encerrada em 7/set sem causa encontrada, e a troca do formulário pelos dois
+botões do catálogo (`b857f65`) foi feita por suspeita, não por diagnóstico.
+
+Ela funcionou. Em 9/set 02:07 UTC a conta `teste` foi arquivada pela tela, com
+`user_archived` na auditoria — a primeira linha de exclusão ou arquivamento que
+já existiu neste banco. O documento antigo afirmava, corretamente para a época,
+que nunca houvera nenhuma.
+
+Fica um resto por confirmar: o ramo que **remove** de vez, para conta sem
+histórico, que apaga também no Auth. Nenhuma conta passou por ele em produção.
+Ver [EXCLUSAO_DE_CONTA.md](EXCLUSAO_DE_CONTA.md).
+
+Vale o método, mais do que o caso: ninguém percebeu que tinha funcionado. A
+prova estava na auditoria havia horas, e só apareceu porque uma consulta feita
+para outro fim passou por ali. **Defeito que se corrige por suspeita precisa de
+uma volta ao banco para saber se a suspeita estava certa.**
 
 ## Regra: escrita sob o papel do aluno se verifica em produção
 
@@ -136,6 +154,14 @@ A saída usada nos casos 1 e 3 é a mesma: função `SECURITY DEFINER` sem
 parâmetro, agindo sobre `auth.uid()`, com `revoke` de `public` e `grant` a
 `authenticated`. O aluno não ganha permissão; quem escreve é o banco.
 
+**Ao verificar, cuidado com o SAVEPOINT.** `session.begin_nested()` dispara o
+evento que reaplica a identidade declarada na sessão: dentro dele, uma troca de
+papel feita à mão volta atrás sem avisar. Isto produziu um falso "FALHA DE
+SEGURANÇA" na verificação do lançamento manual — o insert que deveria ser
+barrado passou porque, dentro do SAVEPOINT, quem inseria era o administrador.
+Remedido com a sessão inteira declarada como do aluno: a RLS barra, com
+`new row violates row-level security policy`.
+
 **Ao verificar, cuidado com o que a leitura devolve.** Sob RLS, o que você não
 pode ver aparece como zero linhas ou `NULL` — não como erro. Contar
 `audit_logs` sob o papel do aluno devolve `0` mesmo com as linhas gravadas, e
@@ -158,7 +184,7 @@ chamada.
 Vale a pergunta sempre que um teste "cobre uma tela": ele chega a executar a
 operação, ou só monta a tela e verifica o que ficou desenhado?
 
-## Como manter isto honesto## Como manter isto honesto
+## Como manter isto honesto
 
 Uma linha só sai de "não exercitado" para "confirmado" quando alguém **fez a
 coisa em produção e viu o efeito**. Migração aplicada não é o mesmo que
@@ -168,3 +194,19 @@ por validar.
 Verificar consulta contra o banco também não basta por si só — e quando for
 fazê-lo, rode sob `rls_session.aplicar_identidade`, nunca como `postgres`. O
 motivo está em [AGENTS.md](../AGENTS.md).
+
+## Uma consequência da coluna `reason`, para decidir depois
+
+A política `ledger_leitura` deixa **qualquer autenticado ler o ledger inteiro**
+(`auth.uid() is not null`). Ela existe para o leaderboard, que soma a pontuação
+de todos, e é anterior a este trabalho.
+
+O que mudou é o que a tabela guarda. Antes eram pontos e chaves de origem;
+agora guarda texto livre escrito **sobre** um aluno — "estorno: os pontos eram
+de outro", "faltou à aula". Pela aplicação ninguém lê o alheio:
+`lancamentos_manuais` filtra por aluno e passa por `require_self_or_admin`.
+Pelo banco, um aluno com o próprio JWT lê todos os motivos.
+
+Não foi mexido aqui porque estreitar a política sem uma view ou uma função
+`SECURITY DEFINER` derrubaria o leaderboard. Fica registrado para ser decidido
+com calma, e não descoberto depois.

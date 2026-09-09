@@ -44,12 +44,21 @@ uploads, downloads, OCR ou infraestrutura.
 - URLs de arquivos privados devem ser temporárias/presigned. Não gravar URLs
   assinadas no banco; gravar apenas a `storage_key`.
 - Segredos nunca entram no Git. Versionar somente exemplos sem valores reais.
-- Apagar uma conta é operação de banco, não de interface: a exclusão pela
-  tela não funciona em produção, por causa desconhecida. Remova pelo
-  Supabase Auth, que leva o perfil por cascade. **Nunca apague só de
-  `public.profiles`**: sobra uma conta que ainda autentica e que o detector
-  da aba Alunos não consegue ver. Ver `docs/EXCLUSAO_DE_CONTA.md`, que
-  reúne os procedimentos manuais de conta.
+- Em SQL executado pelo driver, `%` é marcador de parâmetro, não caractere.
+  `exec_driver_sql` passa a string ao DBAPI, que tenta interpolar e falha com
+  erro que não menciona o `%`. Vale para tudo dentro do texto do comando,
+  inclusive **comentário** e `like '...%'` — não só para o `raise exception
+  '%'` do plpgsql. Use `text()`, que não interpola, ou escreva o comando sem o
+  caractere. Isto já custou três tropeços no mesmo dia.
+- Apagar uma conta pela tela **arquiva** quando há histórico, e isso passou a
+  funcionar em produção depois de `b857f65`: a conta `teste` foi arquivada em
+  9/set/2026, com `user_archived` na auditoria. O caminho que **remove** —
+  conta sem histórico, que apaga também no Auth — continua sem confirmação em
+  produção. Enquanto isso, remoção definitiva se faz pelo Supabase Auth, que
+  leva o perfil por cascade. **Nunca apague só de `public.profiles`**: sobra
+  uma conta que ainda autentica e que o detector da aba Alunos não consegue
+  ver. Ver `docs/EXCLUSAO_DE_CONTA.md`, que reúne os procedimentos manuais de
+  conta.
 - Conta presa na tela de troca de senha destrava por SQL:
   `update public.profiles set must_change_password = false where id = '...';`
   Criar conta e redefinir senha marcam essa coluna; a tela a limpa depois
@@ -76,7 +85,7 @@ valer.
 
 ## Linha de base de qualidade
 
-Hoje: **`ruff check .` com 79 achados** e **287 passed, 4 skipped**.
+Hoje: **`ruff check .` com 80 achados** e **337 passed, 4 skipped**.
 
 O número não é meta de zero — são padrões que o projeto aceita, sobretudo
 `BLE001` (o `except Exception` que faz `rollback` e chama
@@ -87,7 +96,13 @@ entrou coisa nova junto.
 Ele muda com motivo declarado, não por acidente. Foi 78 até a troca obrigatória
 de senha, que acrescentou a décima quinta ocorrência do mesmo `except Exception`
 das outras catorze telas — silenciar só essa com `noqa` a tornaria a única
-marcada, e por isso não foi feito.
+marcada, e por isso não foi feito. Foi a 80 com a aba de lançamento manual:
+dois `except Exception` novos (lançar e estornar), menos um do formulário morto
+que ela substituiu.
+
+O número de testes aqui esteve defasado por vários commits — dizia 287 quando
+a suíte já passava de 310. Contagem que ninguém confere não detecta
+crescimento silencioso: **atualize esta linha no mesmo commit que a move**.
 
 O que já foi exercitado contra o ambiente real — e o que só passou na suíte —
 fica em `docs/VALIDACAO_EM_PRODUCAO.md`. Passar na suíte e funcionar em
@@ -122,6 +137,15 @@ Duas consequências práticas:
   `GRANT SELECT ON auth.users TO authenticated`, que o PostgreSQL sugere no
   `HINT` do erro: a tabela guarda hash de senha e token de recuperação, e não
   tem RLS separando uma linha da outra.
+- **`session.begin_nested()` reaplica a identidade declarada na sessão.** O
+  SAVEPOINT dispara o evento `after_begin`, que lê `session.info` e chama
+  `aplicar_identidade` de novo. Numa tela isso é o que se quer. Num roteiro de
+  verificação que troca de papel à mão, o SAVEPOINT devolve silenciosamente o
+  papel anterior — e a medição responde sobre quem você não estava testando.
+  Já produziu um falso "FALHA DE SEGURANÇA": um insert de aluno que passou
+  porque, dentro do SAVEPOINT, quem inseria era o administrador. Para medir o
+  papel do aluno, declare a sessão inteira como dele e deixe a falha abortar a
+  transação.
 - No PostgreSQL, um comando que falha **aborta a transação inteira**: todo
   comando seguinte morre com `current transaction is aborted`, e capturar a
   exceção em Python não desfaz isso. Consulta acessória — diagnóstico,

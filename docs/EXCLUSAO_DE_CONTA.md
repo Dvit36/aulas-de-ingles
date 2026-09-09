@@ -1,7 +1,15 @@
 # Exclusão de conta: defeito conhecido e procedimento
 
-**Status:** aberto, investigação encerrada em 7 de setembro de 2026. A causa não
-foi encontrada. Enquanto isso, contas se apagam pelo Supabase, não pela tela.
+**Status:** resolvido no ramo que arquiva, em 9 de setembro de 2026 — sem que a
+causa tenha sido encontrada. A troca do formulário pelos dois botões do
+catálogo (`b857f65`) foi feita por suspeita, e funcionou: a conta `teste` foi
+arquivada pela tela em 9/set 02:07 UTC, com `user_archived` na auditoria. É a
+primeira linha de exclusão ou arquivamento que já existiu neste banco — o
+parágrafo abaixo, que diz que nunca houve nenhuma, estava certo até então.
+
+Continua sem confirmação o ramo que **remove** de vez: conta sem histórico, que
+apaga também no Auth. Para essas, e para remoção definitiva de qualquer conta,
+o procedimento pelo Supabase Auth mais abaixo segue valendo.
 
 ## O defeito
 
