@@ -85,7 +85,7 @@ valer.
 
 ## Linha de base de qualidade
 
-Hoje: **`ruff check .` com 80 achados** e **337 passed, 4 skipped**.
+Hoje: **`ruff check .` com 80 achados** e **343 passed, 4 skipped**.
 
 O número não é meta de zero — são padrões que o projeto aceita, sobretudo
 `BLE001` (o `except Exception` que faz `rollback` e chama

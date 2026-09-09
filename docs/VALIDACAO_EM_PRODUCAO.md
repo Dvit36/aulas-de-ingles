@@ -23,6 +23,7 @@ resposta a cada conversa.
 | `3046389` + `a6f66e5` | Troca obrigatória de senha, fim a fim | A conta `teste` gravou `user_password_changed` **como ela mesma** em 9/set 02:05 UTC, e `must_change_password` voltou a `false`. Essa linha só existe por `public.concluir_troca_de_senha()`: a marca caiu pelo caminho previsto, sob RLS |
 | `b857f65` | Exclusão pela tela, no ramo que arquiva | `user_archived` na auditoria em 9/set 02:07 UTC e `profiles.archived_at` da conta `teste` no mesmo instante — a primeira linha dessas que já existiu em produção |
 | migração `0012` + `fa135af` | Lançamento manual, estorno e leitura pelo aluno | Exercitados contra o banco real em transação desfeita, sob `authenticated`: o insert passa com claims de admin; o estorno passa; o segundo estorno é recusado pela aplicação e, por fora dela, pelo índice único; o aluno lê o par com os dois motivos; e o insert cru sob o papel do aluno é recusado pela RLS |
+| migração `0013` + `394558e` | Ledger fechado ao dono, ranking pela função | Ensaiada em transação desfeita com claims reais: **antes** o aluno lia o motivo de outro; **depois** não lê, nem pelo `select` amplo nem perguntando pelo `student_id` alheio, que devolve zero linhas. Aplicada e conferida: `ledger_leitura` não existe mais, `public.ranking()` tem `prosecdef`, `search_path` fixo e execute só para `authenticated`. `leaderboard_rows` foi exercitada sob os dois papéis reais e devolveu `student_id` como texto |
 
 ## Ainda não exercitado
 
@@ -34,6 +35,7 @@ resposta a cada conversa.
 | `7d092ac` | Tolerância a motor de OCR ausente | Deploy quebrado |
 | `convergencia-pipeline-etapa2` | Convergência dos dois fluxos de submissão | Não mesclada; o roteiro de quatro envios depende do app no ar |
 | `7fa0ffb` + `7a4a7f1` | As duas telas do lançamento manual | Os serviços estão exercitados contra o banco real, as telas não: ninguém abriu a aba Pontos em produção. E hoje não dá para abrir com efeito — o único aluno, `teste`, está arquivado, e o seletor não mostra arquivados |
+| migração `0013` | O ranking com mais de um aluno, e o vazamento entre duas contas reais | O banco tem um aluno só. Com um aluno, um ranking de uma linha parece certo — foi assim que o defeito passou despercebido. Falta ver o aluno A não conseguindo ler o `reason` do aluno B, cada um com o próprio JWT |
 
 ## Estado de operação: sem OCR, por tempo indeterminado
 
@@ -103,6 +105,17 @@ e 34 tokens apagados de `auth.sessions`, `auth.refresh_tokens` e
 `auth.mfa_amr_claims`. O motivo é o defeito acima — como o logout nunca
 revogou nada, havia sessões vivas emitidas ao longo de semanas, e preservar
 qualquer uma delas seria preservar exatamente o que a correção veio matar.
+
+Em 9/set/2026 a conta `teste`
+(`53c13db1-7ce1-459c-aa67-fff69372ad60`) foi **desarquivada**, para servir de
+cobaia do lançamento manual antes de entrarem alunos de verdade. Ela havia
+sido arquivada — e não removida — porque tinha histórico: exatamente uma linha
+de auditoria, a `user_password_changed` que ela própria gravou ao trocar a
+senha. Desarquivar são dois lados, na ordem segura: primeiro o perfil
+(`active`, `archived_at`), comitado, e só depois o ban levantado no Auth. Se a
+segunda etapa falhar sobra um perfil ativo que não entra — sintoma visível na
+primeira tentativa de login. A ordem inversa deixaria uma conta que autentica
+e que a aplicação considera inexistente.
 
 Não há endpoint administrativo de logout no GoTrue (`POST
 admin/users/{id}/logout` responde `404 page not found`); a revogação foi por
@@ -195,18 +208,26 @@ Verificar consulta contra o banco também não basta por si só — e quando for
 fazê-lo, rode sob `rls_session.aplicar_identidade`, nunca como `postgres`. O
 motivo está em [AGENTS.md](../AGENTS.md).
 
-## Uma consequência da coluna `reason`, para decidir depois
+## O ledger fechou — e a justificativa para deixá-lo aberto era falsa
 
-A política `ledger_leitura` deixa **qualquer autenticado ler o ledger inteiro**
-(`auth.uid() is not null`). Ela existe para o leaderboard, que soma a pontuação
-de todos, e é anterior a este trabalho.
+`ledger_leitura` deixava **qualquer autenticado ler o ledger inteiro**
+(`auth.uid() is not null`). Enquanto a tabela guardava pontos e chaves de
+origem, custava pouco. Depois da 0012 ela guarda `reason`: texto escrito
+**sobre** uma pessoa — "estava atrasado nas lições e compensou". Isso passou a
+ser legível por todos os colegas com o próprio JWT.
 
-O que mudou é o que a tabela guarda. Antes eram pontos e chaves de origem;
-agora guarda texto livre escrito **sobre** um aluno — "estorno: os pontos eram
-de outro", "faltou à aula". Pela aplicação ninguém lê o alheio:
-`lancamentos_manuais` filtra por aluno e passa por `require_self_or_admin`.
-Pelo banco, um aluno com o próprio JWT lê todos os motivos.
+Eu registrei aqui, antes, que estreitar a política derrubaria o leaderboard.
+**Não derrubaria, e a medição mostrou por quê:** `profiles` já é restrito ao
+próprio perfil por `perfil_proprio_leitura`, e `leaderboard_rows` faz join com
+ele. Sob o papel do aluno o ranking já devolvia uma linha só. A leitura ampla
+do ledger não sustentava o leaderboard — ele já estava quebrado, por outro
+motivo, e o ledger aberto só vazava.
 
-Não foi mexido aqui porque estreitar a política sem uma view ou uma função
-`SECURITY DEFINER` derrubaria o leaderboard. Fica registrado para ser decidido
-com calma, e não descoberto depois.
+Ou seja: **havia um defeito de privacidade e um defeito de funcionalidade, e a
+crença de que um pagava o outro impediu de ver os dois.** A 0013 fecha o
+ledger ao dono e ao administrador, e devolve o ranking por
+`public.ranking(inicio, fim)` — três colunas, `SECURITY DEFINER`, sem
+`student_id` como parâmetro.
+
+Nada disso apareceria com um aluno só cadastrado. Vale a pergunta ao ler uma
+justificativa herdada: **ela foi medida alguma vez, ou só repetida?**
