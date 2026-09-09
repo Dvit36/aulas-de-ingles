@@ -496,6 +496,22 @@ class LedgerTransaction(SchemaBase):
     """Imutável por gatilho no banco: correção é lançamento compensatório."""
 
     __tablename__ = "ledger_transactions"
+    __table_args__ = (
+        # Um estorno por lançamento, nas duas camadas: a aplicação recusa, e o
+        # banco também. Sem isto, dois cliques viram dois créditos — e o ledger
+        # é imutável, então não haveria como desfazer.
+        #
+        # Parcial para os `NULL` não colidirem entre si: quase todo lançamento
+        # tem `reverses_id` nulo. Funciona no PostgreSQL e no SQLite, então a
+        # suíte exercita a mesma garantia que a produção.
+        Index(
+            "ledger_um_estorno_por_lancamento",
+            "reverses_id",
+            unique=True,
+            sqlite_where=text("reverses_id is not null"),
+            postgresql_where=text("reverses_id is not null"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(_uuid(), primary_key=True, default=new_id)
     student_id: Mapped[str] = mapped_column(
@@ -513,6 +529,16 @@ class LedgerTransaction(SchemaBase):
         _uuid(), ForeignKey("submissions.id", ondelete="SET NULL")
     )
     description: Mapped[str | None] = mapped_column(Text)
+    # O motivo é escrito pelo administrador e **lido pelo aluno**: o
+    # lançamento manual aparece marcado na tela dele, com este texto à vista.
+    # `description` continua sendo o rótulo genérico, que ninguém lê.
+    reason: Mapped[str | None] = mapped_column(Text)
+    # O estorno aponta o que ele desfaz. O original nunca é alterado — o
+    # ledger é imutável por gatilho, e é por isso que a correção aponta para
+    # trás em vez de mutar.
+    reverses_id: Mapped[str | None] = mapped_column(
+        _uuid(), ForeignKey("ledger_transactions.id")
+    )
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
