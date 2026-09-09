@@ -32,6 +32,49 @@ resposta a cada conversa.
 | `7d092ac` | Tolerância a motor de OCR ausente | Deploy quebrado |
 | `convergencia-pipeline-etapa2` | Convergência dos dois fluxos de submissão | Não mesclada; o roteiro de quatro envios depende do app no ar |
 
+## Estado de operação: sem OCR, por tempo indeterminado
+
+O build do Streamlit Community Cloud falha desde 7 de setembro de 2026 com
+`Release file ... is expired`: a imagem base deles serve metadados apt
+vencidos, e **qualquer aplicativo com um `packages.txt` aborta no build**. O
+`apt-get update` falha antes de olhar o conteúdo do arquivo, então não importa
+quais pacotes estão listados.
+
+Nada nosso mudou: `packages.txt` e `requirements.txt` não eram tocados desde
+agosto quando isso começou.
+
+A contingência (`bce1ef0`) tira `rapidocr-onnxruntime` do `requirements.txt` e
+remove o `packages.txt`. Sem esse arquivo o passo do apt não acontece e o build
+passa. É **o estado de operação atual**, e vale até eles consertarem a imagem.
+
+### Reverter a contingência derruba o aplicativo
+
+Já aconteceu, em 8 de setembro: por informação de que o problema estava
+resolvido, o OCR foi restaurado (`8efd679`), o `packages.txt` voltou junto, o
+app foi recriado e o build falhou. Foi preciso reaplicar a contingência
+(`ac2f4a8`).
+
+**Deletar e recriar o aplicativo não ajuda** — o app novo constrói a partir da
+mesma imagem base e falha igual.
+
+O caminho de volta está no topo do `requirements.txt`: descomentar a linha do
+RapidOCR e recriar o `packages.txt` com `libgl1`, `libglib2.0-0t64` e
+`libgomp1`. **Só faça isso com evidência de que o build passa** — um deploy de
+teste, ou anúncio deles. Informação de terceiros sobre "estar resolvido" já
+custou uma queda.
+
+### O que o aplicativo perde nesse estado
+
+Medido, mesmo envio nos dois modos: com OCR aprova sozinho com confiança 0,97;
+sem OCR vai para `needs_review` com 0,57, texto vazio e zero unidades
+reconhecidas. O arquivo chega ao bucket nos dois casos.
+
+Continuam funcionando login, envio de imagem e documento, upload ao Storage,
+antifraude por checksum e pHash, leaderboard, pontuação e gestão de contas.
+Param a aprovação automática, a extração de texto, a detecção de plataforma
+pelo texto e a contagem automática de unidades — **o administrador decide cada
+envio à mão.**
+
 ## Defeitos que só a validação em produção encontrou
 
 Vale a lista, porque ela é o argumento deste documento — nenhum destes seria
