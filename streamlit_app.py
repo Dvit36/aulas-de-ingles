@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from hashlib import sha256
@@ -1170,6 +1171,27 @@ def _resources_editor(session, actor: User, resources: Sequence[Resource]) -> No
                 st.rerun()
 
 
+def _manual_points_panel(session, actor: User) -> None:
+    """Pontos que não vieram de envio têm de se explicar a quem os recebeu.
+
+    Fica no painel inicial, e não no Histórico, porque é ali que o aluno vê a
+    pontuação. Um número que mudou sem envio nenhum é a pergunta que este
+    painel responde — e ele só aparece quando há o que responder.
+    """
+
+    lancamentos = lancamentos_manuais(session, actor=actor, student_id=actor.id)
+    if not lancamentos:
+        return
+    st.subheader("Pontos lançados pela administração")
+    st.caption(
+        "Estes pontos não vieram de um envio: foram lançados à mão, com o "
+        "motivo escrito por quem lançou."
+    )
+    for lancamento in lancamentos:
+        with _manual_points_card(lancamento):
+            pass
+
+
 def student_dashboard(session, actor: User) -> None:
     first_name = actor.display_name.strip().split()[0]
     st.header(f"Olá, {first_name}")
@@ -1217,6 +1239,7 @@ def student_dashboard(session, actor: User) -> None:
     )
 
     st.link_button("Novo envio", "submit", icon=":material/add:")
+    _manual_points_panel(session, actor)
     st.subheader("Atividades recentes")
     recent = list_submissions(session, actor=actor, limit=3)
     _render_submission_cards(session, actor, recent, settings=None, compact=True)
@@ -2471,6 +2494,29 @@ def catalog_view(session, actor: User, settings: Settings | None = None) -> None
             show_operation_error("save_activity", error)
 
 
+@contextmanager
+def _manual_points_card(lancamento):
+    """O cartão de um lançamento manual, igual nas duas telas.
+
+    Igual de propósito: o que o aluno lê tem de ser o mesmo texto que a
+    administradora escreveu e revê. Duas versões desta função acabariam
+    divergindo, e a divergência apareceria justamente onde ninguém compara —
+    do lado do aluno.
+    """
+
+    with st.container(border=True) as bloco:
+        data = lancamento.occurred_at.strftime("%d/%m/%Y")
+        if lancamento.e_estorno:
+            situacao = " · estorno"
+        elif lancamento.estornado:
+            situacao = " · estornado"
+        else:
+            situacao = ""
+        st.markdown(f"**{lancamento.points:+d} pontos** · {data}{situacao}")
+        st.write(lancamento.reason or "—")
+        yield bloco
+
+
 AVISO_DO_MOTIVO = (
     "O aluno vai ler este texto na tela dele. Depois de gravado ele **não pode "
     "ser editado**: o ledger é imutável, e a única correção possível é estornar "
@@ -2573,16 +2619,7 @@ def _manual_points_history(
         st.caption("Nenhum lançamento manual para este aluno.")
         return
     for lancamento in lancamentos:
-        with st.container(border=True):
-            data = lancamento.occurred_at.strftime("%d/%m/%Y")
-            if lancamento.e_estorno:
-                situacao = " · estorno"
-            elif lancamento.estornado:
-                situacao = " · estornado"
-            else:
-                situacao = ""
-            st.markdown(f"**{lancamento.points:+d} pontos** · {data}{situacao}")
-            st.write(lancamento.reason or "—")
+        with _manual_points_card(lancamento):
             if lancamento.estornavel:
                 _manual_points_reversal_form(session, actor, lancamento, settings)
 
