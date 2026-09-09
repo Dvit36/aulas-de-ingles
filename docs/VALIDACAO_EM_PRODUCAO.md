@@ -24,6 +24,7 @@ resposta a cada conversa.
 | `b857f65` | Exclusão pela tela, no ramo que arquiva | `user_archived` na auditoria em 9/set 02:07 UTC e `profiles.archived_at` da conta `teste` no mesmo instante — a primeira linha dessas que já existiu em produção |
 | migração `0012` + `fa135af` | Lançamento manual, estorno e leitura pelo aluno | Exercitados contra o banco real em transação desfeita, sob `authenticated`: o insert passa com claims de admin; o estorno passa; o segundo estorno é recusado pela aplicação e, por fora dela, pelo índice único; o aluno lê o par com os dois motivos; e o insert cru sob o papel do aluno é recusado pela RLS |
 | migração `0013` + `394558e` | Ledger fechado ao dono, ranking pela função | Ensaiada em transação desfeita com claims reais: **antes** o aluno lia o motivo de outro; **depois** não lê, nem pelo `select` amplo nem perguntando pelo `student_id` alheio, que devolve zero linhas. Aplicada e conferida: `ledger_leitura` não existe mais, `public.ranking()` tem `prosecdef`, `search_path` fixo e execute só para `authenticated`. `leaderboard_rows` foi exercitada sob os dois papéis reais e devolveu `student_id` como texto |
+| migração `0013`, com **duas contas reais** | O ranking mostra os dois, e o motivo do colega não vaza | Com `teste` e `teste2`, cada um com o próprio JWT: os dois veem os dois nomes, na ordem certa, e o `next_rival` do segundo voltou a existir ("faltam 5 pontos para alcançar teste"). Pedindo o `reason` do colega pelo **id do lançamento**, pelo `student_id`, pela soma e pelo `select` amplo: zero linhas nas quatro formas, nos dois sentidos. O próprio motivo continua legível, e o administrador lê os dois |
 
 ## Ainda não exercitado
 
@@ -34,8 +35,7 @@ resposta a cada conversa.
 | `24da0c0` | Guarda do `contas=None` ao renomear | Nenhum chamador atual omite `contas`; só dispara para código futuro |
 | `7d092ac` | Tolerância a motor de OCR ausente | Deploy quebrado |
 | `convergencia-pipeline-etapa2` | Convergência dos dois fluxos de submissão | Não mesclada; o roteiro de quatro envios depende do app no ar |
-| `7fa0ffb` + `7a4a7f1` | As duas telas do lançamento manual | Os serviços estão exercitados contra o banco real, as telas não: ninguém abriu a aba Pontos em produção. E hoje não dá para abrir com efeito — o único aluno, `teste`, está arquivado, e o seletor não mostra arquivados |
-| migração `0013` | O ranking com mais de um aluno, e o vazamento entre duas contas reais | O banco tem um aluno só. Com um aluno, um ranking de uma linha parece certo — foi assim que o defeito passou despercebido. Falta ver o aluno A não conseguindo ler o `reason` do aluno B, cada um com o próprio JWT |
+| `7fa0ffb` + `7a4a7f1` | As duas telas do lançamento manual | Os serviços estão exercitados contra o banco real, as telas não: ninguém abriu a aba Pontos em produção. Dá para exercitar agora — `teste` e `teste2` estão desativados, e o seletor esconde só os **arquivados**, de propósito: conta desativada pode ter estorno pendente |
 
 ## Estado de operação: sem OCR, por tempo indeterminado
 
@@ -117,11 +117,48 @@ segunda etapa falhar sobra um perfil ativo que não entra — sintoma visível n
 primeira tentativa de login. A ordem inversa deixaria uma conta que autentica
 e que a aplicação considera inexistente.
 
+Em 9/set/2026, para a verificação acima, foi criado o aluno `teste2`
+(`849c5f3c-ee41-4441-970e-afac1b270c20`) e um lançamento manual em cada um dos
+dois. **As duas contas foram desativadas em seguida**, pelo caminho da
+aplicação (`save_user` com `active=False`, que bane no Auth antes do commit):
+`teste` e `teste2` são alunos, e alunos ativos aparecem no ranking que os sete
+de verdade vão ver. Desativar é o que os tira de lá — estornar os deixaria
+visíveis com zero.
+
+Os dois lançamentos ficam no ledger, e ficam para sempre: o ledger é imutável,
+e por causa deles essas duas contas não podem mais ser apagadas, só arquivadas.
+
 Não há endpoint administrativo de logout no GoTrue (`POST
 admin/users/{id}/logout` responde `404 page not found`); a revogação foi por
 SQL nas tabelas de sessão do schema `auth`, em transação conferida antes do
 commit. É exceção consciente ao hábito de não tocar schema gerenciado por SQL,
 e o schema `storage` continua fora de alcance, como o AGENTS.md exige.
+
+## Apagar deixou de ser opção, e o banco é quem decide
+
+Medido em produção em 9/set/2026, como dono do banco, em transação desfeita:
+
+```
+BARRADO  delete em ledger_transactions  ->  ledger transactions are immutable
+BARRADO  delete em profiles             ->  viola ledger_transactions_student_id
+```
+
+`ledger_transactions.student_id` é `RESTRICT`, e o ledger é à prova de `delete`
+por gatilho — inclusive para o `postgres`. **A partir do primeiro ponto de um
+aluno, arquivar é a única saída.** Não por decisão nossa: apagar pelo Supabase
+Auth cascateia até `profiles` e é barrado ali, e apagar o lançamento antes
+esbarra no gatilho.
+
+Isso muda o peso do defeito da seção seguinte. O ramo que **remove** de vez só
+se aplica a conta que nunca pontuou — cadastro errado, desfeito no mesmo dia.
+Para aluno com histórico, que é o caso normal a partir do primeiro envio
+aprovado, a resposta certa é arquivar, e arquivar funciona. O caminho que
+continua sem confirmação é o que quase nunca vai ser percorrido.
+
+Vale notar de onde veio a descoberta: da pergunta "posso deixar estes dois
+lançamentos de teste?". A resposta honesta exigia saber o que eles custam, e o
+que custam é que as contas deixaram de poder ser apagadas. **Pergunta sobre
+limpeza que se responde sem medir vira regra errada no documento.**
 
 ## Defeito que se resolveu sozinho — e como se soube
 

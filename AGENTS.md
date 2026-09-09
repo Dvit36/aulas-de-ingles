@@ -50,11 +50,18 @@ uploads, downloads, OCR ou infraestrutura.
   inclusive **comentário** e `like '...%'` — não só para o `raise exception
   '%'` do plpgsql. Use `text()`, que não interpola, ou escreva o comando sem o
   caractere. Isto já custou três tropeços no mesmo dia.
-- Apagar uma conta pela tela **arquiva** quando há histórico, e isso passou a
-  funcionar em produção depois de `b857f65`: a conta `teste` foi arquivada em
-  9/set/2026, com `user_archived` na auditoria. O caminho que **remove** —
-  conta sem histórico, que apaga também no Auth — continua sem confirmação em
-  produção. Enquanto isso, remoção definitiva se faz pelo Supabase Auth, que
+- **A partir do primeiro ponto de um aluno, arquivar é a única saída.** Não
+  por política nossa: o banco recusa. `ledger_transactions.student_id` é
+  `RESTRICT`, e o ledger é à prova de `delete` por gatilho — inclusive para o
+  `postgres`. Apagar a conta pelo Supabase Auth cascateia até `profiles` e é
+  barrado ali; apagar o lançamento antes responde `ledger transactions are
+  immutable`. Medido em produção, como dono do banco, em transação desfeita.
+  Apagar de vez só existe para conta que nunca pontuou.
+- A tela já faz a coisa certa: `count_user_references` conta os lançamentos, e
+  quem tem histórico é arquivado, não removido. Arquivar pela tela funciona em
+  produção desde `b857f65` — a conta `teste` foi arquivada em 9/set/2026, com
+  `user_archived` na auditoria.
+- Para conta sem histórico, remoção definitiva se faz pelo Supabase Auth, que
   leva o perfil por cascade. **Nunca apague só de `public.profiles`**: sobra
   uma conta que ainda autentica e que o detector da aba Alunos não consegue
   ver. Ver `docs/EXCLUSAO_DE_CONTA.md`, que reúne os procedimentos manuais de

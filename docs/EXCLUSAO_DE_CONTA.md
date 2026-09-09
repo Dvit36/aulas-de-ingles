@@ -8,8 +8,32 @@ primeira linha de exclusão ou arquivamento que já existiu neste banco — o
 parágrafo abaixo, que diz que nunca houve nenhuma, estava certo até então.
 
 Continua sem confirmação o ramo que **remove** de vez: conta sem histórico, que
-apaga também no Auth. Para essas, e para remoção definitiva de qualquer conta,
-o procedimento pelo Supabase Auth mais abaixo segue valendo.
+apaga também no Auth.
+
+## E esse resto importa muito menos do que parecia
+
+Em 9/set/2026, medido em produção como dono do banco e em transação desfeita:
+
+```
+BARRADO  delete em ledger_transactions  -> ledger transactions are immutable
+BARRADO  delete em profiles             -> viola ledger_transactions_student_id
+```
+
+`ledger_transactions.student_id` é `RESTRICT`, e o ledger é à prova de `delete`
+por gatilho, inclusive para o `postgres`. **A partir do primeiro ponto de um
+aluno, apagar deixa de ser uma opção** — não por escolha nossa, mas porque o
+banco recusa. O cascade que vem do Supabase Auth chega em `profiles` e para
+ali.
+
+Isso reenquadra o defeito acima. O ramo que remove de vez só se aplica a conta
+que nunca pontuou: um cadastro errado, desfeito no mesmo dia. Para todo aluno
+com histórico — que é o caso normal, a partir do primeiro envio aprovado — a
+resposta certa **é arquivar**, e arquivar funciona. O caminho que continua sem
+confirmação em produção é o caminho que quase nunca vai ser percorrido.
+
+O procedimento pelo Supabase Auth mais abaixo segue valendo para conta sem
+lançamento nenhum. Para as outras, ele vai falhar — e é bom que falhe: apagar
+o perfil de quem pontuou deixaria o ledger apontando para ninguém.
 
 ## O defeito
 
