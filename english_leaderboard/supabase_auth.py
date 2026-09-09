@@ -462,7 +462,12 @@ def trocar_senha(
     if not access_token:
         raise SessaoExpirada("Sessão ausente")
     try:
-        gateway.post(
+        # PUT, como toda atualização no GoTrue. Ficou POST quando o `put` foi
+        # acrescentado ao gateway e `desativar_conta` e `redefinir_senha` foram
+        # padronizados — esta passou batido, e o 405 só apareceu depois de o
+        # defeito do `apikey` sair da frente: enquanto a chamada morria com 401
+        # na porta, nunca chegava a ser roteada.
+        gateway.put(
             "user",
             {"password": nova_senha},
             chave=chave_publica,

@@ -16,6 +16,7 @@ from english_leaderboard.supabase_auth import (
     CredenciaisInvalidas,
     Sessao,
     SessaoExpirada,
+    atualizar_username,
     criar_conta,
     desativar_conta,
     entrar,
@@ -462,6 +463,149 @@ def test_the_apikey_header_never_carries_a_user_token(monkeypatch) -> None:
     assert vistos[1][2] == f"Bearer {TOKEN}"
     assert vistos[2][1] == SECRETA
     assert vistos[2][2] == f"Bearer {SECRETA}"
+
+
+# Cada chamada ao GoTrue, com o caminho e o verbo que ela deve usar.
+#
+# Existe porque um verbo errado passou despercebido: `trocar_senha` ficou em
+# POST quando `put` foi acrescentado ao gateway e as outras atualizações foram
+# padronizadas. O teste que a cobria conferia corpo e chave, não o método — e
+# o defeito só apareceu em produção, com um 405, depois que outro defeito
+# parou de mascará-lo.
+#
+# A tabela é o inventário: uma chamada nova sem linha aqui é uma chamada cujo
+# verbo ninguém conferiu.
+CHAMADAS_ESPERADAS = [
+    (
+        "entrar",
+        lambda g: entrar(
+            g, username="ana", password="s3nh4", chave_publica=PUBLICA,
+            dominio=DOMINIO,
+        ),
+        "POST",
+        "token?grant_type=password",
+    ),
+    (
+        "renovar",
+        lambda g: renovar(
+            g, refresh_token="tok", chave_publica=PUBLICA,
+        ),
+        "POST",
+        "token?grant_type=refresh_token",
+    ),
+    (
+        "sair",
+        lambda g: sair(g, access_token="tok", chave_publica=PUBLICA),
+        "POST",
+        "logout",
+    ),
+    (
+        "criar_conta",
+        lambda g: criar_conta(
+            g, username="ana", display_name="Ana", chave_secreta=SECRETA,
+            dominio=DOMINIO,
+        ),
+        "POST",
+        "admin/users",
+    ),
+    (
+        "trocar_senha",
+        lambda g: trocar_senha(
+            g, access_token="tok", nova_senha="nova", chave_publica=PUBLICA,
+        ),
+        "PUT",
+        "user",
+    ),
+    (
+        "redefinir_senha",
+        lambda g: redefinir_senha(g, user_id=UID, chave_secreta=SECRETA),
+        "PUT",
+        f"admin/users/{UID}",
+    ),
+    (
+        "atualizar_username",
+        lambda g: atualizar_username(
+            g, user_id=UID, username="ana", chave_secreta=SECRETA,
+            dominio=DOMINIO,
+        ),
+        "PUT",
+        f"admin/users/{UID}",
+    ),
+    (
+        "desativar_conta",
+        lambda g: desativar_conta(g, user_id=UID, chave_secreta=SECRETA),
+        "PUT",
+        f"admin/users/{UID}",
+    ),
+    (
+        "reativar_conta",
+        lambda g: reativar_conta(g, user_id=UID, chave_secreta=SECRETA),
+        "PUT",
+        f"admin/users/{UID}",
+    ),
+    (
+        "remover_conta",
+        lambda g: remover_conta(g, user_id=UID, chave_secreta=SECRETA),
+        "DELETE",
+        f"admin/users/{UID}",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("rotulo", "executar", "verbo", "caminho"),
+    CHAMADAS_ESPERADAS,
+    ids=[c[0] for c in CHAMADAS_ESPERADAS],
+)
+def test_every_call_uses_the_verb_and_path_gotrue_expects(
+    rotulo, executar, verbo, caminho
+) -> None:
+    """Verbo e caminho de cada chamada, conferidos um a um.
+
+    `POST /user` chegou a ser roteado pelo GoTrue com JWT inválido — o
+    middleware corta antes — então nem uma sonda contra o serviço real
+    distinguia. Aqui a afirmação é sobre o que o código pede, que é o que
+    estava errado.
+    """
+
+    gateway = GatewayFalso()
+    gateway.respostas["token?grant_type=password"] = _resposta_sessao()
+    gateway.respostas["token?grant_type=refresh_token"] = _resposta_sessao()
+    gateway.respostas["admin/users"] = {"id": UID}
+
+    executar(gateway)
+
+    assert gateway.verbos == [verbo], f"{rotulo} usou {gateway.verbos}"
+    assert gateway.chamadas[0][0] == caminho
+
+
+def test_the_verb_table_covers_every_call_in_the_module() -> None:
+    """A tabela acima precisa acompanhar o módulo, senão protege o passado.
+
+    Uma função nova que fale com o gateway e não apareça na tabela reprova
+    aqui — é o que evita descobrir o próximo verbo errado em produção.
+    """
+
+    import ast
+    from pathlib import Path
+
+    fonte = Path("english_leaderboard/supabase_auth.py").read_text()
+    chamam_o_gateway = {
+        fn.name
+        for fn in ast.walk(ast.parse(fonte))
+        if isinstance(fn, ast.FunctionDef)
+        for no in ast.walk(fn)
+        if isinstance(no, ast.Call)
+        and isinstance(no.func, ast.Attribute)
+        and no.func.attr in ("post", "put", "delete")
+        and getattr(no.func.value, "id", "") == "gateway"
+    }
+    na_tabela = {c[0] for c in CHAMADAS_ESPERADAS}
+
+    assert chamam_o_gateway - na_tabela == set(), (
+        "funções que falam com o GoTrue e não têm verbo conferido: "
+        f"{sorted(chamam_o_gateway - na_tabela)}"
+    )
 
 
 def test_account_removal_uses_delete() -> None:
