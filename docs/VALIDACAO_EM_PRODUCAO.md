@@ -330,6 +330,47 @@ saber disso antes de cadastrar os sete, não depois.
 ver. O desenho do contador de download vai junto com o da premiação: os dois
 são "aluno mexe em contador global", e são decisão pendente.
 
+### O contador de egress mede uma aproximação — e o que protege de verdade
+
+Registrado aqui para não ter de ser reconstruído quando a decisão chegar.
+
+**O débito acontece na assinatura da URL, não na transferência.** O próprio
+código admite: *"Assinar não transfere bytes, mas quem recebe a URL vai
+baixar."* Isso erra nos dois sentidos:
+
+- **Subconta** quando o navegador busca a mesma URL mais de uma vez dentro da
+  janela de validade — recarregar, dois `<img>` do mesmo arquivo, o preview e
+  o clique. Egress real de 3 MB registrado como 1 MB.
+- **Superconta** quando a URL é assinada e ninguém abre — o cartão assina para
+  exibir e o aluno rola a página sem clicar. Egress registrado sem byte saindo.
+
+Então a pergunta certa não é "como medir cada byte", e sim **qual teto
+realmente protege a conta do Supabase**. Egress só acontece dentro da janela
+de vida de uma URL; fora dela o link é inútil. O consumo máximo possível é,
+aproximadamente, *assinaturas × tamanho × quantas buscas couberem na janela*.
+Três alavancas, todas deriváveis, nenhuma dependendo de contar transferência:
+
+1. **A janela.** Encurtá-la corta a subconta quase toda sem atrapalhar
+   ninguém: o navegador busca o arquivo em menos de um segundo. **Adotada:**
+   90 s → 30 s. Ver abaixo o ajuste que ela exigiu no cache.
+2. **Assinaturas por aluno por período.** É contagem de eventos que o próprio
+   banco produz, não medição. Um aluno legítimo abre dezenas de comprovantes
+   por mês; um laço na aplicação faz milhares. A diferença é de ordem de
+   grandeza, o que torna o limite fácil de escolher e difícil de esbarrar por
+   acidente. **Adiada**, para ser decidida junto com a premiação.
+3. **Teto derivado do que o aluno tem direito a ver.** Ele só assina os
+   próprios arquivos, então `sum(file_size)` dos arquivos dele é o egress de
+   uma varredura completa do próprio histórico. Um múltiplo disso por mês —
+   dez, vinte — é um teto com significado, e o banco calcula sozinho.
+   **Adiada**, junto com a 2.
+
+Com sete alunos e o limite atual de 2 GB/mês, nenhuma das três aperta por uso
+normal. O que elas protegem é o risco que `storage_budget.py` diz proteger: um
+laço na aplicação, não o aluno.
+
+A 2 e a 3 ficaram juntas da premiação porque as três decisões são a mesma
+pergunta: **o que um aluno pode fazer crescer num contador que é de todos.**
+
 ### Três caminhos do aluno estavam quebrados, não um
 
 Além do envio, o **cancelamento** — `add_audit` recusado, transação abortada,
