@@ -25,6 +25,7 @@ resposta a cada conversa.
 | migração `0012` + `fa135af` | Lançamento manual, estorno e leitura pelo aluno | Exercitados contra o banco real em transação desfeita, sob `authenticated`: o insert passa com claims de admin; o estorno passa; o segundo estorno é recusado pela aplicação e, por fora dela, pelo índice único; o aluno lê o par com os dois motivos; e o insert cru sob o papel do aluno é recusado pela RLS |
 | migração `0013` + `394558e` | Ledger fechado ao dono, ranking pela função | Ensaiada em transação desfeita com claims reais: **antes** o aluno lia o motivo de outro; **depois** não lê, nem pelo `select` amplo nem perguntando pelo `student_id` alheio, que devolve zero linhas. Aplicada e conferida: `ledger_leitura` não existe mais, `public.ranking()` tem `prosecdef`, `search_path` fixo e execute só para `authenticated`. `leaderboard_rows` foi exercitada sob os dois papéis reais e devolveu `student_id` como texto |
 | migração `0013`, com **duas contas reais** | O ranking mostra os dois, e o motivo do colega não vaza | Com `teste` e `teste2`, cada um com o próprio JWT: os dois veem os dois nomes, na ordem certa, e o `next_rival` do segundo voltou a existir ("faltam 5 pontos para alcançar teste"). Pedindo o `reason` do colega pelo **id do lançamento**, pelo `student_id`, pela soma e pelo `select` amplo: zero linhas nas quatro formas, nos dois sentidos. O próprio motivo continua legível, e o administrador lê os dois |
+| migração `0017` + código | Ver a própria prova, pelo aluno — era BLOQUEANTE | `url_temporaria` de verdade, sob claims da conta `teste`: a URL é assinada (antes, recusada pela RLS) com a janela nova de 30 s; o egress sobe exatamente o tamanho do arquivo, lido da linha; o teto recusa a assinatura que estouraria (7 + 3 de 9 MB) sem debitar nada; e o arquivo de outro aluno segue fechado. O cache de sessão foi medido na suíte: reruns dentro da folga reaproveitam a URL, e a margem ajustada (5 s) mantém 83% de reaproveitamento |
 
 ## Ainda não exercitado
 
@@ -36,7 +37,6 @@ resposta a cada conversa.
 | `7d092ac` | Tolerância a motor de OCR ausente | Deploy quebrado |
 | `convergencia-pipeline-etapa2` | Convergência dos dois fluxos de submissão | Não mesclada; o roteiro de quatro envios depende do app no ar |
 | `7fa0ffb` + `7a4a7f1` | As duas telas do lançamento manual | Os serviços estão exercitados contra o banco real, as telas não: ninguém abriu a aba Pontos em produção. Dá para exercitar agora — `teste` e `teste2` estão desativados, e o seletor esconde só os **arquivados**, de propósito: conta desativada pode ter estorno pendente |
-| **BLOQUEANTE** | Ver a própria prova, pelo aluno | Quebrado, não "não exercitado": o contador de download escreve em `storage_usage`, fechada ao aluno. Quem envia não abre o que enviou, e vai achar que o sistema perdeu o arquivo. Ver a seção do envio |
 
 ## Estado de operação: sem OCR, por tempo indeterminado
 
@@ -315,7 +315,7 @@ leitura passa por `public.uso_de_storage()`. Medido sob claims reais, com
 O contraste que dimensiona o buraco: a função devolve 1.001.048 bytes onde a
 soma visível ao aluno devolve 2.048.
 
-### BLOQUEANTE: o aluno não consegue abrir o que enviou
+### Era BLOQUEANTE: o aluno não conseguia abrir o que enviou — resolvido
 
 `storage_usage` é escrita também no **download**, ao assinar a URL da prova. O
 contador de download continua fechado ao aluno, porque soma `egress_bytes` —
@@ -327,8 +327,13 @@ o que ele mandou, e essa é provavelmente a pergunta que mais vai chegar. Vale
 saber disso antes de cadastrar os sete, não depois.
 
 É o terceiro caminho do aluno derrubado pela mesma tabela — enviar, cancelar,
-ver. O desenho do contador de download vai junto com o da premiação: os dois
-são "aluno mexe em contador global", e são decisão pendente.
+ver.
+
+**Resolvido na `0017`**, pelo caminho mais simples que não precisava ser
+imperfeito: no ponto do débito o código já tinha o `file_id` e já tinha
+autorizado o acesso. A função recebe qual arquivo e lê `file_size` da própria
+linha — ninguém informa bytes. As outras duas alavancas do egress seguem
+adiadas junto com a premiação; ver a seção seguinte.
 
 ### O contador de egress mede uma aproximação — e o que protege de verdade
 
@@ -352,7 +357,16 @@ Três alavancas, todas deriváveis, nenhuma dependendo de contar transferência:
 
 1. **A janela.** Encurtá-la corta a subconta quase toda sem atrapalhar
    ninguém: o navegador busca o arquivo em menos de um segundo. **Adotada:**
-   90 s → 30 s. Ver abaixo o ajuste que ela exigiu no cache.
+   90 s → 30 s.
+
+   Ela não era de uma linha. O cache de sessão só reaproveita a URL enquanto
+   restar `MARGEM_URL_SEGUNDOS` de folga, e o Streamlit reroda a cada clique.
+   Com a margem antiga (15 s) e a janela nova, a URL seria reaproveitável por
+   metade da vida dela, e o aluno navegando reassinaria até cinco vezes mais —
+   a janela curta pioraria a superconta. A margem foi para 5 s, que devolve os
+   83% de reaproveitamento de antes (25 de 30, como eram 75 de 90).
+   `tests/test_url_assinada_cache.py` trava a proporção, e foi verificado por
+   sabotagem: margem de volta a 15 derruba dois testes.
 2. **Assinaturas por aluno por período.** É contagem de eventos que o próprio
    banco produz, não medição. Um aluno legítimo abre dezenas de comprovantes
    por mês; um laço na aplicação faz milhares. A diferença é de ordem de

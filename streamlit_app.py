@@ -1463,7 +1463,17 @@ def _submission_filters(
 URLS_ASSINADAS_KEY = "urls_assinadas"
 # Folga para o clique acontecer depois de a página renderizar. Uma URL a menos
 # de 15 segundos do fim é reassinada em vez de entregue quase vencida.
-MARGEM_URL_SEGUNDOS = 15
+# Casada com `URL_EXPIRA_SEGUNDOS` (30 s). O cache reaproveita a URL só enquanto
+# ela tiver pelo menos esta folga — e o Streamlit reroda a cada clique, então
+# fora dessa janela cada rerun reassina e redebita o arquivo inteiro.
+#
+# Com a janela em 30 s, uma margem de 15 s deixaria a URL reaproveitável por só
+# metade da vida dela, e o aluno navegando reassinaria até cinco vezes mais que
+# antes: a janela curta, feita para cortar a subconta, pioraria a superconta.
+# 5 s devolve os mesmos 83% de reaproveitamento de antes (25 de 30, como eram
+# 75 de 90). A margem só existe para a URL não vencer no meio da busca, e o
+# navegador busca em menos de um segundo.
+MARGEM_URL_SEGUNDOS = 5
 
 ICONE_POR_TIPO = {"image": "🖼️", "pdf": "📕", "docx": "📘", "txt": "📄"}
 

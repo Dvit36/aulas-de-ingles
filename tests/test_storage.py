@@ -332,7 +332,9 @@ def test_signed_url_is_only_issued_after_authorization(conexao) -> None:
         limites=LIMITES,
     )
     assert registro.storage_key in url
-    assert "expira=90" in url  # janela curta por padrão
+    # 30 s é decisão, não detalhe: a janela curta corta a subconta do egress.
+    # Casada com MARGEM_URL_SEGUNDOS; mudar uma sem a outra estraga o cache.
+    assert "expira=30" in url
 
     with pytest.raises(ArquivoNaoAutorizado):
         url_temporaria(

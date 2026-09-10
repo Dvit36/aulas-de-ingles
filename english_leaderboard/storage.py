@@ -33,7 +33,14 @@ UUID_EM_PATH = re.compile(
 
 # Janela curta: a URL assinada é para a entrega imediata de um arquivo, não
 # para virar link compartilhável.
-URL_EXPIRA_SEGUNDOS = 90
+# 30 s, e não mais 90. O egress só acontece dentro da janela de vida de uma URL,
+# e o débito é feito na assinatura — então cada busca extra do navegador dentro
+# da janela é egress que o contador não vê. O navegador busca o arquivo em
+# menos de um segundo; janela longa só serve à subconta.
+#
+# Casada com `MARGEM_URL_SEGUNDOS` em `streamlit_app.py`: mexer numa sem olhar a
+# outra estraga o cache de sessão. Ver o comentário de lá.
+URL_EXPIRA_SEGUNDOS = 30
 TIMEOUT_SEGUNDOS = 30
 
 

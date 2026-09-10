@@ -183,6 +183,34 @@ def registrar_upload(conexao: Connection, *, momento: datetime | None = None) ->
     _somar(conexao, {"upload_count": 1}, momento=momento)
 
 
+def registrar_download_de_arquivo(
+    conexao: Connection,
+    *,
+    file_id: str,
+    bytes_saida: int,
+    momento: datetime | None = None,
+) -> None:
+    """Debita o egress de um arquivo, pelo arquivo — não pelo número.
+
+    No PostgreSQL passa por `public.registrar_download_do_arquivo`, que lê o
+    tamanho **da própria linha** de `submission_files`. O `bytes_saida` que
+    chega aqui é ignorado de propósito: o aluno roda este caminho, e uma
+    função que aceitasse o número deixaria ele zerar o contador para escapar
+    do teto. Sem ela o débito era recusado pela RLS e o aluno não conseguia
+    abrir o que tinha enviado.
+
+    No SQLite não há RLS nem função, e o número serve.
+    """
+
+    if _sob_rls(conexao):
+        conexao.execute(
+            text("select public.registrar_download_do_arquivo(cast(:a as uuid))"),
+            {"a": str(file_id)},
+        )
+        return
+    registrar_download(conexao, bytes_saida=bytes_saida, momento=momento)
+
+
 def registrar_download(
     conexao: Connection, *, bytes_saida: int, momento: datetime | None = None
 ) -> None:
@@ -234,6 +262,7 @@ __all__ = [
     "garantir_espaco",
     "periodo_atual",
     "registrar_download",
+    "registrar_download_de_arquivo",
     "registrar_upload",
     "uso_atual",
 ]

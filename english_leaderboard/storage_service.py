@@ -33,7 +33,7 @@ from .storage_budget import (
     LimitesStorage,
     garantir_egress,
     garantir_espaco,
-    registrar_download,
+    registrar_download_de_arquivo,
     registrar_upload,
 )
 
@@ -245,7 +245,7 @@ def baixar_arquivo(
     )
     garantir_egress(conexao, bytes_saida=objeto.size_bytes, limites=limites)
     dados = gateway.download(objeto.key)
-    registrar_download(conexao, bytes_saida=len(dados))
+    registrar_download_de_arquivo(conexao, file_id=file_id, bytes_saida=len(dados))
     return dados, objeto
 
 
@@ -272,7 +272,9 @@ def url_temporaria(
     # Assinar não transfere bytes, mas quem recebe a URL vai baixar.
     garantir_egress(conexao, bytes_saida=objeto.size_bytes, limites=limites)
     url = gateway.signed_url(objeto.key, expira_em)
-    registrar_download(conexao, bytes_saida=objeto.size_bytes)
+    registrar_download_de_arquivo(
+        conexao, file_id=file_id, bytes_saida=objeto.size_bytes
+    )
     return url
 
 
