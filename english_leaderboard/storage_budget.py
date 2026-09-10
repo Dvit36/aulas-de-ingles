@@ -58,9 +58,28 @@ def periodo_atual(momento: datetime | None = None) -> str:
     return f"{agora.year:04d}-{agora.month:02d}"
 
 
+def _sob_rls(conexao: Connection) -> bool:
+    """Esta conexão enxerga a contabilidade global, ou só o pedaço dela?
+
+    No PostgreSQL o pipeline de envio roda como `authenticated`, e
+    `storage_usage` é `ALL: is_admin()`. Sob esse papel a tabela some e a soma
+    de `submission_files` devolve só os arquivos do próprio aluno — **sem
+    erro**. As travas decidiam contra zero, e o teto de custo simplesmente não
+    valia para quem gasta.
+
+    Por isso a leitura passa por `public.uso_de_storage()`, que é
+    `SECURITY DEFINER` e devolve os números de verdade. No SQLite não há RLS
+    nem função, e a consulta direta já responde certo.
+    """
+
+    return conexao.dialect.name == "postgresql"
+
+
 def bytes_armazenados(conexao: Connection) -> int:
     """Espaço ocupado, somado dos metadados em vez de consultado no bucket."""
 
+    if _sob_rls(conexao):
+        return int(uso_atual(conexao).stored_bytes)
     return int(
         conexao.execute(
             text("select coalesce(sum(file_size), 0) from submission_files")
@@ -71,6 +90,21 @@ def bytes_armazenados(conexao: Connection) -> int:
 
 def uso_atual(conexao: Connection, *, momento: datetime | None = None) -> UsoStorage:
     periodo = periodo_atual(momento)
+    if _sob_rls(conexao):
+        linha = conexao.execute(
+            text(
+                "select egress_bytes, upload_count, download_count, stored_bytes"
+                " from public.uso_de_storage(:p)"
+            ),
+            {"p": periodo},
+        ).first()
+        return UsoStorage(
+            period=periodo,
+            egress_bytes=int(linha[0]) if linha else 0,
+            upload_count=int(linha[1]) if linha else 0,
+            download_count=int(linha[2]) if linha else 0,
+            stored_bytes=int(linha[3]) if linha else 0,
+        )
     linha = conexao.execute(
         text(
             "select egress_bytes, upload_count, download_count"
@@ -132,8 +166,20 @@ def garantir_egress(
 
 
 def registrar_upload(conexao: Connection, *, momento: datetime | None = None) -> None:
-    """Contabiliza um envio já concluído. Upload não conta como egress."""
+    """Contabiliza um envio já concluído. Upload não conta como egress.
 
+    No PostgreSQL quem conta é o gatilho `submission_files_conta_upload`, e
+    esta função não faz nada: a contagem é **derivada** da linha de arquivo
+    que o aluno grava, em vez de informada por quem chama. Uma função que
+    recebesse o número deixaria qualquer aluno inflar ou zerar o teto de custo
+    de todo mundo.
+
+    Chamar aqui também somaria duas vezes — e o dobro, num contador de
+    orçamento, é tão ruim quanto a metade.
+    """
+
+    if _sob_rls(conexao):
+        return
     _somar(conexao, {"upload_count": 1}, momento=momento)
 
 
