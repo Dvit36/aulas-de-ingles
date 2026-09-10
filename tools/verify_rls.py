@@ -6,6 +6,39 @@ precisa barrar. Remove tudo que criou ao final, inclusive em caso de erro.
 
 Uso:
     python tools/verify_rls.py
+
+===========================================================================
+ANTES DE ESCREVER QUALQUER VERIFICAÇÃO SOB RLS, LEIA AS TRÊS ARMADILHAS
+===========================================================================
+
+**1. Zero linhas não é ausência — é invisibilidade.** Sob RLS, o que o papel
+não pode ver não vira erro: vira consulta vazia, `None`, contagem `0`. Uma
+conferência feita sob o mesmo papel que fez a escrita responde "o que este
+papel enxerga", e não "o que está gravado". Isso já produziu um falso
+"FALHA DE SEGURANÇA" e uma linha de auditoria dada como não gravada quando
+estava. Use `conferir()` abaixo: ela sempre lê como dono.
+
+Pior: quando o **código de produção** faz isso, não há nem falso negativo para
+notar. `garantir_espaco` somava `submission_files` sob o papel do aluno,
+enxergava só os arquivos dele, e o teto de custo do mês decidia contra um
+número menor que o real — sem erro nenhum, por semanas.
+
+**2. `session.begin_nested()` reaplica a identidade da sessão.** O SAVEPOINT
+dispara `after_begin`, que chama `aplicar_identidade` de novo com o que estiver
+em `session.info`. Uma troca de papel feita à mão volta atrás sem avisar, e a
+medição passa a responder sobre outra pessoa. Para medir o papel do aluno,
+declare a sessão inteira como dele — ou trabalhe no nível da `Connection`, como
+este arquivo faz.
+
+E cuidado com o inverso: `Session.rollback()` numa sessão que compartilha a
+`Connection` derruba a transação externa junto. Já fez cinco casos de teste
+passarem por `function does not exist` em vez de pela trava que deviam provar.
+
+**3. Enumerar tabelas lendo o código acha o que você lembra de procurar.**
+O mapa das escritas do envio foi montado lendo `submit_evidence`, e ficou
+faltando `storage_usage` — que é escrita dois níveis abaixo, dentro de
+`salvar_arquivo`. Quem achou foi rodar o caminho de verdade. Depois de
+corrigir, **rode de novo**: a enumeração corrigida ainda é enumeração.
 """
 
 from __future__ import annotations
@@ -74,6 +107,30 @@ def como(conexao, user_id: str | None):
         except Exception:
             conexao.rollback()
             conexao.execute(text("select set_config('role', 'postgres', true)"))
+
+
+def conferir(conexao, sql: str, params: dict | None = None):
+    """Lê **sempre como dono**, e devolve o papel que estava valendo.
+
+    É o par de `como()`: aquela age sob o papel do aluno, esta confere o que
+    ficou gravado. Existe porque a conferência sob o papel do aluno é a
+    armadilha número 1 do topo deste arquivo — ela devolve zero linhas por
+    invisibilidade e ninguém desconfia.
+
+    Quem quiser conferir o que o aluno **enxerga** — que é outra pergunta,
+    legítima — use `conexao.execute` dentro do bloco `como()`, e escreva no
+    teste que a pergunta é essa.
+    """
+
+    papel = conexao.execute(text("select current_setting('role', true)")).scalar()
+    conexao.execute(text("select set_config('role', 'postgres', true)"))
+    try:
+        return conexao.execute(text(sql), params or {}).all()
+    finally:
+        if papel and papel not in ("postgres", "none"):
+            conexao.execute(
+                text("select set_config('role', :p, true)"), {"p": papel}
+            )
 
 
 def main() -> int:

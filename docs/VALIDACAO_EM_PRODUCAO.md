@@ -36,6 +36,7 @@ resposta a cada conversa.
 | `7d092ac` | Tolerância a motor de OCR ausente | Deploy quebrado |
 | `convergencia-pipeline-etapa2` | Convergência dos dois fluxos de submissão | Não mesclada; o roteiro de quatro envios depende do app no ar |
 | `7fa0ffb` + `7a4a7f1` | As duas telas do lançamento manual | Os serviços estão exercitados contra o banco real, as telas não: ninguém abriu a aba Pontos em produção. Dá para exercitar agora — `teste` e `teste2` estão desativados, e o seletor esconde só os **arquivados**, de propósito: conta desativada pode ter estorno pendente |
+| **BLOQUEANTE** | Ver a própria prova, pelo aluno | Quebrado, não "não exercitado": o contador de download escreve em `storage_usage`, fechada ao aluno. Quem envia não abre o que enviou, e vai achar que o sistema perdeu o arquivo. Ver a seção do envio |
 
 ## Estado de operação: sem OCR, por tempo indeterminado
 
@@ -224,6 +225,12 @@ barrado passou porque, dentro do SAVEPOINT, quem inseria era o administrador.
 Remedido com a sessão inteira declarada como do aluno: a RLS barra, com
 `new row violates row-level security policy`.
 
+**Existe helper para isto: `conferir()`, em `tools/verify_rls.py`.** Ela lê
+sempre como dono e devolve o papel que estava valendo. O arquivo abre com as
+três armadilhas desta seção, porque quem vai escrever uma verificação começa
+por ele. A armadilha me pegou duas vezes sabendo que existia — se pega quem a
+escreveu, pega qualquer um, e nota em documento não bastou.
+
 **Ao verificar, cuidado com o que a leitura devolve.** Sob RLS, o que você não
 pode ver aparece como zero linhas ou `NULL` — não como erro. Contar
 `audit_logs` sob o papel do aluno devolve `0` mesmo com as linhas gravadas, e
@@ -264,11 +271,78 @@ porque estamos sem OCR e nada alcança a confiança de aprovação automática. 
 sorte, não desenho: quando o OCR voltar, o caminho feliz da atividade principal
 encontra outra parede.
 
-Duas coisas ficaram claras aqui, e as duas são sobre método:
+### Consertado, e verificado rodando o caminho de verdade
+
+As migrações `0014` e `0015` abriram as portas que faltavam, por função
+`SECURITY DEFINER` e por gatilho — nunca por política de insert para o aluno,
+que devolveria a ele a capacidade de forjar as linhas de fora da aplicação.
+
+Verificado com `submit_evidence` de verdade, sob claims da conta `teste`, em
+transação desfeita: o envio é **aceito**, cai em `needs_review` como esperado
+sem OCR, grava o arquivo, as oito linhas de `rule_checks` pela função e a
+auditoria com o ator certo.
+
+### O que a enumeração não achou, e a execução achou
+
+O mapa das escritas foi montado lendo `submit_evidence`. Faltou
+`storage_usage`, escrita dois níveis abaixo, dentro de `salvar_arquivo`. Quem
+achou foi rodar o caminho real; a leitura do código não tinha revelado.
+
+**Lição para a próxima vez que alguém mapear escritas sob RLS: enumerar
+tabelas lendo código acha o que você lembra de procurar. Rodar o caminho real
+acha o resto — e depois de corrigir, rode de novo, porque a enumeração
+corrigida ainda é enumeração.** Na segunda rodada não apareceu nona tabela,
+mas foi a rodada que provou isso, não a suposição.
+
+### O teto de custo não valia para quem gasta
+
+O achado mais grave do dia, e o mais silencioso. `storage_usage` é
+`ALL: is_admin()`. Sob o papel do aluno a linha do mês **some**, e a soma de
+`submission_files` devolve só os arquivos dele. `uso_atual` respondia zeros,
+`bytes_armazenados` respondia quase zero, e `garantir_espaco` e
+`garantir_egress` decidiam contra esses números.
+
+Ou seja: o limite que existe para a conta do Supabase não estourar **nunca foi
+aplicado à única role que consome storage** — e sem erro nenhum, porque a
+leitura barrada por RLS não falha, devolve vazio.
+
+Corrigido na `0015`: o upload é contado por gatilho em `submission_files`
+(derivado da linha que o aluno já grava, sem número informado por ninguém) e a
+leitura passa por `public.uso_de_storage()`. Medido sob claims reais, com
+300 MB ocupados por outro aluno: o aluno lê 300 MB onde antes lia 0, aceita
+300+10 de 320 e recusa 300+30; recusa egress de 8+3 de 10.
+
+O contraste que dimensiona o buraco: a função devolve 1.001.048 bytes onde a
+soma visível ao aluno devolve 2.048.
+
+### BLOQUEANTE: o aluno não consegue abrir o que enviou
+
+`storage_usage` é escrita também no **download**, ao assinar a URL da prova. O
+contador de download continua fechado ao aluno, porque soma `egress_bytes` —
+que é dinheiro — e não tem linha de onde derivar.
+
+Consequência prática, e não é pendência de fundo de gaveta: **quem envia não
+consegue abrir o próprio arquivo.** O aluno vai concluir que o sistema perdeu
+o que ele mandou, e essa é provavelmente a pergunta que mais vai chegar. Vale
+saber disso antes de cadastrar os sete, não depois.
+
+É o terceiro caminho do aluno derrubado pela mesma tabela — enviar, cancelar,
+ver. O desenho do contador de download vai junto com o da premiação: os dois
+são "aluno mexe em contador global", e são decisão pendente.
+
+### Três caminhos do aluno estavam quebrados, não um
+
+Além do envio, o **cancelamento** — `add_audit` recusado, transação abortada,
+nada gravado — e o **download** acima. O cancelamento saiu junto na `0014`,
+pela mesma função de auditoria.
+
+Nenhum dos três tinha sido percorrido por ninguém em produção.
+
+### E as duas lições de método
 
 - **A tabela de políticas não foi lida junto com o código que escreve.** As
   políticas foram escritas para "aluno lê o próprio, admin escreve", e o
-  pipeline escreve seis tabelas sob o papel do aluno. Ninguém confrontou as
+  pipeline escreve sete tabelas sob o papel do aluno. Ninguém confrontou as
   duas listas.
 - **Contador em zero é sinal, não silêncio.** `submissions` em 0 depois de
   semanas de sistema no ar era a evidência de que o caminho principal nunca
