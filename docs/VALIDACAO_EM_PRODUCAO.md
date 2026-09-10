@@ -1,6 +1,57 @@
 # O que já foi exercitado contra o ambiente real
 
-**Atualizado:** 9 de setembro de 2026.
+**Atualizado:** 10 de setembro de 2026.
+
+> ## ⚠ PAREDE CONHECIDA — só aparece quando o OCR voltar
+>
+> **O primeiro envio com confiança alta vai falhar.** Hoje estamos sem OCR
+> (contingência do `apt` do Streamlit), então nenhum envio alcança a confiança
+> de aprovação automática e tudo cai em `needs_review`. É isso que esconde a
+> parede.
+>
+> Quando o `apt` for consertado e o RapidOCR voltar, um envio de
+> `duolingo_beconfident` — que é `auto_approvable` — com leitura boa vai tentar
+> aprovar **dentro da transação do aluno**. Essa aprovação escreve em lugares
+> que o aluno não pode escrever, e é recusada:
+>
+> - a mudança de status para `approved_auto`, barrada pela `0016`;
+> - `approved_evidence`, `lesson_units`, `lesson_batches` e
+>   `ledger_transactions` — as quatro tabelas da premiação, admin-only.
+>
+> O que o aluno vê: "A operação falhou. Consulte o log com a referência …". O
+> envio inteiro é desfeito, inclusive a prova. No traceback, procure
+> `new row violates row-level security policy` apontando `submissions` ou uma
+> das quatro tabelas.
+>
+> É a única parede conhecida — a única coisa que **falha**. Não há nada no
+> caminho para ela enquanto o OCR estiver fora. As saídas estão discutidas
+> abaixo (premiação por função `SECURITY DEFINER` que derive os pontos, ou
+> aprovação sempre manual), e a decisão está pendente.
+>
+> **Antes de reverter a contingência**, decida isto. Reverter sem decidir troca
+> "app fora do ar" por "atividade principal quebrada no primeiro acerto".
+
+> ## ⚠ BURACO SILENCIOSO — a detecção de duplicata não cruza alunos
+>
+> Não é parede: não falha, e por isso é pior. Medido em 10/set/2026, sob
+> claims da conta `teste`, com um print do aluno `teste2` plantado:
+>
+>     arquivos com pHash no banco (como dono)    2
+>     candidatos que o pipeline de teste enxerga 1
+>     inclui o print do outro aluno?             NÃO
+>
+> `_duplicate_candidates` roda sob o papel do aluno, e `arquivos_leitura` só
+> deixa ele ver os próprios arquivos. A comparação perceptual nunca encontra o
+> print de um colega — que é justamente a fraude clássica, e o motivo de a
+> coluna `same_student` existir. Só o reenvio do **próprio** arquivo é pego.
+>
+> Rede parcial que sobra: na aprovação, sob o papel do mentor,
+> `_claim_approved_evidence` recusa checksum idêntico a um arquivo **já
+> aprovado**. Pega a cópia exata de um print aprovado; não pega a semelhante,
+> nem a cópia de um print ainda pendente.
+>
+> É a mesma armadilha da leitura invisível — terceira vez em código de
+> produção, depois do teto de custo. Correção não iniciada.
 
 A suíte roda offline, em SQLite. Vários defeitos desta semana só apareceram em
 produção — chave de coluna renomeada, regex de token, `.value` sobre StrEnum
